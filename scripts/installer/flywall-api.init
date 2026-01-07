@@ -1,0 +1,13 @@
+#!/sbin/openrc-run
+
+name="flywall-api"
+description="Flywall Firewall API & UI"
+command="/usr/local/bin/flywall"
+command_args="api"
+command_background=true
+pidfile="/run/flywall-api.pid"
+
+depend() {
+    need flywall-ctl
+    after firewall
+}
