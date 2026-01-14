@@ -110,6 +110,24 @@
             }
         });
 
+        if (roots > 1) {
+            console.warn(
+                "Multiple roots detected. Auto-linking orphans to router.",
+                Array.from(parentMap.entries())
+                    .filter(([k, v]) => v === null)
+                    .map(([k]) => k),
+            );
+            const router = graph.nodes.find((n) => n.type === "router");
+            if (router) {
+                const routerID = router.id;
+                parentMap.forEach((parent, id) => {
+                    if (parent === null && id !== routerID) {
+                        parentMap.set(id, routerID);
+                    }
+                });
+            }
+        }
+
         if (roots === 0) {
             console.warn("Topology cycle detected, no root found.");
             const router = graph.nodes.find((n) => n.type === "router");
@@ -287,7 +305,7 @@
             .selectAll("path")
             .data(
                 rootPoint.links() as unknown as d3.HierarchyPointLink<TopologyNode>[],
-                (d) => `${d.source.data.id}-${d.target.data.id}`,
+                (d: any) => `${d.source.data.id}-${d.target.data.id}`,
             )
             .join("path")
             .attr("fill", "none")
@@ -455,6 +473,7 @@
         if (type === "router") return "var(--color-destructive)";
         if (type === "switch") return "var(--color-primary)";
         if (type === "cloud") return "var(--color-primary)";
+        if (type === "container") return "#a855f7"; // Purple for containers
         return "var(--color-success)";
     }
 
@@ -522,6 +541,9 @@
                 return "videogame_asset";
             case "watch":
                 return "watch";
+            case "container":
+            case "docker":
+                return "deployed_code";
             case "device":
             default:
                 return "devices";

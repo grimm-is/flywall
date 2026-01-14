@@ -3,23 +3,25 @@ package state
 import (
 	"encoding/json"
 	"fmt"
-	"grimm.is/flywall/internal/clock"
 	"net"
 	"time"
+
+	"grimm.is/flywall/internal/clock"
 )
 
 // Standard bucket names
 const (
-	BucketDHCPLeases   = "dhcp_leases"
-	BucketDHCPReserved = "dhcp_reserved"
-	BucketDNSCache     = "dns_cache"
-	BucketDNSBlocked   = "dns_blocked"
-	BucketSessions     = "sessions"
-	BucketConntrack    = "conntrack"
-	BucketMetrics      = "metrics"
-	BucketConfig       = "config"        // Runtime config overrides
-	BucketLearnedRules = "learned_rules" // Auto-learned firewall rules
-	BucketStats        = "stats"         // Traffic statistics
+	BucketDHCPLeases      = "dhcp_leases"
+	BucketDHCPReserved    = "dhcp_reserved"
+	BucketDNSCache        = "dns_cache"
+	BucketDNSBlocked      = "dns_blocked"
+	BucketSessions        = "sessions"
+	BucketConntrack       = "conntrack"
+	BucketMetrics         = "metrics"
+	BucketConfig          = "config"           // Runtime config overrides
+	BucketLearnedRules    = "learned_rules"    // Auto-learned firewall rules
+	BucketStats           = "stats"            // Traffic statistics
+	BucketMetricsBaseline = "metrics_baseline" // Counter baselines for restart continuity
 )
 
 // DHCPLease represents a DHCP lease in the state store.
@@ -442,4 +444,84 @@ func (b *LearnedRulesBucket) IncrementHitCount(id string) error {
 	rule.HitCount++
 	rule.LastSeen = clock.Now()
 	return b.Set(rule)
+}
+
+// =============================================================================
+// Metrics Baseline Bucket - stores counter baselines for restart continuity
+// =============================================================================
+
+// CounterBaseline stores the cumulative counter value at a point in time.
+// Used to continue trend graphs after restarts or HA failover.
+type CounterBaseline struct {
+	Name    string    `json:"name"`     // Interface name or policy key
+	Type    string    `json:"type"`     // "interface" or "policy"
+	RxBytes uint64    `json:"rx_bytes"` // For interfaces
+	TxBytes uint64    `json:"tx_bytes"` // For interfaces
+	Packets uint64    `json:"packets"`  // For policies
+	Bytes   uint64    `json:"bytes"`    // For policies
+	SavedAt time.Time `json:"saved_at"`
+}
+
+// MetricsBaselineBucket provides typed access to metrics baselines.
+type MetricsBaselineBucket struct {
+	store  Store
+	bucket string
+}
+
+// NewMetricsBaselineBucket creates a new metrics baseline bucket accessor.
+func NewMetricsBaselineBucket(store Store) (*MetricsBaselineBucket, error) {
+	if err := store.CreateBucket(BucketMetricsBaseline); err != nil && err != ErrBucketExists {
+		return nil, err
+	}
+	return &MetricsBaselineBucket{store: store, bucket: BucketMetricsBaseline}, nil
+}
+
+// GetInterface retrieves baseline for an interface.
+func (b *MetricsBaselineBucket) GetInterface(name string) (*CounterBaseline, error) {
+	var baseline CounterBaseline
+	if err := b.store.GetJSON(b.bucket, "iface:"+name, &baseline); err != nil {
+		return nil, err
+	}
+	return &baseline, nil
+}
+
+// SetInterface stores baseline for an interface.
+func (b *MetricsBaselineBucket) SetInterface(baseline *CounterBaseline) error {
+	baseline.Type = "interface"
+	baseline.SavedAt = clock.Now()
+	return b.store.SetJSON(b.bucket, "iface:"+baseline.Name, baseline)
+}
+
+// GetPolicy retrieves baseline for a policy.
+func (b *MetricsBaselineBucket) GetPolicy(key string) (*CounterBaseline, error) {
+	var baseline CounterBaseline
+	if err := b.store.GetJSON(b.bucket, "policy:"+key, &baseline); err != nil {
+		return nil, err
+	}
+	return &baseline, nil
+}
+
+// SetPolicy stores baseline for a policy.
+func (b *MetricsBaselineBucket) SetPolicy(baseline *CounterBaseline) error {
+	baseline.Type = "policy"
+	baseline.SavedAt = clock.Now()
+	return b.store.SetJSON(b.bucket, "policy:"+baseline.Name, baseline)
+}
+
+// List returns all stored baselines.
+func (b *MetricsBaselineBucket) List() ([]*CounterBaseline, error) {
+	data, err := b.store.List(b.bucket)
+	if err != nil {
+		return nil, err
+	}
+
+	baselines := make([]*CounterBaseline, 0, len(data))
+	for _, v := range data {
+		var baseline CounterBaseline
+		if err := unmarshalJSON(v, &baseline); err != nil {
+			continue
+		}
+		baselines = append(baselines, &baseline)
+	}
+	return baselines, nil
 }

@@ -5,9 +5,6 @@
 
 import { vi } from 'vitest';
 
-// declare global {
-//    var fetch: any;
-// }
 (globalThis as any).fetch = vi.fn();
 
 // Mock localStorage for tests
@@ -18,10 +15,10 @@ const localStorageMock = {
     clear: vi.fn(),
 };
 
-Object.defineProperty(global, 'localStorage', { value: localStorageMock });
+Object.defineProperty(globalThis, 'localStorage', { value: localStorageMock });
 
 // Mock matchMedia for theme tests
-Object.defineProperty(global, 'matchMedia', {
+Object.defineProperty(globalThis, 'matchMedia', {
     value: vi.fn().mockImplementation((query: string) => ({
         matches: false,
         media: query,
@@ -33,6 +30,3 @@ Object.defineProperty(global, 'matchMedia', {
         dispatchEvent: vi.fn(),
     })),
 });
-
-// Mock fetch for API tests
-global.fetch = vi.fn();

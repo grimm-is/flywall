@@ -8,6 +8,7 @@ import (
 
 	"grimm.is/flywall/internal/clock"
 	"grimm.is/flywall/internal/logging"
+	"grimm.is/flywall/internal/sentinel"
 )
 
 // GetLogs retrieves system logs (runs as root, can access all logs)
@@ -101,7 +102,6 @@ func (s *Server) getNFLogEntries(args *GetLogsArgs) []LogEntry {
 			entry.Extra["LEN"] = fmt.Sprintf("%d", nf.Length)
 		}
 
-		// Enrich with Device Info
 		if s.deviceManager != nil && nf.HwAddr != "" {
 			info := s.deviceManager.GetDevice(nf.HwAddr)
 			if info.Vendor != "" {
@@ -109,6 +109,21 @@ func (s *Server) getNFLogEntries(args *GetLogsArgs) []LogEntry {
 			}
 			if info.Device != nil && info.Device.Alias != "" {
 				entry.Extra["DEVICE"] = info.Device.Alias
+			}
+		}
+
+		// Enrich with Traffic Class
+		if s.sentinelService != nil {
+			pkt := sentinel.PacketMetadata{
+				SrcMAC:     nf.SrcMAC,
+				SrcIP:      nf.SrcIP,
+				DstIP:      nf.DstIP,
+				DstPort:    int(nf.DstPort),
+				Protocol:   nf.Protocol,
+				PayloadLen: nf.PayloadLen,
+			}
+			if class := s.sentinelService.Classify(pkt); class != sentinel.ClassUnknown {
+				entry.Class = class
 			}
 		}
 

@@ -6,11 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"grimm.is/flywall/internal/clock"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"grimm.is/flywall/internal/clock"
 
 	"grimm.is/flywall/internal/brand"
 
@@ -98,9 +99,14 @@ func (s *Store) load() error {
 
 	if authData.Users != nil {
 		s.users = authData.Users
+	} else {
+		// Defensive: ensure users map is initialized even if JSON has null
+		s.users = make(map[string]*User)
 	}
 	if authData.Sessions != nil {
 		s.sessions = authData.Sessions
+	} else {
+		s.sessions = make(map[string]*Session)
 	}
 
 	// Clean expired sessions

@@ -30,6 +30,7 @@
     disabled = false,
     required = false,
     class: className = "",
+    ...rest
   }: Props = $props();
 </script>
 
@@ -41,7 +42,7 @@
     </label>
   {/if}
 
-  <select {id} bind:value {disabled} {required} class="select">
+  <select {id} bind:value {disabled} {required} class="select" {...rest}>
     {#if placeholder}
       <option value="" disabled selected={!value}>{placeholder}</option>
     {/if}

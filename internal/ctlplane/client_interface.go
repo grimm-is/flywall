@@ -1,11 +1,17 @@
 package ctlplane
 
 import (
+	"time"
+
+	"grimm.is/flywall/internal/alerting"
+	"grimm.is/flywall/internal/analytics"
 	"grimm.is/flywall/internal/config"
-	"grimm.is/flywall/internal/device"
 	"grimm.is/flywall/internal/firewall"
+	"grimm.is/flywall/internal/identity"
 	"grimm.is/flywall/internal/learning"
 	"grimm.is/flywall/internal/learning/flowdb"
+	"grimm.is/flywall/internal/metrics"               // Added import
+	"grimm.is/flywall/internal/services/dns/querylog" // Added import
 	"grimm.is/flywall/internal/services/scanner"
 )
 
@@ -16,6 +22,7 @@ type ControlPlaneClient interface {
 
 	// --- Status & Config ---
 	GetStatus() (*Status, error)
+	GetReplicationStatus() (*GetReplicationStatusReply, error)
 	GetConfig() (*config.Config, error)
 	GetInterfaces() ([]InterfaceStatus, error)
 	GetServices() ([]ServiceStatus, error)
@@ -98,12 +105,30 @@ type ControlPlaneClient interface {
 	GetUplinkGroups() ([]UplinkGroupStatus, error)
 	SwitchUplink(groupName, uplinkName string) error
 	ToggleUplink(groupName, uplinkName string, enabled bool) error
+	TestUplink(groupName, uplinkName string) (*UplinkStatus, error)
+
+	// --- Metrics ---
+	GetPolicyStats() (map[string]*metrics.PolicyStats, error)
 
 	// --- Flow Management ---
 	GetFlows(state string, limit, offset int) ([]flowdb.FlowWithHints, map[string]int64, error)
 	ApproveFlow(id int64) error
 	DenyFlow(id int64) error
 	DeleteFlow(id int64) error
+
+	// --- Analytics ---
+	GetAnalyticsBandwidth(args *GetAnalyticsBandwidthArgs) ([]BandwidthPoint, error)
+	GetAnalyticsTopTalkers(args *GetAnalyticsTopTalkersArgs) ([]analytics.Summary, error)
+	GetAnalyticsFlows(args *GetAnalyticsFlowsArgs) ([]analytics.Summary, error)
+
+	// DNS Query Log
+	GetDNSQueryHistory(limit, offset int, search string) ([]querylog.Entry, error)
+	GetDNSStats(from, to time.Time) (*querylog.Stats, error)
+
+	// --- Alerting ---
+	GetAlertHistory(limit int) ([]alerting.AlertEvent, error)
+	GetAlertRules() ([]alerting.AlertRule, error)
+	UpdateAlertRule(rule alerting.AlertRule) error
 
 	// --- Network Scanner ---
 	StartScanNetwork(cidr string, timeoutSeconds int) error
@@ -115,10 +140,12 @@ type ControlPlaneClient interface {
 	// --- Wake-on-LAN ---
 	WakeOnLAN(mac, iface string) error
 
-	// --- Device Identity Management ---
-	UpdateDeviceIdentity(args *UpdateDeviceIdentityArgs) (*device.DeviceIdentity, error)
-	LinkMAC(mac, identityID string) error
-	UnlinkMAC(mac string) error
+	// --- Device Identity
+	// Device Identity
+	UpdateDeviceIdentity(args *UpdateDeviceIdentityArgs) (*identity.DeviceIdentity, error)
+	GetDeviceGroups() ([]identity.DeviceGroup, error)
+	UpdateDeviceGroup(group identity.DeviceGroup) error
+	DeleteDeviceGroup(id string) error
 
 	// --- Ping (Connectivity Verification) ---
 	Ping(target string, timeoutSeconds int) (*PingReply, error)

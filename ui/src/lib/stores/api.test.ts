@@ -8,7 +8,7 @@ import { get } from 'svelte/store';
 
 // Mock fetch before importing the store
 const mockFetch = vi.fn();
-(global as any).fetch = mockFetch;
+(globalThis as any).fetch = mockFetch;
 
 // Now import the stores
 import {

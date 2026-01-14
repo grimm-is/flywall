@@ -83,3 +83,30 @@ func (a *UplinkAPI) HandleToggle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
+
+// HandleTest triggers a manual connectivity test for an uplink.
+func (a *UplinkAPI) HandleTest(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		GroupName  string `json:"group_name"`
+		UplinkName string `json:"uplink_name"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.GroupName == "" || req.UplinkName == "" {
+		http.Error(w, "group_name and uplink_name are required", http.StatusBadRequest)
+		return
+	}
+
+	result, err := a.client.TestUplink(req.GroupName, req.UplinkName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}

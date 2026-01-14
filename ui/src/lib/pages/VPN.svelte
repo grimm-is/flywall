@@ -31,7 +31,13 @@
   let connDns = $state("");
   let connMtu = $state("1420");
   let connMark = $state("");
+  let connTable = $state("auto");
+  let connPostUp = $state("");
+  let connPostDown = $state("");
   let connPeers = $state<any[]>([]);
+  let connEnabled = $state(true);
+
+  let fileInput: HTMLInputElement;
 
   // Peer State (nested)
   let editingPeerIndex = $state<number | null>(null);
@@ -45,13 +51,6 @@
   const vpnConfig = $derived($config?.vpn || { wireguard: [] });
   const connections = $derived(vpnConfig.wireguard || []);
 
-  const peerColumns = [
-    { key: "name", label: $t("vpn.name") },
-    { key: "public_key", label: $t("vpn.public_key") },
-    { key: "allowed_ips", label: $t("vpn.allowed_ips") },
-    { key: "endpoint", label: $t("vpn.endpoint") },
-  ];
-
   /* --- Connection Management --- */
 
   function openAddConnection() {
@@ -64,7 +63,11 @@
     connDns = "";
     connMtu = "1420";
     connMark = "";
+    connTable = "auto";
+    connPostUp = "";
+    connPostDown = "";
     connPeers = [];
+    connEnabled = true;
     showConnModal = true;
   }
 
@@ -79,7 +82,11 @@
     connDns = (c.dns || []).join(", ");
     connMtu = String(c.mtu || "1420");
     connMark = String(c.fwmark || "");
+    connTable = c.table || "auto";
+    connPostUp = (c.post_up || []).join("\n") || "";
+    connPostDown = (c.post_down || []).join("\n") || "";
     connPeers = [...(c.peers || [])];
+    connEnabled = c.enabled !== false;
     showConnModal = true;
   }
 
@@ -101,8 +108,11 @@
           .filter(Boolean),
         mtu: Number(connMtu),
         fwmark: connMark ? Number(connMark) : undefined,
+        table: connTable === "auto" ? undefined : connTable,
+        post_up: connPostUp.split("\n").filter(Boolean),
+        post_down: connPostDown.split("\n").filter(Boolean),
         peers: connPeers,
-        enabled: true, // Default to enabled on create/save
+        enabled: connEnabled,
       };
 
       let updatedWg = [...connections];
@@ -208,43 +218,119 @@
     connPeers = connPeers.filter((_, i) => i !== index);
   }
 
-  function generateKey() {
-    // TODO: Implement key generation via API or WASM?
-    // For now just placeholders or instruct user.
-    alert(
-      "Key generation not implemented in UI yet. Please generate elsewhere.",
-    );
+  async function generateKey() {
+    loading = true;
+    try {
+      const result = await api.generateWireGuardKey();
+      connPrivateKey = result.private_key;
+      alert(
+        `Key generated!\n\nPublic Key: ${result.public_key}\n\n(Public key is shown for sharing with peers. Private key has been filled in.)`,
+      );
+    } catch (e: any) {
+      alert(`Failed to generate key: ${e.message || e}`);
+      console.error("Failed to generate key:", e);
+      loading = false;
+    }
+  }
+
+  async function handleImport(e: Event) {
+    const target = e.target as HTMLInputElement;
+    if (!target.files?.length) return;
+    const file = target.files[0];
+
+    try {
+      loading = true;
+      const imported = await api.importVPNConfig(file);
+
+      // Open as new connection
+      editingConnIndex = null;
+      connName = file.name.replace(".conf", "") || "Imported Tunnel";
+      connInterface = imported.interface || "wg0"; // Parser might not set interface name
+      connPort = String(imported.listen_port || "0");
+      connPrivateKey = imported.private_key || "";
+      connAddresses = (imported.address || []).join(", ");
+      connDns = (imported.dns || []).join(", ");
+      connMtu = String(imported.mtu || "1420");
+      connMark = String(imported.fwmark || "");
+      connTable = imported.table || "auto";
+      connEnabled = true;
+
+      // Handle peers
+      if (imported.peers) {
+        connPeers = imported.peers.map((p: any, i: number) => ({
+          name: p.name || `Peer ${i + 1}`,
+          public_key: p.public_key,
+          preshared_key: p.preshared_key,
+          endpoint: p.endpoint,
+          allowed_ips: p.allowed_ips || [],
+          persistent_keepalive: p.persistent_keepalive,
+        }));
+      } else {
+        connPeers = [];
+      }
+
+      showConnModal = true;
+    } catch (e: any) {
+      alert("Import failed: " + (e.message || e));
+    } finally {
+      loading = false;
+      target.value = "";
+    }
+  }
+
+  function triggerImport() {
+    fileInput?.click();
   }
 </script>
 
 <div class="vpn-page">
   <div class="page-header">
+    <div class="header-info">
+      <h2>Tunnels</h2>
+      <p class="subtitle">Secure remote access & site-to-site links</p>
+    </div>
     <div class="header-actions">
-      <Button onclick={openAddConnection}
-        >+ {$t("common.add_item", {
-          values: { item: $t("item.interface") },
-        })}</Button
+      <input
+        type="file"
+        accept=".conf"
+        class="hidden"
+        bind:this={fileInput}
+        onchange={handleImport}
+      />
+      <Button variant="outline" onclick={triggerImport} disabled={loading}>
+        <Icon name="upload" /> Import
+      </Button>
+      <Button onclick={openAddConnection} data-testid="add-tunnel-btn"
+        >+ Add Tunnel</Button
       >
     </div>
   </div>
 
   {#if connections.length === 0}
     <Card>
-      <p class="empty-message">
-        {$t("common.no_items", { values: { items: $t("item.interface") } })}
-      </p>
+      <div class="empty-state">
+        <Icon name="vpn_key" size={48} className="text-muted" />
+        <p class="empty-message">
+          No active tunnels. Create a WireGuard interface to get started.
+        </p>
+        <Button variant="outline" onclick={openAddConnection}
+          >Create Tunnel</Button
+        >
+      </div>
     </Card>
   {:else}
     <div class="connections-list">
       {#each connections as conn, i}
         <Card>
           <div class="conn-header">
-            <div class="flex items-center gap-3">
+            <div class="conn-title-group">
+              <div
+                class="status-dot {conn.enabled ? 'active' : 'inactive'}"
+              ></div>
               <h3 class="text-lg font-bold">{conn.name}</h3>
-              <Badge variant="outline">{conn.interface}</Badge>
-              <Badge variant={conn.enabled ? "success" : "secondary"}>
-                {conn.enabled ? $t("common.enabled") : $t("common.disabled")}
-              </Badge>
+              <Badge variant="outline" className="font-mono"
+                >{conn.interface}</Badge
+              >
             </div>
             <div class="conn-actions">
               <Button variant="ghost" onclick={() => openEditConnection(i)}>
@@ -257,33 +343,44 @@
           </div>
 
           <div
-            class="conn-details mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm"
+            class="conn-details grid grid-cols-2 md:grid-cols-4 gap-4 text-sm"
           >
             <div>
-              <span class="text-muted-foreground block text-xs"
-                >{$t("vpn.port")}</span
-              >
+              <span class="detail-label">{$t("vpn.port")}</span>
               <span class="font-mono">{conn.listen_port}</span>
             </div>
             <div>
-              <span class="text-muted-foreground block text-xs"
-                >{$t("vpn.address")}</span
-              >
+              <span class="detail-label">{$t("vpn.address")}</span>
               <span class="font-mono">{(conn.address || []).join(", ")}</span>
             </div>
             <div>
-              <span class="text-muted-foreground block text-xs"
-                >{$t("vpn.dns")}</span
+              <span class="detail-label">Public Key</span>
+              <span
+                class="font-mono text-xs truncate max-w-[150px] block"
+                title={conn.public_key || "Generating..."}
               >
-              <span class="font-mono">{(conn.dns || []).join(", ")}</span>
+                {conn.public_key || "N/A"}
+              </span>
             </div>
             <div>
-              <span class="text-muted-foreground block text-xs"
-                >{$t("vpn.peers")}</span
+              <span class="detail-label"
+                >{$t("vpn.peers")} ({conn.peers?.length || 0})</span
               >
-              <span>{(conn.peers || []).length}</span>
             </div>
           </div>
+
+          <!-- Peer Preview (High Density) -->
+          {#if conn.peers && conn.peers.length > 0}
+            <div class="peers-preview">
+              {#each conn.peers as peer}
+                <div class="peer-chip">
+                  <div class="peer-status"></div>
+                  <span class="peer-name">{peer.name}</span>
+                  <span class="peer-ip">{peer.allowed_ips?.[0] || ""}</span>
+                </div>
+              {/each}
+            </div>
+          {/if}
         </Card>
       {/each}
     </div>
@@ -293,24 +390,24 @@
 <!-- Connection Modal -->
 <Modal
   bind:open={showConnModal}
-  title={editingConnIndex !== null
-    ? $t("common.edit_item", { values: { item: $t("item.interface") } })
-    : $t("common.add_item", { values: { item: $t("item.interface") } })}
+  title={editingConnIndex !== null ? "Edit Tunnel" : "Add Tunnel"}
   size="lg"
 >
   <div class="form-stack">
     <div class="grid grid-cols-2 gap-4">
       <Input
         id="conn-name"
-        label={$t("common.name")}
+        label="Tunnel Name"
         bind:value={connName}
-        placeholder={$t("vpn.name")}
+        placeholder="e.g. Site-to-Site"
+        data-testid="vpn-conn-name"
       />
       <Input
         id="conn-iface"
-        label={$t("common.interface")}
+        label="Interface Name"
         bind:value={connInterface}
         placeholder="wg0"
+        data-testid="vpn-conn-iface"
       />
     </div>
 
@@ -320,6 +417,7 @@
         label={$t("vpn.listen_port")}
         type="number"
         bind:value={connPort}
+        data-testid="vpn-conn-port"
       />
       <Input
         id="conn-mtu"
@@ -328,14 +426,53 @@
         bind:value={connMtu}
         placeholder="1420"
       />
-      <Input
-        id="conn-mark"
-        label={$t("vpn.firewall_mark")}
-        type="number"
-        bind:value={connMark}
-        placeholder={$t("common.optional")}
-      />
     </div>
+
+    <!-- Advanced Settings Collapsible or Just Section -->
+    <details class="text-sm border border-border rounded p-2">
+      <summary class="cursor-pointer font-medium p-1">Advanced Settings</summary
+      >
+      <div class="grid grid-cols-2 gap-4 mt-2">
+        <Input
+          id="conn-mark"
+          label={$t("vpn.firewall_mark")}
+          type="number"
+          bind:value={connMark}
+          placeholder={$t("common.optional")}
+        />
+        <Input
+          id="conn-table"
+          label="Routing Table"
+          bind:value={connTable}
+          placeholder="auto (or ID)"
+          title="Use 'auto' for default behavior, 'off' to disable routes, or a number for specific table."
+        />
+      </div>
+      <div class="grid grid-cols-2 gap-4 mt-2">
+        <div>
+          <label class="block text-xs text-muted mb-1" for="post-up"
+            >PostUp Commands (one per line)</label
+          >
+          <textarea
+            id="post-up"
+            class="w-full bg-backgroundSecondary border border-border rounded p-2 text-xs font-mono"
+            rows="2"
+            bind:value={connPostUp}
+          ></textarea>
+        </div>
+        <div>
+          <label class="block text-xs text-muted mb-1" for="post-down"
+            >PostDown Commands (one per line)</label
+          >
+          <textarea
+            id="post-down"
+            class="w-full bg-backgroundSecondary border border-border rounded p-2 text-xs font-mono"
+            rows="2"
+            bind:value={connPostDown}
+          ></textarea>
+        </div>
+      </div>
+    </details>
 
     <div class="flex gap-2 items-end">
       <div class="flex-1">
@@ -345,6 +482,7 @@
           bind:value={connPrivateKey}
           type="password"
           placeholder="base64 key..."
+          data-testid="vpn-conn-privkey"
         />
       </div>
       <Button variant="outline" onclick={generateKey}
@@ -357,6 +495,7 @@
       label={$t("vpn.addresses")}
       bind:value={connAddresses}
       placeholder="10.100.0.1/24"
+      data-testid="vpn-conn-addr"
     />
 
     <Input
@@ -364,6 +503,7 @@
       label={$t("vpn.dns_servers")}
       bind:value={connDns}
       placeholder="1.1.1.1"
+      data-testid="vpn-conn-dns"
     />
 
     <div class="peers-section border-t border-border pt-4 mt-2">
@@ -511,6 +651,18 @@
     justify-content: space-between;
   }
 
+  .header-info h2 {
+    font-size: var(--text-2xl);
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .subtitle {
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    margin: var(--space-1) 0 0;
+  }
+
   .connections-list {
     display: flex;
     flex-direction: column;
@@ -525,9 +677,37 @@
     border-bottom: 1px solid var(--color-border);
   }
 
+  .conn-title-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-muted);
+  }
+
+  .status-dot.active {
+    background: var(--color-success);
+    box-shadow: 0 0 8px var(--color-success);
+  }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    padding: var(--space-8);
+    text-align: center;
+  }
+
   .empty-message {
     color: var(--color-muted);
-    text-align: center;
+    font-size: var(--text-sm);
     margin: 0;
   }
 
@@ -544,5 +724,48 @@
     margin-top: var(--space-4);
     padding-top: var(--space-4);
     border-top: 1px solid var(--color-border);
+  }
+
+  .detail-label {
+    display: block;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    margin-bottom: 2px;
+  }
+
+  .peers-preview {
+    margin-top: var(--space-4);
+    padding-top: var(--space-3);
+    border-top: 1px dashed var(--color-border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .peer-chip {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 4px 8px;
+    background: var(--color-backgroundSecondary);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    border: 1px solid var(--color-border);
+  }
+
+  .peer-status {
+    width: 6px;
+    height: 6px;
+    background: var(--color-success);
+    border-radius: 50%;
+  }
+
+  .peer-name {
+    font-weight: 500;
+  }
+
+  .peer-ip {
+    font-family: var(--font-mono);
+    color: var(--color-muted);
   }
 </style>

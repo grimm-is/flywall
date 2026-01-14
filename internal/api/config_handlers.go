@@ -5,7 +5,9 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/pmezard/go-difflib/difflib"
 	"grimm.is/flywall/internal/config"
+	"grimm.is/flywall/internal/vpn"
 )
 
 // --- Config CRUD Handlers ---
@@ -418,6 +420,21 @@ func (s *Server) handleUpdateVPN(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleWireGuardGenerateKey generates a new WireGuard key pair.
+// This is a stateless operation that doesn't require control plane access.
+func (s *Server) handleWireGuardGenerateKey(w http.ResponseWriter, r *http.Request) {
+	privKey, pubKey, err := vpn.GenerateKeyPair()
+	if err != nil {
+		WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to generate key: "+err.Error())
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]string{
+		"private_key": privKey,
+		"public_key":  pubKey,
+	})
+}
+
 // handleGetQoS returns QoS policies configuration
 // handleGetQoS returns QoS policies configuration
 func (s *Server) handleGetQoS(w http.ResponseWriter, r *http.Request) {
@@ -459,4 +476,131 @@ func (s *Server) handleUpdateQoS(w http.ResponseWriter, r *http.Request) {
 	if s.applyConfigUpdate(w, r, updateFn) {
 		WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 	}
+}
+
+// handleConfig returns the current configuration (staged or running)
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	// Support source=running to get raw running config without status
+	if r.URL.Query().Get("source") == "running" {
+		if s.client != nil {
+			cfg, err := s.client.GetConfig()
+			if err != nil {
+				WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())
+				return
+			}
+			WriteJSON(w, http.StatusOK, cfg)
+		} else {
+			WriteJSON(w, http.StatusOK, s.Config)
+		}
+		return
+	}
+
+	// Default: Return config with _status fields for UI
+	s.configMu.RLock()
+	staged := s.Config
+	s.configMu.RUnlock()
+
+	if s.client != nil {
+		// Get running config to compute status
+		running, err := s.client.GetConfig()
+		if err != nil {
+			// Can't reach control plane - return staged without status
+			WriteJSON(w, http.StatusOK, staged)
+			return
+		}
+		// Return config with _status fields for each item
+		configWithStatus := BuildConfigWithStatus(staged, running)
+		WriteJSON(w, http.StatusOK, configWithStatus)
+	} else {
+		// No client - return raw config
+		WriteJSON(w, http.StatusOK, staged)
+	}
+}
+
+// handleGetConfigDiff returns the diff between saved and in-memory config
+func (s *Server) handleGetConfigDiff(w http.ResponseWriter, r *http.Request) {
+	if s.client == nil {
+		WriteErrorCtx(w, r, http.StatusServiceUnavailable, "Control plane not connected")
+		return
+	}
+
+	// 1. Get Running Config
+	runningCfg, err := s.client.GetConfig()
+	if err != nil {
+		WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to fetch running config: "+err.Error())
+		return
+	}
+
+	// 2. Get Staged Config
+	stagedCfg := s.Config
+
+	// 3. Marshal to JSON for comparison
+	runningJSON, _ := json.MarshalIndent(runningCfg, "", "  ")
+	stagedJSON, _ := json.MarshalIndent(stagedCfg, "", "  ")
+
+	// 4. Generate Diff
+	diff := difflib.UnifiedDiff{
+		A:        difflib.SplitLines(string(runningJSON)),
+		B:        difflib.SplitLines(string(stagedJSON)),
+		FromFile: "Running",
+		ToFile:   "Staged",
+		Context:  3,
+	}
+	text, _ := difflib.GetUnifiedDiffString(diff)
+
+	if text == "" {
+		text = "No changes."
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte(text))
+}
+
+// handleDiscardConfig discards staged changes by reloading from the control plane
+func (s *Server) handleDiscardConfig(w http.ResponseWriter, r *http.Request) {
+	if s.client == nil {
+		WriteErrorCtx(w, r, http.StatusServiceUnavailable, "Control plane not connected")
+		return
+	}
+
+	cfg, err := s.client.GetConfig()
+	if err != nil {
+		WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to fetch running config: "+err.Error())
+		return
+	}
+
+	// Overwrite staged config
+	s.Config = cfg
+	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+// handlePendingStatus returns whether there are pending changes
+func (s *Server) handlePendingStatus(w http.ResponseWriter, r *http.Request) {
+	if s.client == nil {
+		WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"has_changes": false,
+			"reason":      "no control plane",
+		})
+		return
+	}
+
+	// Get Running Config
+	runningCfg, err := s.client.GetConfig()
+	if err != nil {
+		WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"has_changes": false,
+			"reason":      "failed to get running config",
+		})
+		return
+	}
+
+	// Compare by JSON serialization
+	runningJSON, _ := json.Marshal(runningCfg)
+	stagedJSON, _ := json.Marshal(s.Config)
+
+	hasChanges := string(runningJSON) != string(stagedJSON)
+
+	WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"has_changes": hasChanges,
+	})
 }

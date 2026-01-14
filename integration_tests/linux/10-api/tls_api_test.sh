@@ -12,6 +12,16 @@ TEST_TIMEOUT=30
 
 cleanup_on_exit
 
+# Kill any stale process on 8443 from previous tests
+if command -v ss >/dev/null; then
+    STALE_PID=$(ss -tlnp 2>/dev/null | grep ':8443' | grep -o 'pid=[0-9]*' | cut -d= -f2)
+    if [ -n "$STALE_PID" ]; then
+        diag "Killing stale process on port 8443 (PID $STALE_PID)"
+        kill -9 "$STALE_PID" 2>/dev/null || true
+        sleep 0.5
+    fi
+fi
+
 CONFIG_FILE="$(mktemp_compatible tls_api.hcl)"
 CERT_DIR="/tmp/flywall_test_certs"
 mkdir -p "$CERT_DIR"
@@ -74,8 +84,8 @@ if command -v curl >/dev/null; then
     else
         ok 1 "HTTPS connection failed"
         diag "Curl output: $RESP"
-        diag "API Log:"
-        cat "$API_LOG"
+        diag "CTL Log:"
+        [ -n "$CTL_LOG" ] && [ -f "$CTL_LOG" ] && cat "$CTL_LOG"
     fi
 else
     ok 0 "# SKIP Curl not found"

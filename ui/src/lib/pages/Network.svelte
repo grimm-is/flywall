@@ -15,8 +15,8 @@
         Button,
         Icon,
         Spinner,
-        TopologyGraph,
     } from "$lib/components";
+    import TopologyGraph from "$lib/components/TopologyGraph.svelte";
     import { t } from "svelte-i18n";
 
     // ... (state)

@@ -7,13 +7,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"grimm.is/flywall/internal/clock"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"grimm.is/flywall/internal/clock"
+
 	"grimm.is/flywall/internal/api/storage"
+	"grimm.is/flywall/internal/brand"
 )
 
 // APIKeyManager handles API key operations.
@@ -36,7 +38,8 @@ func (m *APIKeyManager) GenerateKey(name string, permissions []storage.Permissio
 	}
 
 	// Format: prefix_randomhex (e.g., "gfw_a1b2c3d4...")
-	fullKey := fmt.Sprintf("gfw_%s", hex.EncodeToString(keyBytes))
+	prefix := brand.APIKeyPrefixFull()
+	fullKey := prefix + hex.EncodeToString(keyBytes)
 
 	// Hash for storage
 	hash := sha256.Sum256([]byte(fullKey))
@@ -51,7 +54,7 @@ func (m *APIKeyManager) GenerateKey(name string, permissions []storage.Permissio
 		ID:          id,
 		Name:        name,
 		KeyHash:     keyHash,
-		KeyPrefix:   fullKey[:12], // "gfw_" + first 8 chars
+		KeyPrefix:   fullKey[:len(prefix)+8], // prefix + first 8 hex chars
 		Permissions: permissions,
 		CreatedAt:   clock.Now(),
 		Enabled:     true,

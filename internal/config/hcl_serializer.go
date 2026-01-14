@@ -908,33 +908,123 @@ func (cf *ConfigFile) appendRuleBlock(body *hclwrite.Body, rule *PolicyRule) {
 func (cf *ConfigFile) syncZones() error {
 	body := cf.hclFile.Body()
 
-	// Remove all existing zone blocks
-	for _, block := range body.Blocks() {
-		if block.Type() == "zone" {
-			body.RemoveBlock(block)
-		}
-	}
+	// Track which zones satisfy current config
+	seen := make(map[string]bool)
 
-	// Add zones from config
+	// Update or Add zones from config
 	for _, zone := range cf.Config.Zones {
-		block := body.AppendNewBlock("zone", []string{zone.Name})
+		seen[zone.Name] = true
+
+		var block *hclwrite.Block
+		// Find existing block
+		for _, b := range body.Blocks() {
+			if b.Type() == "zone" && len(b.Labels()) > 0 && b.Labels()[0] == zone.Name {
+				block = b
+				break
+			}
+		}
+
+		if block == nil {
+			block = body.AppendNewBlock("zone", []string{zone.Name})
+		}
+
 		blockBody := block.Body()
 
 		if zone.Interface != "" {
 			blockBody.SetAttributeValue("interface", cty.StringVal(zone.Interface))
+		} else {
+			blockBody.RemoveAttribute("interface")
 		}
+
 		if len(zone.Interfaces) > 0 {
 			blockBody.SetAttributeValue("interfaces", toCtyStringList(zone.Interfaces))
+		} else {
+			blockBody.RemoveAttribute("interfaces")
 		}
+
 		if zone.Description != "" {
 			blockBody.SetAttributeValue("description", cty.StringVal(zone.Description))
+		} else {
+			blockBody.RemoveAttribute("description")
+		}
+
+		if zone.External != nil {
+			blockBody.SetAttributeValue("external", cty.BoolVal(*zone.External))
+		} else {
+			blockBody.RemoveAttribute("external")
+		}
+
+		// Zone Management (Block)
+		if zone.Management != nil {
+			// Find existing management block inside zone
+			var mgmtBlock *hclwrite.Block
+			for _, b := range blockBody.Blocks() {
+				if b.Type() == "management" {
+					mgmtBlock = b
+					break
+				}
+			}
+			if mgmtBlock == nil {
+				mgmtBlock = blockBody.AppendNewBlock("management", nil)
+			}
+			mb := mgmtBlock.Body()
+			mb.SetAttributeValue("ssh", cty.BoolVal(zone.Management.SSH))
+			mb.SetAttributeValue("web", cty.BoolVal(zone.Management.Web))
+			mb.SetAttributeValue("api", cty.BoolVal(zone.Management.API))
+			mb.SetAttributeValue("icmp", cty.BoolVal(zone.Management.ICMP))
+			mb.SetAttributeValue("snmp", cty.BoolVal(zone.Management.SNMP))
+			mb.SetAttributeValue("syslog", cty.BoolVal(zone.Management.Syslog))
+		} else {
+			// Remove management block if it exists
+			for _, b := range blockBody.Blocks() {
+				if b.Type() == "management" {
+					blockBody.RemoveBlock(b)
+				}
+			}
+		}
+
+		// Zone Services (Block)
+		if zone.Services != nil {
+			var svcBlock *hclwrite.Block
+			for _, b := range blockBody.Blocks() {
+				if b.Type() == "services" {
+					svcBlock = b
+					break
+				}
+			}
+			if svcBlock == nil {
+				svcBlock = blockBody.AppendNewBlock("services", nil)
+			}
+			sb := svcBlock.Body()
+			sb.SetAttributeValue("dhcp", cty.BoolVal(zone.Services.DHCP))
+			sb.SetAttributeValue("dns", cty.BoolVal(zone.Services.DNS))
+			// ... add other services as needed
+		} else {
+			for _, b := range blockBody.Blocks() {
+				if b.Type() == "services" {
+					blockBody.RemoveBlock(b)
+				}
+			}
+		}
+
+	}
+
+	// Remove zones not in config
+	for _, block := range body.Blocks() {
+		if block.Type() == "zone" {
+			if len(block.Labels()) > 0 && !seen[block.Labels()[0]] {
+				body.RemoveBlock(block)
+			}
 		}
 	}
 
 	return nil
 }
 
-// syncNAT synchronizes NAT blocks to HCL
+// Exported wrapper for ctlplane
+func (cf *ConfigFile) SyncZones() error {
+	return cf.syncZones()
+}
 func (cf *ConfigFile) syncNAT() error {
 	body := cf.hclFile.Body()
 
@@ -995,39 +1085,76 @@ func (cf *ConfigFile) syncNAT() error {
 func (cf *ConfigFile) syncInterfaces() error {
 	body := cf.hclFile.Body()
 
-	// Remove all existing interface blocks
-	for _, block := range body.Blocks() {
-		if block.Type() == "interface" {
-			body.RemoveBlock(block)
-		}
-	}
+	// Track which interfaces satisfy current config
+	seen := make(map[string]bool)
 
-	// Add interfaces from config
+	// Update or Add interfaces from config
 	for _, iface := range cf.Config.Interfaces {
-		block := body.AppendNewBlock("interface", []string{iface.Name})
+		seen[iface.Name] = true
+
+		var block *hclwrite.Block
+		// Find existing block
+		for _, b := range body.Blocks() {
+			if b.Type() == "interface" && len(b.Labels()) > 0 && b.Labels()[0] == iface.Name {
+				block = b
+				break
+			}
+		}
+
+		if block == nil {
+			block = body.AppendNewBlock("interface", []string{iface.Name})
+		}
+
 		blockBody := block.Body()
 
 		if iface.Description != "" {
 			blockBody.SetAttributeValue("description", cty.StringVal(iface.Description))
+		} else {
+			blockBody.RemoveAttribute("description")
 		}
-		if iface.DHCP {
-			blockBody.SetAttributeValue("dhcp", cty.BoolVal(iface.DHCP))
-		}
+
+		blockBody.SetAttributeValue("dhcp", cty.BoolVal(iface.DHCP))
+
 		if len(iface.IPv4) > 0 {
 			blockBody.SetAttributeValue("ipv4", toCtyStringList(iface.IPv4))
+		} else {
+			blockBody.RemoveAttribute("ipv4")
 		}
+
 		if len(iface.IPv6) > 0 {
 			blockBody.SetAttributeValue("ipv6", toCtyStringList(iface.IPv6))
+		} else {
+			blockBody.RemoveAttribute("ipv6")
 		}
+
 		if iface.MTU > 0 {
 			blockBody.SetAttributeValue("mtu", cty.NumberIntVal(int64(iface.MTU)))
+		} else {
+			blockBody.RemoveAttribute("mtu")
 		}
+
 		if iface.Zone != "" {
 			blockBody.SetAttributeValue("zone", cty.StringVal(iface.Zone))
+		} else {
+			blockBody.RemoveAttribute("zone")
+		}
+	}
+
+	// Remove interfaces not in config
+	for _, block := range body.Blocks() {
+		if block.Type() == "interface" {
+			if len(block.Labels()) > 0 && !seen[block.Labels()[0]] {
+				body.RemoveBlock(block)
+			}
 		}
 	}
 
 	return nil
+}
+
+// Exported wrapper for ctlplane
+func (cf *ConfigFile) SyncInterfaces() error {
+	return cf.syncInterfaces()
 }
 
 // toCtyStringList converts a []string to cty.Value list

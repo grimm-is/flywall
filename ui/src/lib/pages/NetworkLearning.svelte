@@ -4,70 +4,69 @@
     import Card from "$lib/components/Card.svelte";
     import Button from "$lib/components/Button.svelte";
     import Badge from "$lib/components/Badge.svelte";
+    import Spinner from "$lib/components/Spinner.svelte";
+    import Icon from "$lib/components/Icon.svelte";
     import { t } from "svelte-i18n";
 
-    type Rule = {
-        id: string;
+    type Flow = {
+        id: number;
         src_ip: string;
         src_mac: string;
+        src_zone?: string;
         vendor?: string;
         dst_ip: string;
         dst_port: number;
         dst_hostname?: string;
+        dst_zone?: string;
         protocol: string;
-        policy: string;
+        state: string;
+        first_seen?: string;
+        last_seen?: string;
+        packet_count?: number;
     };
 
-    let rules = $state<Rule[]>([]);
+    type FlowCounts = {
+        pending: number;
+        approved: number;
+        denied: number;
+        total: number;
+    };
+
+    let flows = $state<Flow[]>([]);
+    let counts = $state<FlowCounts>({
+        pending: 0,
+        approved: 0,
+        denied: 0,
+        total: 0,
+    });
     let loading = $state(false);
     let error = $state("");
-    let filter = $state("pending"); // pending, approved, denied, ignored
+    let filter = $state("pending"); // pending, approved, denied
 
-    async function loadRules() {
+    async function loadFlows() {
         loading = true;
         error = "";
         try {
-            // API call to get rules by status
-            // We might need to implement query params in getPendingRules API or filter client side?
-            // Existing API: GET /api/learning/rules returns map "pending": [], "approved": [] etc using GetPendingRules("pending") logic?
-            // Let's check api handler later. Assuming generic endpoint or filtered.
-            // Based on handler, it takes ?status=xxx
-            const res = await apiRequest(`/learning/rules?status=${filter}`);
-            rules = res || [];
+            const result = await api.getFlows(filter, 100, 0);
+            flows = result.flows || [];
+            counts = result.counts || {
+                pending: 0,
+                approved: 0,
+                denied: 0,
+                total: 0,
+            };
         } catch (e: any) {
-            error = e.message;
+            error = e.message || "Failed to load flows";
+            flows = [];
         } finally {
             loading = false;
         }
     }
 
-    // Helper for direct API request since it's not in api store yet
-    async function apiRequest(endpoint: string, options: RequestInit = {}) {
-        const res = await fetch(`/api${endpoint}`, {
-            ...options,
-            credentials: "include",
-            headers: { "Content-Type": "application/json", ...options.headers },
-        });
-
-        // Handle non-JSON responses (e.g., HTML error pages)
-        const contentType = res.headers.get("content-type");
-        if (!contentType?.includes("application/json")) {
-            throw new Error("Learning service unavailable");
-        }
-
-        if (!res.ok) {
-            const data = await res.json();
-            throw new Error(data.error || `HTTP ${res.status}`);
-        }
-        return res.json();
-    }
-
-    async function approveRule(id: string) {
+    async function approveFlow(id: number) {
         try {
-            await apiRequest(`/learning/rules/${id}/approve`, {
-                method: "POST",
-            });
-            loadRules();
+            await api.approveFlow(id);
+            loadFlows();
         } catch (e: any) {
             alert(
                 $t("learning.failed_approve", { values: { err: e.message } }),
@@ -75,34 +74,46 @@
         }
     }
 
-    async function denyRule(id: string) {
+    async function denyFlow(id: number) {
         try {
-            await apiRequest(`/learning/rules/${id}/deny`, { method: "POST" });
-            loadRules();
+            await api.denyFlow(id);
+            loadFlows();
         } catch (e: any) {
             alert($t("learning.failed_deny", { values: { err: e.message } }));
         }
     }
 
-    async function deleteRule(id: string) {
+    async function deleteFlow(id: number) {
         if (
             !confirm(
                 $t("common.delete_confirm_item", {
-                    values: { item: $t("item.rule") },
+                    values: { item: $t("item.flow") },
                 }),
             )
         )
             return;
         try {
-            await apiRequest(`/learning/rules/${id}`, { method: "DELETE" });
-            loadRules();
+            await api.deleteFlow(id);
+            loadFlows();
         } catch (e: any) {
             alert($t("learning.failed_delete", { values: { err: e.message } }));
         }
     }
 
+    function formatDate(dateStr?: string): string {
+        if (!dateStr) return "-";
+        const date = new Date(dateStr);
+        return date.toLocaleString();
+    }
+
+    onMount(() => {
+        loadFlows();
+    });
+
     $effect(() => {
-        loadRules();
+        // Reload when filter changes
+        filter;
+        loadFlows();
     });
 </script>
 
@@ -111,18 +122,23 @@
         <button
             class:active={filter === "pending"}
             onclick={() => (filter = "pending")}
-            >{$t("learning.pending")}</button
+            >Pending {#if counts.pending > 0}<Badge variant="secondary"
+                    >{counts.pending}</Badge
+                >{/if}</button
         >
         <button
             class:active={filter === "approved"}
-            onclick={() => (filter = "approved")}
-            >{$t("learning.approved")}</button
+            onclick={() => (filter = "approved")}>Approved</button
         >
         <button
             class:active={filter === "denied"}
-            onclick={() => (filter = "denied")}>{$t("learning.denied")}</button
+            onclick={() => (filter = "denied")}>Denied</button
         >
     </div>
+    <Button variant="outline" size="sm" onclick={loadFlows} disabled={loading}>
+        <Icon name="refresh" size="sm" />
+        Refresh
+    </Button>
 </div>
 
 {#if error}
@@ -132,71 +148,87 @@
 <Card>
     <div class="table-container">
         {#if loading}
-            <div class="p-4 text-center">{$t("learning.loading")}</div>
-        {:else if rules.length === 0}
-            <div class="p-4 text-center text-muted">
-                {$t("learning.no_rules")}
+            <div class="loading-state">
+                <Spinner size="md" />
+                <span>Loading flows...</span>
+            </div>
+        {:else if flows.length === 0}
+            <div class="empty-state">
+                <Icon name="check_circle" size={48} />
+                <p>No {filter} flows</p>
+                <span class="text-muted"
+                    >Flows will appear here as network traffic is detected</span
+                >
             </div>
         {:else}
             <table>
                 <thead>
                     <tr>
-                        <th>{$t("common.source")}</th>
-                        <th>{$t("common.destination")}</th>
-                        <th>{$t("common.protocol")}</th>
-                        <th>{$t("learning.reason")}</th>
-                        <th class="text-right">{$t("learning.actions")}</th>
+                        <th>Source</th>
+                        <th>Destination</th>
+                        <th>Protocol</th>
+                        <th>First Seen</th>
+                        <th class="text-right">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {#each rules as rule}
+                    {#each flows as flow}
                         <tr>
                             <td>
                                 <div class="cell-stack">
-                                    <span class="font-mono">{rule.src_ip}</span>
+                                    <span class="font-mono">{flow.src_ip}</span>
                                     <span class="text-xs text-muted">
-                                        {rule.src_mac}
-                                        {#if rule.vendor}({rule.vendor}){/if}
+                                        {flow.src_mac || ""}
+                                        {#if flow.vendor}({flow.vendor}){/if}
+                                        {#if flow.src_zone}<Badge
+                                                variant="outline"
+                                                >{flow.src_zone}</Badge
+                                            >{/if}
                                     </span>
                                 </div>
                             </td>
                             <td>
                                 <div class="cell-stack">
                                     <span class="font-mono"
-                                        >{rule.dst_ip}:{rule.dst_port}</span
+                                        >{flow.dst_ip}:{flow.dst_port}</span
                                     >
-                                    {#if rule.dst_hostname}
+                                    {#if flow.dst_hostname}
                                         <span class="text-xs text-muted"
-                                            >{rule.dst_hostname}</span
+                                            >{flow.dst_hostname}</span
                                         >
                                     {/if}
                                 </div>
                             </td>
                             <td>
-                                <Badge variant="outline">{rule.protocol}</Badge>
+                                <Badge variant="outline">{flow.protocol}</Badge>
                             </td>
-                            <td class="text-sm">{rule.policy}</td>
+                            <td class="text-sm"
+                                >{formatDate(flow.first_seen)}</td
+                            >
                             <td class="text-right">
                                 <div class="actions">
                                     {#if filter === "pending"}
                                         <Button
                                             size="sm"
                                             variant="default"
-                                            onclick={() => approveRule(rule.id)}
-                                            >{$t("learning.allow")}</Button
+                                            onclick={() => approveFlow(flow.id)}
+                                            aria-label={`Allow traffic from ${flow.src_ip} to ${flow.dst_ip}`}
+                                            >Allow</Button
                                         >
                                         <Button
                                             size="sm"
                                             variant="destructive"
-                                            onclick={() => denyRule(rule.id)}
-                                            >{$t("learning.block")}</Button
+                                            onclick={() => denyFlow(flow.id)}
+                                            aria-label={`Block traffic from ${flow.src_ip} to ${flow.dst_ip}`}
+                                            >Block</Button
                                         >
                                     {:else}
                                         <Button
                                             size="sm"
                                             variant="ghost"
-                                            onclick={() => deleteRule(rule.id)}
-                                            >{$t("common.delete")}</Button
+                                            onclick={() => deleteFlow(flow.id)}
+                                            aria-label={`Delete flow ${flow.id}`}
+                                            >Delete</Button
                                         >
                                     {/if}
                                 </div>
@@ -297,5 +329,31 @@
     .error {
         color: var(--color-destructive);
         margin-bottom: var(--space-4);
+    }
+
+    .loading-state {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--space-3);
+        padding: var(--space-8);
+        color: var(--color-muted);
+    }
+
+    .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: var(--space-2);
+        padding: var(--space-8);
+        color: var(--color-muted);
+        text-align: center;
+    }
+
+    .empty-state p {
+        font-size: var(--text-lg);
+        font-weight: 500;
+        margin: 0;
     }
 </style>

@@ -7,7 +7,9 @@ set -x
 
 . "$(dirname "$0")/../common.sh"
 
+require_root
 require_binary
+cleanup_on_exit
 
 CONFIG_FILE="$(mktemp_compatible upnp.hcl)"
 
@@ -46,14 +48,17 @@ else
     fail "UPnP config failed to parse"
 fi
 
-# Test 2: UPnP rules generated
-diag "Test 2: UPnP rules in output"
-OUTPUT=$($APP_BIN show "$CONFIG_FILE" 2>&1)
-if echo "$OUTPUT" | grep -qi "upnp\|1900\|miniupnp"; then
-    pass "UPnP rules or config present"
+
+# Test 2: Start control plane and verify ruleset
+diag "Test 2: Ruleset verification"
+start_ctl "$CONFIG_FILE"
+dilated_sleep 2
+
+# Check for UPnP chain or rules
+if nft list ruleset | grep -qi "upnp"; then
+    pass "UPnP chain/rules present in active ruleset"
 else
-    diag "No UPnP-related content found in output"
-    fail "UPnP rules not generated"
+    fail "UPnP rules missing from active ruleset"
 fi
 
 rm -f "$CONFIG_FILE"

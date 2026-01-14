@@ -21,7 +21,10 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"grimm.is/flywall/internal/i18n"
 )
+
+var Printer = i18n.NewCLIPrinter()
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },

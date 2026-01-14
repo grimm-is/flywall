@@ -26,6 +26,7 @@
     disabled = false,
     required = false,
     class: className = "",
+    ...rest
   }: Props = $props();
 </script>
 
@@ -46,6 +47,7 @@
     {required}
     class="input"
     class:error={!!error}
+    {...rest}
   />
 
   {#if error}

@@ -14,9 +14,12 @@ import (
 	"time"
 )
 
-const (
+var (
 	// DefaultBlocklistTimeout is the HTTP timeout for blocklist downloads
 	DefaultBlocklistTimeout = 30 * time.Second
+)
+
+const (
 	// MaxBlocklistSize is the maximum size we'll download (10MB)
 	MaxBlocklistSize = 10 * 1024 * 1024
 )

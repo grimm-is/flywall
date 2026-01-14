@@ -17,8 +17,9 @@ func (s *Server) handleInterfaces(w http.ResponseWriter, r *http.Request) {
 
 	interfaces, err := s.client.GetInterfaces()
 	if err != nil {
-		WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())
-		return
+		// Log error but return empty list to prevent frontend dashboard failure
+		// fmt.Printf("Error getting interfaces: %v\n", err)
+		interfaces = []ctlplane.InterfaceStatus{}
 	}
 	WriteJSON(w, http.StatusOK, interfaces)
 }
@@ -53,6 +54,7 @@ func (s *Server) handleUpdateInterface(w http.ResponseWriter, r *http.Request) {
 		WriteErrorCtx(w, r, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+	s.logger.Info("DEBUG: handleUpdateInterface", "name", args.Name, "disabled", args.Disabled)
 
 	if args.Name == "" {
 		WriteErrorCtx(w, r, http.StatusBadRequest, "Interface name required")
@@ -68,6 +70,10 @@ func (s *Server) handleUpdateInterface(w http.ResponseWriter, r *http.Request) {
 	if !reply.Success {
 		WriteErrorCtx(w, r, http.StatusBadRequest, reply.Error)
 		return
+	}
+
+	if err := s.syncConfig(); err != nil {
+		s.logger.Error("Failed to sync config after interface update", "error", err)
 	}
 
 	WriteJSON(w, http.StatusOK, reply)
@@ -97,6 +103,10 @@ func (s *Server) handleCreateVLAN(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.syncConfig(); err != nil {
+		s.logger.Error("Failed to sync config after VLAN creation", "error", err)
+	}
+
 	WriteJSON(w, http.StatusOK, reply)
 }
 
@@ -122,6 +132,10 @@ func (s *Server) handleDeleteVLAN(w http.ResponseWriter, r *http.Request) {
 	if !reply.Success {
 		WriteErrorCtx(w, r, http.StatusBadRequest, reply.Error)
 		return
+	}
+
+	if err := s.syncConfig(); err != nil {
+		s.logger.Error("Failed to sync config after VLAN deletion", "error", err)
 	}
 
 	WriteJSON(w, http.StatusOK, reply)
@@ -151,6 +165,10 @@ func (s *Server) handleCreateBond(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.syncConfig(); err != nil {
+		s.logger.Error("Failed to sync config after bond creation", "error", err)
+	}
+
 	WriteJSON(w, http.StatusOK, reply)
 }
 
@@ -176,6 +194,10 @@ func (s *Server) handleDeleteBond(w http.ResponseWriter, r *http.Request) {
 	if !reply.Success {
 		WriteErrorCtx(w, r, http.StatusBadRequest, reply.Error)
 		return
+	}
+
+	if err := s.syncConfig(); err != nil {
+		s.logger.Error("Failed to sync config after bond deletion", "error", err)
 	}
 
 	WriteJSON(w, http.StatusOK, reply)

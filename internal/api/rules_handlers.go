@@ -1,9 +1,11 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 
+	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/firewall"
 	"grimm.is/flywall/internal/stats"
 )
@@ -69,7 +71,11 @@ func (h *RulesHandler) HandleGetRules(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Generate nft syntax for power users
-			if nftSyntax, err := firewall.BuildRuleExpression(rule); err == nil {
+			timezone := "UTC"
+			if h.server.Config.System != nil && h.server.Config.System.Timezone != "" {
+				timezone = h.server.Config.System.Timezone
+			}
+			if nftSyntax, err := firewall.BuildRuleExpression(rule, timezone); err == nil {
 				enriched.GeneratedSyntax = nftSyntax
 			}
 
@@ -138,8 +144,12 @@ func (h *RulesHandler) HandleGetFlatRules(w http.ResponseWriter, r *http.Request
 				}
 			}
 
-			// Generate nft syntax
-			if nftSyntax, err := firewall.BuildRuleExpression(rule); err == nil {
+			// Generate nft syntax for power users
+			timezone := "UTC"
+			if h.server.Config.System != nil && h.server.Config.System.Timezone != "" {
+				timezone = h.server.Config.System.Timezone
+			}
+			if nftSyntax, err := firewall.BuildRuleExpression(rule, timezone); err == nil {
 				enriched.GeneratedSyntax = nftSyntax
 			}
 
@@ -199,4 +209,196 @@ func (h *RulesHandler) RegisterRoutesNoAuth(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/rules", h.HandleGetRules)
 	mux.HandleFunc("GET /api/rules/flat", h.HandleGetFlatRules)
 	mux.HandleFunc("GET /api/rules/groups", h.HandleGetRuleGroups)
+}
+
+// handlePolicyReorder reorders policies
+func (s *Server) handlePolicyReorder(w http.ResponseWriter, r *http.Request) {
+	// Method check removed (handled by router)
+
+	var req struct {
+		PolicyName string   `json:"policy_name"`         // Policy to move
+		Position   string   `json:"position"`            // "before" or "after"
+		RelativeTo string   `json:"relative_to"`         // Target policy name
+		NewOrder   []string `json:"new_order,omitempty"` // Or provide complete new order
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteErrorCtx(w, r, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// If new_order is provided, use it directly
+	if len(req.NewOrder) > 0 {
+		policyMap := make(map[string]config.Policy)
+		for _, p := range s.Config.Policies {
+			policyMap[p.Name] = p
+		}
+
+		newPolicies := make([]config.Policy, 0, len(req.NewOrder))
+		for _, name := range req.NewOrder {
+			if p, ok := policyMap[name]; ok {
+				newPolicies = append(newPolicies, p)
+			}
+		}
+		s.Config.Policies = newPolicies
+		WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
+		return
+	}
+
+	// Otherwise, move single policy relative to another
+	if req.PolicyName == "" || req.RelativeTo == "" {
+		WriteErrorCtx(w, r, http.StatusBadRequest, "policy_name and relative_to are required")
+		return
+	}
+
+	// Find indices
+	var moveIdx, targetIdx int = -1, -1
+	for i, p := range s.Config.Policies {
+		if p.Name == req.PolicyName {
+			moveIdx = i
+		}
+		if p.Name == req.RelativeTo {
+			targetIdx = i
+		}
+	}
+
+	if moveIdx == -1 || targetIdx == -1 {
+		WriteErrorCtx(w, r, http.StatusNotFound, "Policy not found")
+		return
+	}
+
+	// Remove policy from current position
+	policy := s.Config.Policies[moveIdx]
+	policies := append(s.Config.Policies[:moveIdx], s.Config.Policies[moveIdx+1:]...)
+
+	// Adjust target index if needed
+	if moveIdx < targetIdx {
+		targetIdx--
+	}
+
+	// Insert at new position
+	insertIdx := targetIdx
+	if req.Position == "after" {
+		insertIdx++
+	}
+
+	// Insert
+	newPolicies := make([]config.Policy, 0, len(policies)+1)
+	newPolicies = append(newPolicies, policies[:insertIdx]...)
+	newPolicies = append(newPolicies, policy)
+	newPolicies = append(newPolicies, policies[insertIdx:]...)
+
+	s.configMu.Lock()
+	s.Config.Policies = newPolicies
+	s.configMu.Unlock()
+
+	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+// handleRuleReorder reorders rules within a policy
+func (s *Server) handleRuleReorder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteErrorCtx(w, r, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var req struct {
+		PolicyName string   `json:"policy_name"`         // Policy containing the rules
+		RuleName   string   `json:"rule_name"`           // Rule to move
+		Position   string   `json:"position"`            // "before" or "after"
+		RelativeTo string   `json:"relative_to"`         // Target rule name
+		NewOrder   []string `json:"new_order,omitempty"` // Or provide complete new order
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.PolicyName == "" {
+		WriteErrorCtx(w, r, http.StatusBadRequest, "policy_name is required")
+		return
+	}
+
+	// Find the policy
+	var policyIdx int = -1
+	s.configMu.RLock()
+	for i, p := range s.Config.Policies {
+		if p.Name == req.PolicyName {
+			policyIdx = i
+			break
+		}
+	}
+	s.configMu.RUnlock()
+
+	if policyIdx == -1 {
+		WriteErrorCtx(w, r, http.StatusNotFound, "Policy not found")
+		return
+	}
+
+	policy := &s.Config.Policies[policyIdx]
+
+	// If new_order is provided, use it directly
+	if len(req.NewOrder) > 0 {
+		ruleMap := make(map[string]config.PolicyRule)
+		for _, r := range policy.Rules {
+			ruleMap[r.Name] = r
+		}
+
+		newRules := make([]config.PolicyRule, 0, len(req.NewOrder))
+		for _, name := range req.NewOrder {
+			if r, ok := ruleMap[name]; ok {
+				newRules = append(newRules, r)
+			}
+		}
+		policy.Rules = newRules
+		WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
+		return
+	}
+
+	// Otherwise, move single rule relative to another
+	if req.RuleName == "" || req.RelativeTo == "" {
+		WriteErrorCtx(w, r, http.StatusBadRequest, "rule_name and relative_to are required")
+		return
+	}
+
+	// Find indices
+	var moveIdx, targetIdx int = -1, -1
+	for i, r := range policy.Rules {
+		if r.Name == req.RuleName {
+			moveIdx = i
+		}
+		if r.Name == req.RelativeTo {
+			targetIdx = i
+		}
+	}
+
+	if moveIdx == -1 || targetIdx == -1 {
+		WriteErrorCtx(w, r, http.StatusNotFound, "Rule not found")
+		return
+	}
+
+	// Remove rule from current position
+	rule := policy.Rules[moveIdx]
+	rules := append(policy.Rules[:moveIdx], policy.Rules[moveIdx+1:]...)
+
+	// Adjust target index if needed
+	if moveIdx < targetIdx {
+		targetIdx--
+	}
+
+	// Insert at new position
+	insertIdx := targetIdx
+	if req.Position == "after" {
+		insertIdx++
+	}
+
+	// Insert
+	newRules := make([]config.PolicyRule, 0, len(rules)+1)
+	newRules = append(newRules, rules[:insertIdx]...)
+	newRules = append(newRules, rule)
+	newRules = append(newRules, rules[insertIdx:]...)
+	policy.Rules = newRules
+
+	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }

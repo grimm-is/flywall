@@ -15,9 +15,13 @@ var DefaultNetlinker Netlinker = &RealNetlinker{}
 // NewManager creates a new network manager.
 func NewManager() *Manager {
 	return &Manager{
-		nl:              &RealNetlinker{},
-		sys:             &RealSystemController{},
-		cmd:             &RealCommandExecutor{},
+		nl:  &RealNetlinker{},
+		sys: &RealSystemController{},
+		cmd: &RealCommandExecutor{},
+		// uidRulePriority determines where UID-based routing rules sit in the RPDB.
+		// 15000 is chosen to be after local (0) but well before main (32766) and
+		// default (32767), allowing UID rules to override main table routes while
+		// still respecting local addresses.
 		uidRulePriority: 15000,
 	}
 }

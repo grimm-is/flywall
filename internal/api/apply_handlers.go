@@ -415,3 +415,54 @@ func isValidIP(ip string) bool {
 	// Use net.ParseIP later - for now, simple check
 	return len(ip) > 0
 }
+
+// handleApplyConfig applies the current configuration
+func (s *Server) handleApplyConfig(w http.ResponseWriter, r *http.Request) {
+	// Method check removed (handled by router)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if s.client != nil {
+		s.configMu.RLock()
+		cfg := s.Config.Clone()
+		s.configMu.RUnlock()
+
+		if err := s.client.ApplyConfig(cfg); err != nil {
+			WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		// Save config to HCL file for persistence across restarts
+		if _, err := s.client.SaveConfig(); err != nil {
+			// Return HTTP 500 - config applied but NOT persisted
+			// This is a partial failure that could cause config loss on reboot
+			WriteJSON(w, http.StatusInternalServerError, map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("Config applied to runtime but failed to save to disk: %v", err),
+				"warning": "Configuration will be lost on reboot. Check disk space and permissions.",
+			})
+			return
+		}
+
+		// Create backup AFTER successful apply - captures known-good state
+		backupReply, _ := s.client.CreateBackup("Applied configuration", false)
+		backupVersion := 0
+		if backupReply != nil && backupReply.Success {
+			backupVersion = backupReply.Backup.Version
+		}
+
+		// Push config update and notification to WebSocket subscribers
+		if s.wsManager != nil {
+			s.wsManager.Publish("config", s.Config)
+			s.wsManager.PublishNotification(NotifySuccess, "Configuration Applied", "Firewall rules have been updated")
+		}
+
+		WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"success":        true,
+			"backup_version": backupVersion,
+		})
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
+}

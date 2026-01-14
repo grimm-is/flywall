@@ -5,6 +5,7 @@
    */
 
   import { currentPage } from "$lib/stores/app";
+  import { goto } from "$app/navigation";
   import { t } from "svelte-i18n";
 
   // All searchable pages
@@ -93,6 +94,19 @@
       path: "Network / Scanner",
       keywords: ["wifi", "ssid", "networks", "scan"],
     },
+    {
+      id: "groups",
+      name: "Device Groups",
+      path: "System / Groups",
+      url: "/system/groups",
+      keywords: [
+        "identity",
+        "groups",
+        "parental control",
+        "schedule",
+        "time limits",
+      ],
+    },
   ];
 
   let query = $state("");
@@ -130,7 +144,11 @@
   }
 
   function navigateTo(page: (typeof searchablePages)[0]) {
-    currentPage.set(page.id);
+    if ((page as any).url) {
+      goto((page as any).url);
+    } else {
+      currentPage.set(page.id);
+    }
     query = "";
     inputRef?.blur();
   }

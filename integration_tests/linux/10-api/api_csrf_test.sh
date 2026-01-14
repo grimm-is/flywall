@@ -18,7 +18,10 @@ echo "DEBUG: Starting test..." >&2
 
 echo "DEBUG: Starting CTL..." >&2
 # Use manual config (API disabled in CTL, we start it manually)
-start_ctl "$PROJECT_ROOT/integration_tests/linux/configs/api_manual.hcl"
+# Copy config to temp since API needs to write backup files
+CONFIG_FILE=$(mktemp_compatible api_csrf.hcl)
+cp "$PROJECT_ROOT/integration_tests/linux/configs/api_manual.hcl" "$CONFIG_FILE"
+start_ctl "$CONFIG_FILE"
 
 echo "DEBUG: Starting API..." >&2
 start_api
@@ -35,7 +38,8 @@ EOF
 
 echo "DEBUG: Sending payload..." >&2
 # Send request (use X-API-Key to bypass CSRF, any value works with require_auth=false)
-if ! curl -v --max-time 10 -X POST \
+# Timeout increased from 10s to 30s to allow for ApplyConfig RPC delay
+if ! curl -v --max-time 30 -X POST \
     -H "Content-Type: application/json" \
     -H "X-API-Key: test-key" \
     -d @/tmp/features_payload.json \

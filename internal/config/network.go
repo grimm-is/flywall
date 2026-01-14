@@ -4,7 +4,7 @@ package config
 type Interface struct {
 	Name        string   `hcl:"name,label" json:"name"`
 	Description string   `hcl:"description,optional" json:"description,omitempty"`
-	Disabled    bool     `hcl:"disabled,optional" json:"disabled,omitempty"` // Temporarily disable this interface (bring it down)
+	Disabled    bool     `hcl:"disabled,optional" json:"disabled"` // Temporarily disable this interface (bring it down)
 	Zone        string   `hcl:"zone,optional" json:"zone,omitempty"`
 	NewZone     *Zone    `hcl:"new_zone,block" json:"new_zone,omitempty"` // Create zone inline
 	IPv4        []string `hcl:"ipv4,optional" json:"ipv4,omitempty"`

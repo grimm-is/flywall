@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"grimm.is/flywall/internal/logging"
 
 	"github.com/gorilla/websocket"
+	"grimm.is/flywall/internal/runtime"
 )
 
 var upgrader = websocket.Upgrader{
@@ -70,6 +72,7 @@ type WSManager struct {
 	client          ctlplane.ControlPlaneClient // RPC client to fetch status
 	pendingCheckFn  func() bool
 	triggerStatusCh chan struct{}
+	runtime         *runtime.DockerClient
 }
 
 func NewWSManager(client ctlplane.ControlPlaneClient, pendingCheckFn func() bool) *WSManager {
@@ -84,6 +87,10 @@ func NewWSManager(client ctlplane.ControlPlaneClient, pendingCheckFn func() bool
 	go manager.run()
 	go manager.statusLoop()
 	return manager
+}
+
+func (m *WSManager) SetRuntimeService(r *runtime.DockerClient) {
+	m.runtime = r
 }
 
 func (m *WSManager) run() {
@@ -244,6 +251,14 @@ func (m *WSManager) statusLoop() {
 				}
 			}
 
+			// Publish policy/rule stats (only if clients are subscribed)
+			if m.hasSubscribers("stats:rules") {
+				stats, err := m.client.GetPolicyStats()
+				if err == nil && stats != nil {
+					m.Publish("stats:rules", stats)
+				}
+			}
+
 			// Publish notifications from control plane (always poll, forward to subscribed clients)
 			if m.hasSubscribers("notification") {
 				notifs, newLastID, err := m.client.GetNotifications(lastNotifyID)
@@ -270,6 +285,25 @@ func (m *WSManager) statusLoop() {
 				devs, err := m.client.GetNetworkDevices()
 				if err == nil && devs != nil {
 					m.Publish("network", devs)
+				}
+			}
+
+			// Publish flows (only if subscribed - "The Pulse" live traffic)
+			if m.hasSubscribers("flows") {
+				flows, _, err := m.client.GetFlows("", 100, 0)
+				if err == nil && flows != nil {
+					m.Publish("flows", flows)
+				}
+			}
+
+			// Publish container runtime (only if subscribed and runtime enabled)
+			if m.runtime != nil && m.hasSubscribers("runtime:containers") {
+				// Use background context for now; maybe add timeout
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				containers, err := m.runtime.ListContainers(ctx)
+				cancel()
+				if err == nil {
+					m.Publish("runtime:containers", containers)
 				}
 			}
 

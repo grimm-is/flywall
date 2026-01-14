@@ -12,7 +12,7 @@ import (
 )
 
 func TestScriptBuilder(t *testing.T) {
-	sb := NewScriptBuilder("testtable", "inet")
+	sb := NewScriptBuilder("testtable", "inet", "UTC")
 
 	// Add table explicitly (as BuildFilterTableScript does)
 	sb.AddTable()
@@ -91,7 +91,7 @@ func TestBuildFilterTableScript_Validation(t *testing.T) {
 }
 
 func TestScriptBuilder_Injection(t *testing.T) {
-	sb := NewScriptBuilder("table", "ip")
+	sb := NewScriptBuilder("table", "ip", "UTC")
 
 	// Test injection in zone names
 	// This should be handled by quote() if calling AddChain directly,
@@ -206,7 +206,7 @@ func TestScriptBuilder_Fuzz(t *testing.T) {
 				}
 			}()
 
-			sb := NewScriptBuilder("fuzztable", "inet")
+			sb := NewScriptBuilder("fuzztable", "inet", "UTC")
 
 			// 1. Fuzz Chain Name
 			// AddChain sanitizes the name

@@ -5,6 +5,57 @@ import (
 	"errors"
 )
 
+// TLSClientHelloInfo contains extracted data from a TLS Client Hello packet
+type TLSClientHelloInfo struct {
+	SNI string     // Server Name Indication (hostname)
+	JA3 *JA3Result // JA3 fingerprint (hash and raw string)
+}
+
+// TLSServerHelloInfo contains extracted data from a TLS Server Hello packet
+type TLSServerHelloInfo struct {
+	JA3S *JA3SResult // JA3S fingerprint (hash and raw string)
+}
+
+// ParseTLSClientHello extracts both SNI and JA3 fingerprint from a TLS Client Hello packet.
+// This is more efficient than calling ParseSNI and ParseJA3 separately.
+// The payload is expected to be the TCP payload (TLS record).
+func ParseTLSClientHello(payload []byte) (*TLSClientHelloInfo, error) {
+	// Parse SNI
+	sni, sniErr := ParseSNI(payload)
+
+	// Parse JA3 (independent of SNI parsing success)
+	ja3, ja3Err := ParseJA3(payload)
+
+	// If both failed, return nil
+	if sniErr != nil && ja3Err != nil {
+		return nil, sniErr
+	}
+	if sni == "" && ja3 == nil {
+		return nil, nil
+	}
+
+	return &TLSClientHelloInfo{
+		SNI: sni,
+		JA3: ja3,
+	}, nil
+}
+
+// ParseTLSServerHello extracts JA3S fingerprint from a TLS Server Hello packet.
+// The payload is expected to be the TCP payload (TLS record).
+func ParseTLSServerHello(payload []byte) (*TLSServerHelloInfo, error) {
+	ja3s, err := ParseJA3S(payload)
+	if err != nil {
+		return nil, err
+	}
+	if ja3s == nil {
+		return nil, nil
+	}
+
+	return &TLSServerHelloInfo{
+		JA3S: ja3s,
+	}, nil
+}
+
 // ParseSNI attempts to extract the Server Name Indication from a TLS Client Hello packet.
 // It returns "" if no SNI is found or the packet is not a Client Hello.
 // The payload is expected to be the TCP payload (TLS record).

@@ -14,6 +14,7 @@
     Spinner,
     Icon,
     Toggle,
+    Select,
   } from "$lib/components";
   import { t } from "svelte-i18n";
 
@@ -190,6 +191,195 @@
       loading = false;
     }
   }
+
+  // Blocklist management
+  let showBlocklistModal = $state(false);
+  let editingBlocklist = $state<any>(null);
+  let blocklistName = $state("");
+  let blocklistUrl = $state("");
+  let blocklistFormat = $state("domains");
+  let blocklistEnabled = $state(true);
+  let blocklistRefresh = $state(24);
+
+  function openAddBlocklist() {
+    editingBlocklist = null;
+    blocklistName = "";
+    blocklistUrl = "";
+    blocklistFormat = "domains";
+    blocklistEnabled = true;
+    blocklistRefresh = 24;
+    showBlocklistModal = true;
+  }
+
+  function openEditBlocklist(blocklist: any) {
+    editingBlocklist = blocklist;
+    blocklistName = blocklist.name || "";
+    blocklistUrl = blocklist.url || "";
+    blocklistFormat = blocklist.format || "domains";
+    blocklistEnabled = blocklist.enabled !== false;
+    blocklistRefresh = blocklist.refresh_hours || 24;
+    showBlocklistModal = true;
+  }
+
+  async function saveBlocklist() {
+    if (!blocklistName || !blocklistUrl) return;
+
+    loading = true;
+    try {
+      const newBlocklist = {
+        name: blocklistName,
+        url: blocklistUrl,
+        format: blocklistFormat,
+        enabled: blocklistEnabled,
+        refresh_hours: blocklistRefresh,
+      };
+
+      let updatedBlocklists: any[];
+      const currentBlocklists = dnsConfig.blocklists || [];
+
+      if (editingBlocklist) {
+        updatedBlocklists = currentBlocklists.map((b: any) =>
+          b.name === editingBlocklist.name ? newBlocklist : b,
+        );
+      } else {
+        updatedBlocklists = [...currentBlocklists, newBlocklist];
+      }
+
+      await api.updateDNS({
+        dns: {
+          ...dnsConfig,
+          blocklists: updatedBlocklists,
+        },
+      });
+      showBlocklistModal = false;
+    } catch (e: any) {
+      alert(`Failed to save blocklist: ${e.message || e}`);
+      console.error("Failed to save blocklist:", e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function deleteBlocklist(name: string) {
+    if (!confirm(`Delete blocklist "${name}"?`)) return;
+
+    loading = true;
+    try {
+      const updatedBlocklists = (dnsConfig.blocklists || []).filter(
+        (b: any) => b.name !== name,
+      );
+      await api.updateDNS({
+        dns: {
+          ...dnsConfig,
+          blocklists: updatedBlocklists,
+        },
+      });
+    } catch (e) {
+      console.error("Failed to delete blocklist:", e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  // Toggle blocklist enabled state
+  async function toggleBlocklist(blocklist: any) {
+    loading = true;
+    try {
+      const updatedBlocklists = (dnsConfig.blocklists || []).map((b: any) =>
+        b.name === blocklist.name ? { ...b, enabled: !b.enabled } : b,
+      );
+      await api.updateDNS({
+        dns: {
+          ...dnsConfig,
+          blocklists: updatedBlocklists,
+        },
+      });
+    } catch (e) {
+      console.error("Failed to toggle blocklist:", e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  // Local hosts management
+  let showHostModal = $state(false);
+  let editingHost = $state<any>(null);
+  let hostIp = $state("");
+  let hostHostnames = $state("");
+
+  function openAddHost() {
+    editingHost = null;
+    hostIp = "";
+    hostHostnames = "";
+    showHostModal = true;
+  }
+
+  function openEditHost(host: any) {
+    editingHost = host;
+    hostIp = host.ip || "";
+    hostHostnames = (host.hostnames || []).join(", ");
+    showHostModal = true;
+  }
+
+  async function saveHost() {
+    if (!hostIp || !hostHostnames) return;
+
+    loading = true;
+    try {
+      const newHost = {
+        ip: hostIp,
+        hostnames: hostHostnames
+          .split(",")
+          .map((h: string) => h.trim())
+          .filter(Boolean),
+      };
+
+      let updatedHosts: any[];
+      const currentHosts = dnsConfig.hosts || [];
+
+      if (editingHost) {
+        updatedHosts = currentHosts.map((h: any) =>
+          h.ip === editingHost.ip ? newHost : h,
+        );
+      } else {
+        updatedHosts = [...currentHosts, newHost];
+      }
+
+      await api.updateDNS({
+        dns: {
+          ...dnsConfig,
+          hosts: updatedHosts,
+        },
+      });
+      showHostModal = false;
+    } catch (e: any) {
+      alert(`Failed to save host: ${e.message || e}`);
+      console.error("Failed to save host:", e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function deleteHost(ip: string) {
+    if (!confirm(`Delete host entry for ${ip}?`)) return;
+
+    loading = true;
+    try {
+      const updatedHosts = (dnsConfig.hosts || []).filter(
+        (h: any) => h.ip !== ip,
+      );
+      await api.updateDNS({
+        dns: {
+          ...dnsConfig,
+          hosts: updatedHosts,
+        },
+      });
+    } catch (e) {
+      console.error("Failed to delete host:", e);
+    } finally {
+      loading = false;
+    }
+  }
 </script>
 
 <div class="dns-page">
@@ -359,6 +549,126 @@
       </div>
     </div>
   {/if}
+
+  <!-- Blocklists Section -->
+  {#if usingNewFormat}
+    <div class="section">
+      <div class="section-header">
+        <h3>{$t("dns.blocklists")}</h3>
+        <Button variant="outline" onclick={openAddBlocklist}>
+          + {$t("common.add_item", { values: { item: $t("item.blocklist") } })}
+        </Button>
+      </div>
+
+      {#if dnsConfig.blocklists?.length > 0}
+        <div class="blocklist-list">
+          {#each dnsConfig.blocklists as blocklist}
+            <Card>
+              <div class="blocklist-item">
+                <div class="blocklist-info">
+                  <div class="blocklist-header">
+                    <span class="blocklist-name">{blocklist.name}</span>
+                    <Badge
+                      variant={blocklist.enabled !== false
+                        ? "success"
+                        : "secondary"}
+                    >
+                      {blocklist.enabled !== false
+                        ? $t("common.enabled")
+                        : $t("common.disabled")}
+                    </Badge>
+                  </div>
+                  <span class="blocklist-url mono">{blocklist.url}</span>
+                </div>
+                <div class="blocklist-actions">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onclick={() => toggleBlocklist(blocklist)}
+                  >
+                    <Icon
+                      name={blocklist.enabled !== false ? "pause" : "play"}
+                    />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onclick={() => openEditBlocklist(blocklist)}
+                  >
+                    <Icon name="edit" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onclick={() => deleteBlocklist(blocklist.name)}
+                  >
+                    <Icon name="delete" />
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          {/each}
+        </div>
+      {:else}
+        <Card>
+          <p class="empty-message">
+            {$t("common.no_items", { values: { items: $t("item.blocklist") } })}
+          </p>
+        </Card>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- Local Hosts Section -->
+  {#if usingNewFormat}
+    <div class="section">
+      <div class="section-header">
+        <h3>{$t("dns.local_hosts")}</h3>
+        <Button variant="outline" onclick={openAddHost}>
+          + {$t("common.add_item", { values: { item: $t("item.host") } })}
+        </Button>
+      </div>
+
+      {#if dnsConfig.hosts?.length > 0}
+        <div class="hosts-list">
+          {#each dnsConfig.hosts as host}
+            <Card>
+              <div class="host-item">
+                <div class="host-info">
+                  <span class="host-ip mono">{host.ip}</span>
+                  <span class="host-names"
+                    >{(host.hostnames || []).join(", ")}</span
+                  >
+                </div>
+                <div class="host-actions">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onclick={() => openEditHost(host)}
+                  >
+                    <Icon name="edit" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onclick={() => deleteHost(host.ip)}
+                  >
+                    <Icon name="delete" />
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          {/each}
+        </div>
+      {:else}
+        <Card>
+          <p class="empty-message">
+            {$t("common.no_items", { values: { items: $t("item.host") } })}
+          </p>
+        </Card>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <!-- Add Forwarder Modal -->
@@ -450,6 +760,109 @@
         {editingServe
           ? $t("common.save_changes")
           : $t("common.add_item", { values: { item: $t("item.config") } })}
+      </Button>
+    </div>
+  </div>
+</Modal>
+
+<!-- Blocklist Modal -->
+<Modal
+  bind:open={showBlocklistModal}
+  title={editingBlocklist
+    ? $t("common.edit_item", { values: { item: $t("item.blocklist") } })
+    : $t("common.add_item", { values: { item: $t("item.blocklist") } })}
+>
+  <div class="form-stack">
+    <Input
+      id="blocklist-name"
+      label={$t("common.name")}
+      bind:value={blocklistName}
+      placeholder="e.g., ads, malware, tracking"
+      required
+      disabled={!!editingBlocklist}
+    />
+
+    <Input
+      id="blocklist-url"
+      label={$t("dns.blocklist_url")}
+      bind:value={blocklistUrl}
+      placeholder="https://example.com/blocklist.txt"
+      required
+    />
+
+    <div class="grid grid-cols-2 gap-4">
+      <Select
+        id="blocklist-format"
+        label={$t("dns.blocklist_format")}
+        bind:value={blocklistFormat}
+        options={[
+          { value: "domains", label: "Domain list (one per line)" },
+          { value: "hosts", label: "Hosts file format" },
+          { value: "adblock", label: "AdBlock/uBlock format" },
+        ]}
+      />
+      <Input
+        id="blocklist-refresh"
+        label={$t("dns.refresh_hours")}
+        type="number"
+        bind:value={blocklistRefresh}
+        placeholder="24"
+      />
+    </div>
+
+    <Toggle label={$t("common.enabled")} bind:checked={blocklistEnabled} />
+
+    <div class="modal-actions">
+      <Button variant="ghost" onclick={() => (showBlocklistModal = false)}
+        >{$t("common.cancel")}</Button
+      >
+      <Button
+        onclick={saveBlocklist}
+        disabled={loading || !blocklistName || !blocklistUrl}
+      >
+        {#if loading}<Spinner size="sm" />{/if}
+        {$t("common.save")}
+      </Button>
+    </div>
+  </div>
+</Modal>
+
+<!-- Host Modal -->
+<Modal
+  bind:open={showHostModal}
+  title={editingHost
+    ? $t("common.edit_item", { values: { item: $t("item.host") } })
+    : $t("common.add_item", { values: { item: $t("item.host") } })}
+>
+  <div class="form-stack">
+    <Input
+      id="host-ip"
+      label={$t("dns.host_ip")}
+      bind:value={hostIp}
+      placeholder="192.168.1.100"
+      required
+      disabled={!!editingHost}
+    />
+
+    <Input
+      id="host-hostnames"
+      label={$t("dns.hostnames")}
+      bind:value={hostHostnames}
+      placeholder="myserver, myserver.lan, myserver.local"
+      required
+    />
+    <p class="text-xs text-muted-foreground">{$t("dns.hostnames_hint")}</p>
+
+    <div class="modal-actions">
+      <Button variant="ghost" onclick={() => (showHostModal = false)}
+        >{$t("common.cancel")}</Button
+      >
+      <Button
+        onclick={saveHost}
+        disabled={loading || !hostIp || !hostHostnames}
+      >
+        {#if loading}<Spinner size="sm" />{/if}
+        {$t("common.save")}
       </Button>
     </div>
   </div>
@@ -601,6 +1014,85 @@
   }
 
   .serve-actions {
+    display: flex;
+    gap: var(--space-1);
+  }
+
+  /* Blocklist styles */
+  .blocklist-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .blocklist-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .blocklist-info {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .blocklist-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .blocklist-name {
+    font-weight: 600;
+    color: var(--color-foreground);
+  }
+
+  .blocklist-url {
+    font-size: var(--text-sm);
+    color: var(--color-muted);
+    max-width: 400px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .blocklist-actions {
+    display: flex;
+    gap: var(--space-1);
+  }
+
+  /* Host styles */
+  .hosts-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .host-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .host-info {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+  }
+
+  .host-ip {
+    font-weight: 600;
+    color: var(--color-foreground);
+    min-width: 120px;
+  }
+
+  .host-names {
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+
+  .host-actions {
     display: flex;
     gap: var(--space-1);
   }

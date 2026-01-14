@@ -8,7 +8,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+
+	"grimm.is/flywall/internal/brand"
+	"grimm.is/flywall/internal/ctlplane"
+	"grimm.is/flywall/internal/firewall"
 )
 
 // handleSystemReboot triggers a system reboot
@@ -255,4 +261,126 @@ func (s *Server) handleExitSafeMode(w http.ResponseWriter, r *http.Request) {
 		"message":      "Safe mode deactivated - normal operation resumed",
 		"in_safe_mode": false,
 	})
+}
+
+func (s *Server) handleLeases(w http.ResponseWriter, r *http.Request) {
+	if s.client != nil {
+		leases, err := s.client.GetDHCPLeases()
+		if err != nil {
+			leases = []ctlplane.DHCPLease{}
+		}
+		if leases == nil {
+			leases = []ctlplane.DHCPLease{}
+		}
+
+		// Sentinel Enrichment
+		// We process in-place since we can modify the slice elements
+		if s.sentinel != nil {
+			for i := range leases {
+				// Analyze device
+				result := s.sentinel.Analyze(leases[i].MAC, leases[i].Hostname)
+
+				// Enrich Vendor if missing
+				if leases[i].Vendor == "" && result.Vendor != "" {
+					leases[i].Vendor = result.Vendor
+				}
+
+				// Enrich Type if missing
+				// We prefer specific detail (e.g. "iPhone") over category ("Mobile") for better icons
+				if leases[i].Type == "" {
+					if result.Detail != "" {
+						leases[i].Type = strings.ToLower(result.Detail)
+					} else {
+						leases[i].Type = result.Category
+					}
+				}
+			}
+		}
+
+		WriteJSON(w, http.StatusOK, leases)
+	} else {
+		WriteJSON(w, http.StatusOK, []interface{}{})
+	}
+}
+
+// handlePublicCert serves the root CA certificate publicly
+func (s *Server) handlePublicCert(w http.ResponseWriter, r *http.Request) {
+	certPath := filepath.Join(brand.GetConfigDir(), "certs", "cert.pem")
+	data, err := os.ReadFile(certPath)
+	if err != nil {
+		data, err = os.ReadFile("local/certs/cert.pem")
+		if err != nil {
+			WriteErrorCtx(w, r, http.StatusNotFound, "Certificate not found")
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.Header().Set("Content-Disposition", "attachment; filename=flywall-ca.crt")
+	w.Write(data)
+}
+
+// handleServices returns the available service definitions
+func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
+	type ServiceInfo struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Ports       []struct {
+			Port     int    `json:"port"`
+			EndPort  int    `json:"end_port,omitempty"`
+			Protocol string `json:"protocol"`
+		} `json:"ports"`
+	}
+
+	services := make([]ServiceInfo, 0, len(firewall.BuiltinServices))
+	for name, svc := range firewall.BuiltinServices {
+		info := ServiceInfo{
+			Name:        name,
+			Description: svc.Description,
+		}
+		if svc.Protocol&firewall.ProtoTCP != 0 {
+			if len(svc.Ports) > 0 {
+				for _, p := range svc.Ports {
+					info.Ports = append(info.Ports, struct {
+						Port     int    `json:"port"`
+						EndPort  int    `json:"end_port,omitempty"`
+						Protocol string `json:"protocol"`
+					}{Port: p, Protocol: "tcp"})
+				}
+			} else if svc.Port > 0 {
+				info.Ports = append(info.Ports, struct {
+					Port     int    `json:"port"`
+					EndPort  int    `json:"end_port,omitempty"`
+					Protocol string `json:"protocol"`
+				}{Port: svc.Port, EndPort: svc.EndPort, Protocol: "tcp"})
+			}
+		}
+		if svc.Protocol&firewall.ProtoUDP != 0 {
+			if len(svc.Ports) > 0 {
+				for _, p := range svc.Ports {
+					info.Ports = append(info.Ports, struct {
+						Port     int    `json:"port"`
+						EndPort  int    `json:"end_port,omitempty"`
+						Protocol string `json:"protocol"`
+					}{Port: p, Protocol: "udp"})
+				}
+			} else if svc.Port > 0 {
+				info.Ports = append(info.Ports, struct {
+					Port     int    `json:"port"`
+					EndPort  int    `json:"end_port,omitempty"`
+					Protocol string `json:"protocol"`
+				}{Port: svc.Port, EndPort: svc.EndPort, Protocol: "udp"})
+			}
+		}
+		if svc.Protocol&firewall.ProtoICMP != 0 {
+			info.Ports = append(info.Ports, struct {
+				Port     int    `json:"port"`
+				EndPort  int    `json:"end_port,omitempty"`
+				Protocol string `json:"protocol"`
+			}{Protocol: "icmp"})
+		}
+		services = append(services, info)
+	}
+
+	WriteJSON(w, http.StatusOK, services)
 }

@@ -15,6 +15,9 @@ test_output.txt
 net_test_fail.txt
 coverage.out
 *.test
+*.bak
+*_dump.json
+cookies.txt
 
 # Demo artifacts
 /tmp/
@@ -59,3 +62,8 @@ vendor/
 /vendor/
 /local/
 ui/src/locales/keys_found.txt
+
+# Local binaries
+flywall-scanner
+*.db
+

@@ -171,6 +171,79 @@ func (cm *ClientManager) Stop() {
 	cm.clients = make(map[string]*Client)
 }
 
+// ReclaimLease attempts to reclaim a DHCP lease on an interface after HA failover.
+// This is used when a backup node takes over from a failed primary and needs to
+// acquire the same DHCP lease using the virtual MAC address that was previously
+// used by the primary. The interface should already have the virtual MAC applied.
+//
+// The reclaim process:
+// 1. Stop any existing DHCP client on this interface
+// 2. Start a new client that will do a fresh DHCP DISCOVER/REQUEST
+// 3. The ISP's DHCP server should respond with the same IP if the MAC matches
+//
+// Returns the obtained lease info or an error.
+func (cm *ClientManager) ReclaimLease(ifaceName string) (*LeaseInfo, error) {
+	dhcpLog.Info("Reclaiming DHCP lease after HA failover", "interface", ifaceName)
+
+	// Stop any existing client first
+	cm.mu.Lock()
+	if client, exists := cm.clients[ifaceName]; exists {
+		client.cancel()
+		delete(cm.clients, ifaceName)
+		dhcpLog.Info("Stopped existing client for reclaim", "interface", ifaceName)
+	}
+	cm.mu.Unlock()
+
+	// Brief delay to ensure old sockets are closed
+	time.Sleep(100 * time.Millisecond)
+
+	// Get the network interface (now with virtual MAC applied)
+	iface, err := net.InterfaceByName(ifaceName)
+	if err != nil {
+		return nil, fmt.Errorf("interface %s not found: %w", ifaceName, err)
+	}
+
+	dhcpLog.Info("Reclaiming with MAC", "interface", ifaceName, "mac", iface.HardwareAddr.String())
+
+	// Create new DHCP client
+	nclient, err := nclient4.New(ifaceName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create DHCP client for %s: %w", ifaceName, err)
+	}
+
+	// Create client instance without tracking (this is a one-shot operation)
+	dhcpClient := &Client{
+		ifaceName: ifaceName,
+		iface:     iface,
+		client:    nclient,
+	}
+
+	// Acquire lease - this does DISCOVER + REQUEST
+	// The server should give us the same IP if the MAC matches the lease
+	if err := dhcpClient.acquireLease(); err != nil {
+		nclient.Close()
+		return nil, fmt.Errorf("failed to acquire lease during reclaim: %w", err)
+	}
+
+	// Now register this client for ongoing renewals
+	ctx, cancel := context.WithCancel(context.Background())
+	dhcpClient.cancel = cancel
+
+	cm.mu.Lock()
+	cm.clients[ifaceName] = dhcpClient
+	cm.mu.Unlock()
+
+	// Start renewal loop in background
+	go dhcpClient.renewalLoop(ctx)
+
+	dhcpLog.Info("Successfully reclaimed DHCP lease",
+		"interface", ifaceName,
+		"ip", dhcpClient.lease.IPAddress,
+		"router", dhcpClient.lease.Router)
+
+	return dhcpClient.lease, nil
+}
+
 // run is the main loop for the DHCP client
 func (c *Client) run(ctx context.Context) {
 	c.running = true

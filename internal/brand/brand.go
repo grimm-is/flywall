@@ -28,7 +28,9 @@ type Brand struct {
 	DefaultConfigDir string `json:"defaultConfigDir"`
 	DefaultStateDir  string `json:"defaultStateDir"`
 	DefaultLogDir    string `json:"defaultLogDir"`
+	DefaultCacheDir  string `json:"defaultCacheDir"`
 	DefaultRunDir    string `json:"defaultRunDir"`
+	APIKeyPrefix     string `json:"apiKeyPrefix"`
 	SocketName       string `json:"socketName"`
 	BinaryName       string `json:"binaryName"`
 	ServiceName      string `json:"serviceName"`
@@ -56,7 +58,9 @@ func init() {
 	DefaultConfigDir = b.DefaultConfigDir
 	DefaultStateDir = b.DefaultStateDir
 	DefaultLogDir = b.DefaultLogDir
+	DefaultCacheDir = b.DefaultCacheDir
 	DefaultRunDir = b.DefaultRunDir
+	APIKeyPrefix = b.APIKeyPrefix
 	SocketName = b.SocketName
 	BinaryName = b.BinaryName
 	ServiceName = b.ServiceName
@@ -78,7 +82,9 @@ var (
 	DefaultConfigDir string
 	DefaultStateDir  string
 	DefaultLogDir    string
+	DefaultCacheDir  string
 	DefaultRunDir    string
+	APIKeyPrefix     string
 	SocketName       string
 	BinaryName       string
 	ServiceName      string
@@ -144,6 +150,29 @@ func GetConfigDir() string {
 	return DefaultConfigDir
 }
 
+// GetCacheDir returns the cache directory, checking env vars first.
+// Priority: FLYWALL_CACHE_DIR > FLYWALL_PREFIX/cache > DefaultCacheDir
+func GetCacheDir() string {
+	if dir := os.Getenv(ConfigEnvPrefix + "_CACHE_DIR"); dir != "" {
+		return dir
+	}
+	if prefix := os.Getenv(ConfigEnvPrefix + "_PREFIX"); prefix != "" {
+		return filepath.Join(prefix, "cache")
+	}
+	return DefaultCacheDir
+}
+
+// APIKeyPrefixFull returns the API key prefix with trailing underscore.
+// This is the format used in actual API keys (e.g., "gfw_").
+// Falls back to LowerName if apiKeyPrefix is not configured.
+func APIKeyPrefixFull() string {
+	prefix := APIKeyPrefix
+	if prefix == "" {
+		prefix = LowerName
+	}
+	return prefix + "_"
+}
+
 // GetRunDir returns the runtime directory for sockets and PID files.
 // Priority: FLYWALL_RUN_DIR > FLYWALL_PREFIX/run > DefaultRunDir
 func GetRunDir() string {
@@ -160,6 +189,9 @@ func GetRunDir() string {
 // The socket name includes the brand name for uniqueness.
 // Returns: /var/run/flywall-ctl.sock (or equivalent based on env/prefix)
 func GetSocketPath() string {
+	if path := os.Getenv(ConfigEnvPrefix + "_CTL_SOCKET"); path != "" {
+		return path
+	}
 	runDir := GetRunDir()
 	// Use format: <lowerName>-<socketName> e.g., flywall-ctl.sock
 	return filepath.Join(runDir, LowerName+"-"+SocketName)

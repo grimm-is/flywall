@@ -175,18 +175,26 @@ func (r *NFLogReader) parseAttributes(attrs nflog.Attribute) NFLogEntry {
 
 		// Check for SNI inspection prefix
 		if entry.Prefix == "TLS_SNI: " {
-			// Extract TCP payload to find SNI
-			// Note: parsePacket populates SrcIP/DstIP etc but doesn't return payload offset.
-			// We need to re-parse or extract payload.
-			// Simple approach: skip IP/TCP headers manually here or in ParseSNI (ParseSNI expects TCP payload)
-			// Let's implement a helper or assume standard offset.
-			// Actually parsePacket logic is complex with options.
-			// We will try a helper in this file.
+			// Extract TCP payload to find SNI and JA3/JA3S
 			tcpPayload := r.extractTCPPayload(*attrs.Payload)
 			if len(tcpPayload) > 0 {
-				sni, err := learning.ParseSNI(tcpPayload)
-				if err == nil && sni != "" {
-					entry.Extra["sni"] = sni
+				// Try Client Hello first (JA3)
+				tlsInfo, err := learning.ParseTLSClientHello(tcpPayload)
+				if err == nil && tlsInfo != nil {
+					if tlsInfo.SNI != "" {
+						entry.Extra["sni"] = tlsInfo.SNI
+					}
+					if tlsInfo.JA3 != nil && tlsInfo.JA3.Hash != "" {
+						entry.Extra["ja3"] = tlsInfo.JA3.Hash
+						entry.Extra["ja3_raw"] = tlsInfo.JA3.Raw
+					}
+				} else {
+					// Try Server Hello (JA3S)
+					serverInfo, err := learning.ParseTLSServerHello(tcpPayload)
+					if err == nil && serverInfo != nil && serverInfo.JA3S != nil {
+						entry.Extra["ja3s"] = serverInfo.JA3S.Hash
+						entry.Extra["ja3s_raw"] = serverInfo.JA3S.Raw
+					}
 				}
 			}
 		}

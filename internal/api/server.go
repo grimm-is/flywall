@@ -5,15 +5,12 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
-	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"mime"
 	"net"
 	"net/http"
-	"os"
-	"strconv"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,26 +18,23 @@ import (
 
 	"grimm.is/flywall/internal/clock"
 
-	"github.com/pmezard/go-difflib/difflib"
-
 	"grimm.is/flywall/internal/api/storage"
 	"grimm.is/flywall/internal/auth"
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/ctlplane"
-	"grimm.is/flywall/internal/firewall"
-	"grimm.is/flywall/internal/health"
 	"grimm.is/flywall/internal/i18n"
 	"grimm.is/flywall/internal/learning"
 	"grimm.is/flywall/internal/logging"
 	"grimm.is/flywall/internal/metrics"
 	"grimm.is/flywall/internal/ratelimit"
+	"grimm.is/flywall/internal/sentinel"
 	"grimm.is/flywall/internal/state"
 	"grimm.is/flywall/internal/stats"
 	"grimm.is/flywall/internal/tls"
-	"grimm.is/flywall/internal/ui"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"grimm.is/flywall/internal/runtime"
 )
 
 func init() {
@@ -54,9 +48,6 @@ func init() {
 	mime.AddExtensionType(".woff2", "font/woff2")
 	mime.AddExtensionType(".wasm", "application/wasm")
 }
-
-//go:embed spec/openapi.yaml
-var openAPISpec []byte //nolint:typecheck
 
 // ServerConfig holds HTTP server security configuration.
 // Mitigation: OWASP A05:2021-Security Misconfiguration
@@ -93,7 +84,9 @@ type Server struct {
 	collector       *metrics.Collector
 	startTime       time.Time
 	learning        *learning.Service
+	sentinel        *sentinel.Service // Device Fingerprinting
 	stateStore      state.Store
+	runtime         *runtime.DockerClient
 	configMu        sync.RWMutex       // Mutex to protect Config access
 	csrfManager     *CSRFManager       // CSRF token manager
 	rateLimiter     *ratelimit.Limiter // Rate limiter for auth endpoints
@@ -150,6 +143,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		apiKeyManager: opts.APIKeyManager,
 		stateStore:    opts.StateStore,
 		learning:      opts.LearningService,
+		sentinel:      sentinel.New(),
 	}
 
 	// Setup auth store: use DevStore if no auth configured
@@ -157,19 +151,21 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		s.authStore = opts.AuthStore
 		s.authMw = auth.NewMiddleware(opts.AuthStore)
 	} else if opts.Config != nil && opts.Config.API != nil && !opts.Config.API.RequireAuth {
-        // Explicitly allowed no-auth mode
-        s.logger.Info("Authentication disabled by configuration")
-    } else {
-        // Fallback or error?
-        // To be safe and compliant with the "Hardening" goal, we should NOT strictly default to DevStore invisible.
-        // However, existing tests might rely on this.
-        // If we strictly follow the plan: "Remove default fallback to auth.NewDevStore()".
-        // If we just remove it, s.authStore remains nil.
-        // We need to ensure 'require' doesn't panic.
-    }
+		// Explicitly allowed no-auth mode
+		s.logger.Info("Authentication disabled by configuration")
+	} else {
+		// Fallback or error?
+		// To be safe and compliant with the "Hardening" goal, we should NOT strictly default to DevStore invisible.
+		// However, existing tests might rely on this.
+		// If we strictly follow the plan: "Remove default fallback to auth.NewDevStore()".
+		// If we just remove it, s.authStore remains nil.
+		// We need to ensure 'require' doesn't panic.
+	}
 
-	if opts.Client != nil {
-		s.wsManager = NewWSManager(opts.Client, s.checkPendingStatus)
+	// Start WebSocket manager
+	s.wsManager = NewWSManager(s.client, s.checkPendingStatus)
+	if s.runtime != nil {
+		s.wsManager.SetRuntimeService(s.runtime)
 	}
 
 	// Initialize Security Manager for fail2ban-style blocking
@@ -283,6 +279,17 @@ func (s *Server) initRoutes() {
 	mux.Handle("POST /api/bonds", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleCreateBond)))
 	mux.Handle("DELETE /api/bonds", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleDeleteBond)))
 
+	// Analytics
+	analyticsHandlers := NewAnalyticsHandlers(s.client)
+	mux.Handle("GET /api/analytics/bandwidth", s.require(storage.PermReadConfig, http.HandlerFunc(analyticsHandlers.HandleGetBandwidth)))
+	mux.Handle("GET /api/analytics/top-talkers", s.require(storage.PermReadConfig, http.HandlerFunc(analyticsHandlers.HandleGetTopTalkers)))
+	mux.Handle("GET /api/analytics/flows", s.require(storage.PermReadConfig, http.HandlerFunc(analyticsHandlers.HandleGetHistoricalFlows)))
+
+	// Alerts
+	mux.Handle("GET /api/alerts/history", s.require(storage.PermReadConfig, http.HandlerFunc(s.HandleGetAlertHistory)))
+	mux.Handle("GET /api/alerts/rules", s.require(storage.PermReadConfig, http.HandlerFunc(s.HandleGetAlertRules)))
+	mux.Handle("POST /api/alerts/rules", s.require(storage.PermWriteConfig, http.HandlerFunc(s.HandleUpdateAlertRule)))
+
 	// Services
 	mux.Handle("GET /api/services", s.require(storage.PermReadConfig, http.HandlerFunc(s.handleServices)))
 	mux.Handle("GET /api/leases", s.require(storage.PermReadDHCP, http.HandlerFunc(s.handleLeases)))
@@ -300,6 +307,10 @@ func (s *Server) initRoutes() {
 	mux.Handle("POST /api/config/dhcp", s.require(storage.PermWriteDHCP, http.HandlerFunc(s.handleUpdateDHCP)))
 	mux.Handle("GET /api/config/dns", s.require(storage.PermWriteDNS, http.HandlerFunc(s.handleGetDNS)))
 	mux.Handle("POST /api/config/dns", s.require(storage.PermWriteDNS, http.HandlerFunc(s.handleUpdateDNS)))
+	// DNS Query Logs
+	mux.Handle("GET /api/dns/queries", s.require(storage.PermReadLogs, http.HandlerFunc(s.handleGetDNSQueryHistory)))
+	mux.Handle("GET /api/dns/stats", s.require(storage.PermReadLogs, http.HandlerFunc(s.handleGetDNSStats)))
+
 	// Previously updated handlers here...
 	mux.Handle("GET /api/config/routes", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleGetRoutes)))
 	mux.Handle("POST /api/config/routes", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleUpdateRoutes)))
@@ -315,6 +326,10 @@ func (s *Server) initRoutes() {
 	mux.Handle("POST /api/config/scheduler", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleUpdateSchedulerConfig)))
 	mux.Handle("GET /api/config/vpn", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleGetVPN)))
 	mux.Handle("POST /api/config/vpn", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleUpdateVPN)))
+	mux.Handle("POST /api/vpn/import", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleImportVPNConfig)))
+
+	// WireGuard API (key generation is stateless, other ops via config)
+	mux.Handle("POST /api/wireguard/generate-key", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleWireGuardGenerateKey)))
 	mux.Handle("GET /api/config/mark_rules", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleGetMarkRules)))
 	mux.Handle("POST /api/config/mark_rules", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleUpdateMarkRules)))
 	mux.Handle("GET /api/config/uid_routing", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleGetUIDRouting)))
@@ -335,6 +350,7 @@ func (s *Server) initRoutes() {
 	mux.Handle("GET /api/uplinks/groups", s.require(storage.PermReadConfig, http.HandlerFunc(uplinkAPI.HandleGetGroups)))
 	mux.Handle("POST /api/uplinks/switch", s.require(storage.PermWriteConfig, http.HandlerFunc(uplinkAPI.HandleSwitch)))
 	mux.Handle("POST /api/uplinks/toggle", s.require(storage.PermWriteConfig, http.HandlerFunc(uplinkAPI.HandleToggle)))
+	mux.Handle("POST /api/uplinks/test", s.require(storage.PermWriteConfig, http.HandlerFunc(uplinkAPI.HandleTest)))
 
 	// Flow Management
 	flowHandlers := NewFlowHandlers(s.client)
@@ -387,15 +403,28 @@ func (s *Server) initRoutes() {
 	// Extended System Operations
 	mux.Handle("GET /api/system/stats", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleSystemStats)))
 	mux.Handle("GET /api/system/routes", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleSystemRoutes)))
+	mux.Handle("GET /api/replication/status", s.require(storage.PermReadConfig, http.HandlerFunc(s.handleReplicationStatus)))
 
 	// Import Wizard
 	mux.Handle("POST /api/import/upload", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleImportUpload)))
 	mux.Handle("/api/import/", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleImportConfig)))
 
+	// Debug endpoints (Admin only)
+	mux.Handle("POST /api/debug/simulate-packet", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleSimulatePacket)))
+
+	// Debug - Capture
+	mux.Handle("POST /api/debug/capture", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleStartCapture)))
+	mux.Handle("DELETE /api/debug/capture", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleStopCapture)))
+	mux.Handle("GET /api/debug/capture/download", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleDownloadCapture)))
+	mux.Handle("GET /api/debug/capture/status", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleGetCaptureStatus)))
+
 	// IPSet management endpoints
 	mux.Handle("GET /api/ipsets", s.require(storage.PermReadFirewall, http.HandlerFunc(s.handleIPSetList)))
 	mux.Handle("/api/ipsets/", s.require(storage.PermReadFirewall, http.HandlerFunc(s.handleIPSetShow)))
 	mux.Handle("GET /api/ipsets/cache/info", s.require(storage.PermReadFirewall, http.HandlerFunc(s.handleIPSetCacheInfo)))
+
+	// Learning Engine
+	mux.Handle("GET /api/runtime/containers", s.require(storage.PermReadConfig, http.HandlerFunc(s.getContainersHandler)))
 
 	// Learning Engine
 	mux.Handle("GET /api/learning/rules", s.require(storage.PermReadFirewall, http.HandlerFunc(s.handleLearningRules)))
@@ -406,6 +435,11 @@ func (s *Server) initRoutes() {
 	mux.Handle("POST /api/devices/link", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleLinkMAC)))
 	mux.Handle("POST /api/devices/unlink", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleUnlinkMAC)))
 	mux.Handle("GET /api/devices", s.require(storage.PermReadConfig, http.HandlerFunc(s.handleGetDevices)))
+
+	// Device Groups
+	mux.Handle("GET /api/groups", s.require(storage.PermReadConfig, http.HandlerFunc(s.handleGetDeviceGroups)))
+	mux.Handle("POST /api/groups", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleUpdateDeviceGroup)))
+	mux.Handle("DELETE /api/groups/", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleDeleteDeviceGroup)))
 
 	// Staging & Diff
 	mux.Handle("GET /api/config/diff", s.require(storage.PermReadConfig, http.HandlerFunc(s.handleGetConfigDiff)))
@@ -418,6 +452,25 @@ func (s *Server) initRoutes() {
 	if s.Assets != nil {
 		mux.Handle("/", s.spaHandler(s.Assets, "index.html"))
 	}
+}
+
+// syncConfig fetches the latest configuration from the control plane and updates the local cache
+func (s *Server) syncConfig() error {
+	if s.client == nil {
+		return fmt.Errorf("control plane not connected")
+	}
+
+	cfg, err := s.client.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to fetch config: %v", err)
+	}
+
+	s.configMu.Lock()
+	s.Config = cfg
+	s.configMu.Unlock()
+
+	s.logger.Info("Synchronized local config cache from control plane")
+	return nil
 }
 
 // require middleware ensures the control plane client is available
@@ -502,143 +555,6 @@ func (s *Server) Handler() http.Handler {
 }
 
 // Batch Request/Response types
-type BatchRequest struct {
-	Method string `json:"method"`
-	Path   string `json:"path"`
-	Body   any    `json:"body"` // Optional
-}
-
-type BatchResponse struct {
-	Status int `json:"status"`
-	Body   any `json:"body"`
-}
-
-func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
-	// Method check removed (handled by router)
-
-	var requests []BatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&requests); err != nil {
-		WriteErrorCtx(w, r, http.StatusBadRequest, "Invalid JSON: "+err.Error())
-		return
-	}
-
-	// Limit batch size
-	if len(requests) > 20 {
-		WriteErrorCtx(w, r, http.StatusBadRequest, "Too many requests in batch")
-		return
-	}
-
-	// Apply Rate Limiting based on Batch Size
-	// Cost is 1 token per request in the batch
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	if ip == "" {
-		ip = r.RemoteAddr
-	}
-
-	// Check if the ratelimiter allows 'n' events
-	// Use a separate "batch" namespace to avoid conflicting with auth login limits directly,
-	// but enforce a reasonable total load limit (e.g., 60 ops/minute).
-	if !s.rateLimiter.AllowN("batch:"+ip, 60, time.Minute, len(requests)) {
-		WriteErrorCtx(w, r, http.StatusTooManyRequests, "Rate limit exceeded for batch")
-		return
-	}
-
-	responses := make([]BatchResponse, len(requests))
-	// Execute requests serially
-	for i, req := range requests {
-		// specific implementation
-		// We need to construct a new wrapper request
-
-		// Body handling
-		var bodyReader io.Reader
-		if req.Body != nil {
-			b, err := json.Marshal(req.Body)
-			if err == nil {
-				bodyReader = bytes.NewReader(b)
-			}
-		}
-
-		subReq, err := http.NewRequest(req.Method, req.Path, bodyReader)
-		if err != nil {
-			responses[i] = BatchResponse{Status: 500, Body: "Failed to create request: " + err.Error()}
-			continue
-		}
-
-		// Propagate RemoteAddr for downstream rate limiting (IMPORTANT)
-		subReq.RemoteAddr = r.RemoteAddr
-
-		// Copy headers from batch request
-
-		// Copy headers from batch request?
-		// Maybe Auth header?
-		subReq.Header.Set("Content-Type", "application/json")
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			subReq.Header.Set("Authorization", auth)
-		}
-		// Cookie?
-		for _, c := range r.Cookies() {
-			subReq.AddCookie(c)
-		}
-
-		// Capture response using our own writer (avoids httptest dependency)
-		rr := &batchResponseWriter{header: make(http.Header), statusCode: http.StatusOK}
-		s.mux.ServeHTTP(rr, subReq)
-
-		// Parse body if JSON
-		var respBody any
-		if rr.body.Len() > 0 {
-			if contentType := rr.header.Get("Content-Type"); strings.Contains(contentType, "application/json") {
-				_ = json.Unmarshal(rr.body.Bytes(), &respBody)
-			} else {
-				respBody = rr.body.String()
-			}
-		}
-
-		responses[i] = BatchResponse{
-			Status: rr.statusCode,
-			Body:   respBody,
-		}
-	}
-
-	WriteJSON(w, http.StatusOK, responses)
-}
-
-func (s *Server) handleBrand(w http.ResponseWriter, r *http.Request) {
-	WriteJSON(w, http.StatusOK, brand.Get())
-}
-
-func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/yaml")
-	w.Write(openAPISpec)
-}
-
-func (s *Server) handleSwaggerUI(w http.ResponseWriter, r *http.Request) {
-	// Simple Swagger UI HTML
-	html := `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="SwaggerHTT" />
-    <title>Flywall API Documentation</title>
-    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui.css" />
-</head>
-<body>
-<div id="swagger-ui"></div>
-<script src="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui-bundle.js" crossorigin></script>
-<script>
-    window.onload = () => {
-        window.ui = SwaggerUIBundle({
-            url: '/api/openapi.yaml',
-            dom_id: '#swagger-ui',
-        });
-    };
-</script>
-</body>
-</html>`
-	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(html))
-}
 
 // Start starts the HTTP server.
 // Mitigation: OWASP A02:2021-Cryptographic Failures (TLS encryption)
@@ -673,10 +589,10 @@ func (s *Server) Start(addr string) error {
 		tlsCert := s.Config.API.TLSCert
 		tlsKey := s.Config.API.TLSKey
 		if tlsCert == "" {
-			tlsCert = "/var/lib/flywall/certs/server.crt"
+			tlsCert = filepath.Join(brand.GetStateDir(), "certs", "server.crt")
 		}
 		if tlsKey == "" {
-			tlsKey = "/var/lib/flywall/certs/server.key"
+			tlsKey = filepath.Join(brand.GetStateDir(), "certs", "server.key")
 		}
 
 		// Auto-generate self-signed cert if missing
@@ -749,6 +665,16 @@ func (s *Server) startHTTPRedirectServer() {
 	if err := redirectServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logging.APILog("error", "HTTP redirect server error: %v", err)
 	}
+}
+
+// SetMetricsCollector injects the metrics collector
+func (s *Server) SetMetricsCollector(c *metrics.Collector) {
+	s.collector = c
+}
+
+// SetRuntimeService injects the runtime service
+func (s *Server) SetRuntimeService(r *runtime.DockerClient) {
+	s.runtime = r
 }
 
 // ServeListener starts the API server using an existing listener.
@@ -854,969 +780,6 @@ func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, fmt.Errorf("hijack not supported")
 }
 
-// batchResponseWriter captures HTTP responses for batch API processing.
-// This avoids importing net/http/httptest in production code.
-type batchResponseWriter struct {
-	header     http.Header
-	body       bytes.Buffer
-	statusCode int
-}
-
-func (w *batchResponseWriter) Header() http.Header {
-	return w.header
-}
-
-func (w *batchResponseWriter) Write(b []byte) (int, error) {
-	return w.body.Write(b)
-}
-
-func (w *batchResponseWriter) WriteHeader(code int) {
-	w.statusCode = code
-}
-
-func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	// Support source=running to get raw running config without status
-	if r.URL.Query().Get("source") == "running" {
-		if s.client != nil {
-			cfg, err := s.client.GetConfig()
-			if err != nil {
-				WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())
-				return
-			}
-			WriteJSON(w, http.StatusOK, cfg)
-		} else {
-			WriteJSON(w, http.StatusOK, s.Config)
-		}
-		return
-	}
-
-	// Default: Return config with _status fields for UI
-	s.configMu.RLock()
-	staged := s.Config
-	s.configMu.RUnlock()
-
-	if s.client != nil {
-		// Get running config to compute status
-		running, err := s.client.GetConfig()
-		if err != nil {
-			// Can't reach control plane - return staged without status
-			WriteJSON(w, http.StatusOK, staged)
-			return
-		}
-		// Return config with _status fields for each item
-		configWithStatus := BuildConfigWithStatus(staged, running)
-		WriteJSON(w, http.StatusOK, configWithStatus)
-	} else {
-		// No client - return raw config
-		WriteJSON(w, http.StatusOK, staged)
-	}
-}
-
-// getServerInfo returns comprehensive server information.
-func (s *Server) getServerInfo() ServerInfo {
-	uptime := time.Since(s.startTime)
-
-	info := ServerInfo{
-		Status:       "online",
-		Uptime:       uptime.String(),
-		StartTime:    s.startTime.Format(time.RFC3339),
-		Version:      brand.Version,
-		BuildTime:    brand.BuildTime,
-		BuildArch:    brand.BuildArch,
-		GitCommit:    brand.GitCommit,
-		GitBranch:    brand.GitBranch,
-		GitMergeBase: brand.GitMergeBase,
-	}
-
-	// Get host uptime from /proc/uptime (Linux)
-	if data, err := os.ReadFile("/proc/uptime"); err == nil {
-		fields := strings.Fields(string(data))
-		if len(fields) > 0 {
-			if seconds, err := strconv.ParseFloat(fields[0], 64); err == nil {
-				info.HostUptime = time.Duration(seconds * float64(time.Second)).String()
-			}
-		}
-	}
-
-	return info
-}
-
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	// Build comprehensive server info
-	info := s.getServerInfo()
-
-	// Use RPC client if available for control plane status
-	if s.client != nil {
-		// 1. Basic Status
-		status, err := s.client.GetStatus()
-		if err == nil {
-			info.Uptime = status.Uptime
-			info.FirewallActive = status.FirewallActive
-		}
-
-		// 2. System Stats (CPU/Mem)
-		sysStats, err := s.client.GetSystemStats()
-		if err == nil {
-			info.CPULoad = sysStats.CPUUsage
-			if sysStats.MemoryTotal > 0 {
-				info.MemUsage = float64(sysStats.MemoryUsed) / float64(sysStats.MemoryTotal) * 100
-			}
-		}
-
-		// 3. Log Stats (Blocked Count)
-		// Try to get log stats - might fail if logging not ready, ignore error
-		// LogStats not explicitly exposed in client interface?
-		// Use manual log stats if needed or check if defined.
-		// Assuming GetLogStats exists based on types.
-		// Is it exposed in ControlPlaneClient interface?
-		// If not, we skip. But types.go had GetLogStatsReply. The client interface must match.
-
-		// 4. WAN IP
-		// Find WAN interface from config
-		var wanIfaceName string
-		if s.Config != nil {
-			for _, iface := range s.Config.Interfaces {
-				if strings.ToUpper(iface.Zone) == "WAN" {
-					wanIfaceName = iface.Name
-					break
-				}
-			}
-		}
-
-		// Get interface statuses to find IP
-		if wanIfaceName != "" {
-			ifaces, err := s.client.GetInterfaces()
-			if err == nil {
-				for _, iface := range ifaces {
-					if iface.Name == wanIfaceName {
-						if len(iface.IPv4Addrs) > 0 {
-							info.WanIP = iface.IPv4Addrs[0]
-						}
-						break
-					}
-				}
-			}
-		} else {
-			// Fallback: Try to find interface named "eth0" or "wan" if no config
-			ifaces, err := s.client.GetInterfaces()
-			if err == nil {
-				for _, iface := range ifaces {
-					if iface.Name == "eth0" || iface.Name == "wan" {
-						if len(iface.IPv4Addrs) > 0 {
-							info.WanIP = iface.IPv4Addrs[0]
-						}
-						break
-					}
-				}
-			}
-		}
-	}
-
-	WriteJSON(w, http.StatusOK, info)
-}
-
-// ServerInfo contains comprehensive information about the server.
-type ServerInfo struct {
-	Status          string  `json:"status"`
-	Uptime          string  `json:"uptime"`                     // Router process uptime
-	HostUptime      string  `json:"host_uptime,omitempty"`      // System uptime
-	StartTime       string  `json:"start_time"`                 // When router started
-	Version         string  `json:"version"`                    // Software version
-	BuildTime       string  `json:"build_time,omitempty"`       // When binary was built
-	BuildArch       string  `json:"build_arch,omitempty"`       // Build architecture
-	GitCommit       string  `json:"git_commit,omitempty"`       // Git commit hash
-	GitBranch       string  `json:"git_branch,omitempty"`       // Git branch name
-	GitMergeBase    string  `json:"git_merge_base,omitempty"`   // Git merge-base with main
-	FirewallActive  bool    `json:"firewall_active"`            // Whether firewall is running
-	FirewallApplied string  `json:"firewall_applied,omitempty"` // When rules were last applied
-	WanIP           string  `json:"wan_ip,omitempty"`           // WAN IP Address
-	BlockedCount    int64   `json:"blocked_count"`              // Total blocked packets (last 24h/session)
-	CPULoad         float64 `json:"cpu_load"`                   // CPU Usage %
-	MemUsage        float64 `json:"mem_usage"`                  // Memory Usage %
-}
-
-func (s *Server) handleLeases(w http.ResponseWriter, r *http.Request) {
-	if s.client != nil {
-		leases, err := s.client.GetDHCPLeases()
-		if err != nil {
-			WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if leases == nil {
-			leases = []ctlplane.DHCPLease{}
-		}
-		WriteJSON(w, http.StatusOK, leases)
-	} else {
-		WriteJSON(w, http.StatusOK, []interface{}{})
-	}
-}
-
-// Auth handlers
-
-// handleGetUsers returns all users
-
-// handleCreateUser creates a new user
-
-// handleUserByName handles individual user operations (update, delete)
-// handleGetUser returns a single user
-
-// handleUpdateUser updates a user
-
-// handleDeleteUser deletes a user
-
-// --- Interface Management Handlers ---
-
-// handleCreateVLAN creates a new VLAN interface
-
-// handleDeleteVLAN deletes a VLAN interface
-
-// handleCreateBond creates a new bond interface
-
-// handleDeleteBond deletes a bond interface
-
-// handleGetConfigDiff returns the diff between saved and in-memory config
-// handleGetConfigDiff returns the diff between saved and in-memory config
-func (s *Server) handleGetConfigDiff(w http.ResponseWriter, r *http.Request) {
-	if s.client == nil {
-		WriteErrorCtx(w, r, http.StatusServiceUnavailable, "Control plane not connected")
-		return
-	}
-
-	// 1. Get Running Config
-	runningCfg, err := s.client.GetConfig()
-	if err != nil {
-		WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to fetch running config: "+err.Error())
-		return
-	}
-
-	// 2. Get Staged Config
-	stagedCfg := s.Config
-
-	// 3. Marshal to JSON for comparison
-	runningJSON, _ := json.MarshalIndent(runningCfg, "", "  ")
-	stagedJSON, _ := json.MarshalIndent(stagedCfg, "", "  ")
-
-	// 4. Generate Diff
-	diff := difflib.UnifiedDiff{
-		A:        difflib.SplitLines(string(runningJSON)),
-		B:        difflib.SplitLines(string(stagedJSON)),
-		FromFile: "Running",
-		ToFile:   "Staged",
-		Context:  3,
-	}
-	text, _ := difflib.GetUnifiedDiffString(diff)
-
-	if text == "" {
-		text = "No changes."
-	}
-
-	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(text))
-}
-
-// handlePublicCert serves the root CA certificate publicly
-func (s *Server) handlePublicCert(w http.ResponseWriter, r *http.Request) {
-	// Root cert is in config dir
-	certPath := "/etc/flywall/certs/cert.pem" // Default
-	if s.Config != nil {
-		// Try to deduce cert dir. Usually flags passed to ctl.
-		// For this quick win, we'll try standard path or relative.
-		// Ideally we inject CertManager into Server.
-	}
-
-	// Try standard location
-	data, err := os.ReadFile(certPath)
-	if err != nil {
-		// Try local dev path
-		data, err = os.ReadFile("local/certs/cert.pem")
-		if err != nil {
-			WriteErrorCtx(w, r, http.StatusNotFound, "Certificate not found")
-			return
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/x-pem-file")
-	w.Header().Set("Content-Disposition", "attachment; filename=flywall-ca.crt")
-	w.Write(data)
-}
-
-// handleTraffic returns traffic accounting statistics
-func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
-	// Method check removed (handled by router)
-
-	// Integrate with firewall.Accounting to get real stats
-	if s.collector == nil {
-		WriteErrorCtx(w, r, http.StatusServiceUnavailable, "Collector not initialized")
-		return
-	}
-	stats := s.collector.GetInterfaceStats()
-	WriteJSON(w, http.StatusOK, stats)
-}
-
-// handleServices returns the available service definitions
-func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
-	// Build response with all service definitions from firewall package
-	type ServiceInfo struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Ports       []struct {
-			Port     int    `json:"port"`
-			EndPort  int    `json:"end_port,omitempty"`
-			Protocol string `json:"protocol"`
-		} `json:"ports"`
-	}
-
-	services := make([]ServiceInfo, 0, len(firewall.BuiltinServices))
-	for name, svc := range firewall.BuiltinServices {
-		info := ServiceInfo{
-			Name:        name,
-			Description: svc.Description,
-		}
-		// Handle protocol flags and ports
-		if svc.Protocol&firewall.ProtoTCP != 0 {
-			if len(svc.Ports) > 0 {
-				for _, p := range svc.Ports {
-					info.Ports = append(info.Ports, struct {
-						Port     int    `json:"port"`
-						EndPort  int    `json:"end_port,omitempty"`
-						Protocol string `json:"protocol"`
-					}{Port: p, Protocol: "tcp"})
-				}
-			} else if svc.Port > 0 {
-				info.Ports = append(info.Ports, struct {
-					Port     int    `json:"port"`
-					EndPort  int    `json:"end_port,omitempty"`
-					Protocol string `json:"protocol"`
-				}{Port: svc.Port, EndPort: svc.EndPort, Protocol: "tcp"})
-			}
-		}
-		if svc.Protocol&firewall.ProtoUDP != 0 {
-			if len(svc.Ports) > 0 {
-				for _, p := range svc.Ports {
-					info.Ports = append(info.Ports, struct {
-						Port     int    `json:"port"`
-						EndPort  int    `json:"end_port,omitempty"`
-						Protocol string `json:"protocol"`
-					}{Port: p, Protocol: "udp"})
-				}
-			} else if svc.Port > 0 {
-				info.Ports = append(info.Ports, struct {
-					Port     int    `json:"port"`
-					EndPort  int    `json:"end_port,omitempty"`
-					Protocol string `json:"protocol"`
-				}{Port: svc.Port, EndPort: svc.EndPort, Protocol: "udp"})
-			}
-		}
-		if svc.Protocol&firewall.ProtoICMP != 0 {
-			info.Ports = append(info.Ports, struct {
-				Port     int    `json:"port"`
-				EndPort  int    `json:"end_port,omitempty"`
-				Protocol string `json:"protocol"`
-			}{Protocol: "icmp"})
-		}
-		services = append(services, info)
-	}
-
-	WriteJSON(w, http.StatusOK, services)
-}
-
-// handleDiscardConfig discards staged changes by reloading from the control plane
-func (s *Server) handleDiscardConfig(w http.ResponseWriter, r *http.Request) {
-	if s.client == nil {
-		WriteErrorCtx(w, r, http.StatusServiceUnavailable, "Control plane not connected")
-		return
-	}
-
-	cfg, err := s.client.GetConfig()
-	if err != nil {
-		WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to fetch running config: "+err.Error())
-		return
-	}
-
-	// Overwrite staged config
-	s.Config = cfg
-	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
-}
-
-// handlePendingStatus returns whether there are pending changes
-func (s *Server) handlePendingStatus(w http.ResponseWriter, r *http.Request) {
-	if s.client == nil {
-		WriteJSON(w, http.StatusOK, map[string]interface{}{
-			"has_changes": false,
-			"reason":      "no control plane",
-		})
-		return
-	}
-
-	// Get Running Config
-	runningCfg, err := s.client.GetConfig()
-	if err != nil {
-		WriteJSON(w, http.StatusOK, map[string]interface{}{
-			"has_changes": false,
-			"reason":      "failed to get running config",
-		})
-		return
-	}
-
-	// Compare by JSON serialization
-	runningJSON, _ := json.Marshal(runningCfg)
-	stagedJSON, _ := json.Marshal(s.Config)
-
-	hasChanges := string(runningJSON) != string(stagedJSON)
-
-	WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"has_changes": hasChanges,
-	})
-}
-
-// --- Config Update Handlers ---
-
-// handleApplyConfig applies the current configuration
-func (s *Server) handleApplyConfig(w http.ResponseWriter, r *http.Request) {
-	// Method check removed (handled by router)
-
-	w.Header().Set("Content-Type", "application/json")
-
-	if s.client != nil {
-		s.configMu.RLock()
-		cfg := s.Config.Clone()
-		s.configMu.RUnlock()
-
-		if err := s.client.ApplyConfig(cfg); err != nil {
-			WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())
-			return
-		}
-
-		// Save config to HCL file for persistence across restarts
-		if _, err := s.client.SaveConfig(); err != nil {
-			// Log warning but don't fail - runtime config is already applied
-			WriteJSON(w, http.StatusOK, map[string]interface{}{
-				"success": true,
-				"warning": fmt.Sprintf("Config applied but failed to save: %v", err),
-			})
-			return
-		}
-
-		// Create backup AFTER successful apply - captures known-good state
-		backupReply, _ := s.client.CreateBackup("Applied configuration", false)
-		backupVersion := 0
-		if backupReply != nil && backupReply.Success {
-			backupVersion = backupReply.Backup.Version
-		}
-
-		// Push config update and notification to WebSocket subscribers
-		if s.wsManager != nil {
-			s.wsManager.Publish("config", s.Config)
-			s.wsManager.PublishNotification(NotifySuccess, "Configuration Applied", "Firewall rules have been updated")
-		}
-
-		WriteJSON(w, http.StatusOK, map[string]interface{}{
-			"success":        true,
-			"backup_version": backupVersion,
-		})
-		return
-	}
-
-	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
-}
-
-// handleGetPolicies returns firewall policies
-
-// handleUpdatePolicies updates firewall policies
-
-// handleGetNAT returns NAT configuration
-
-// handleUpdateNAT updates NAT configuration
-
-// handleGetMarkRules returns mark rules
-
-// handleUpdateMarkRules updates mark rules
-
-// handleGetUIDRouting returns UID routing rules
-
-// handleUpdateUIDRouting updates UID routing rules
-
-// handleGetIPSets returns IPSet configuration
-
-// handleUpdateIPSets updates IPSet configuration
-
-// handleGetDHCP returns DHCP server configuration
-
-// handleUpdateDHCP updates DHCP server configuration
-
-// handleGetDNS returns DNS server configuration
-
-// handleUpdateDNS updates DNS server configuration
-
-// handleGetRoutes returns static route configuration
-
-// handleUpdateRoutes updates static route configuration
-
-// handleGetZones returns zone configuration
-
-// handleUpdateZones updates zone configuration
-
-// handleGetProtections returns per-interface protection settings
-
-// handleUpdateProtections updates per-interface protection settings
-
-// handleGetVPN returns the current VPN configuration
-
-// handleUpdateVPN updates the VPN configuration
-
-// handleGetQoS returns QoS policies configuration
-
-// handleUpdateQoS updates QoS policies configuration
-
-// handleReboot handles system reboot request
-
-// handleBackup exports the current configuration as JSON
-
-// handleRestore imports a configuration from JSON
-
-// handleGetSchedulerConfig returns scheduler configuration
-
-// handleUpdateSchedulerConfig updates scheduler configuration
-
-// handleSchedulerStatus returns the status of all scheduled tasks
-
-// handleSchedulerRun triggers immediate execution of a scheduled task
-
-// handlePolicyReorder reorders policies
-func (s *Server) handlePolicyReorder(w http.ResponseWriter, r *http.Request) {
-	// Method check removed (handled by router)
-
-	var req struct {
-		PolicyName string   `json:"policy_name"`         // Policy to move
-		Position   string   `json:"position"`            // "before" or "after"
-		RelativeTo string   `json:"relative_to"`         // Target policy name
-		NewOrder   []string `json:"new_order,omitempty"` // Or provide complete new order
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteErrorCtx(w, r, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-
-	// If new_order is provided, use it directly
-	if len(req.NewOrder) > 0 {
-		policyMap := make(map[string]config.Policy)
-		for _, p := range s.Config.Policies {
-			policyMap[p.Name] = p
-		}
-
-		newPolicies := make([]config.Policy, 0, len(req.NewOrder))
-		for _, name := range req.NewOrder {
-			if p, ok := policyMap[name]; ok {
-				newPolicies = append(newPolicies, p)
-			}
-		}
-		s.Config.Policies = newPolicies
-		WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
-		return
-	}
-
-	// Otherwise, move single policy relative to another
-	if req.PolicyName == "" || req.RelativeTo == "" {
-		WriteErrorCtx(w, r, http.StatusBadRequest, "policy_name and relative_to are required")
-		return
-	}
-
-	// Find indices
-	var moveIdx, targetIdx int = -1, -1
-	for i, p := range s.Config.Policies {
-		if p.Name == req.PolicyName {
-			moveIdx = i
-		}
-		if p.Name == req.RelativeTo {
-			targetIdx = i
-		}
-	}
-
-	if moveIdx == -1 || targetIdx == -1 {
-		WriteErrorCtx(w, r, http.StatusNotFound, "Policy not found")
-		return
-	}
-
-	// Remove policy from current position
-	policy := s.Config.Policies[moveIdx]
-	policies := append(s.Config.Policies[:moveIdx], s.Config.Policies[moveIdx+1:]...)
-
-	// Adjust target index if needed
-	if moveIdx < targetIdx {
-		targetIdx--
-	}
-
-	// Insert at new position
-	insertIdx := targetIdx
-	if req.Position == "after" {
-		insertIdx++
-	}
-
-	// Insert
-	newPolicies := make([]config.Policy, 0, len(policies)+1)
-	newPolicies = append(newPolicies, policies[:insertIdx]...)
-	newPolicies = append(newPolicies, policy)
-	newPolicies = append(newPolicies, policies[insertIdx:]...)
-
-	s.configMu.Lock()
-	s.Config.Policies = newPolicies
-	s.configMu.Unlock()
-
-	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
-}
-
-// handleRuleReorder reorders rules within a policy
-func (s *Server) handleRuleReorder(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		WriteErrorCtx(w, r, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-
-	var req struct {
-		PolicyName string   `json:"policy_name"`         // Policy containing the rules
-		RuleName   string   `json:"rule_name"`           // Rule to move
-		Position   string   `json:"position"`            // "before" or "after"
-		RelativeTo string   `json:"relative_to"`         // Target rule name
-		NewOrder   []string `json:"new_order,omitempty"` // Or provide complete new order
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if req.PolicyName == "" {
-		WriteErrorCtx(w, r, http.StatusBadRequest, "policy_name is required")
-		return
-	}
-
-	// Find the policy
-	var policyIdx int = -1
-	s.configMu.RLock()
-	for i, p := range s.Config.Policies {
-		if p.Name == req.PolicyName {
-			policyIdx = i
-			break
-		}
-	}
-	s.configMu.RUnlock()
-
-	if policyIdx == -1 {
-		WriteErrorCtx(w, r, http.StatusNotFound, "Policy not found")
-		return
-	}
-
-	policy := &s.Config.Policies[policyIdx]
-
-	// If new_order is provided, use it directly
-	if len(req.NewOrder) > 0 {
-		ruleMap := make(map[string]config.PolicyRule)
-		for _, r := range policy.Rules {
-			ruleMap[r.Name] = r
-		}
-
-		newRules := make([]config.PolicyRule, 0, len(req.NewOrder))
-		for _, name := range req.NewOrder {
-			if r, ok := ruleMap[name]; ok {
-				newRules = append(newRules, r)
-			}
-		}
-		policy.Rules = newRules
-		WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
-		return
-	}
-
-	// Otherwise, move single rule relative to another
-	if req.RuleName == "" || req.RelativeTo == "" {
-		WriteErrorCtx(w, r, http.StatusBadRequest, "rule_name and relative_to are required")
-		return
-	}
-
-	// Find indices
-	var moveIdx, targetIdx int = -1, -1
-	for i, r := range policy.Rules {
-		if r.Name == req.RuleName {
-			moveIdx = i
-		}
-		if r.Name == req.RelativeTo {
-			targetIdx = i
-		}
-	}
-
-	if moveIdx == -1 || targetIdx == -1 {
-		WriteErrorCtx(w, r, http.StatusNotFound, "Rule not found")
-		return
-	}
-
-	// Remove rule from current position
-	rule := policy.Rules[moveIdx]
-	rules := append(policy.Rules[:moveIdx], policy.Rules[moveIdx+1:]...)
-
-	// Adjust target index if needed
-	if moveIdx < targetIdx {
-		targetIdx--
-	}
-
-	// Insert at new position
-	insertIdx := targetIdx
-	if req.Position == "after" {
-		insertIdx++
-	}
-
-	// Insert
-	newRules := make([]config.PolicyRule, 0, len(rules)+1)
-	newRules = append(newRules, rules[:insertIdx]...)
-	newRules = append(newRules, rule)
-	newRules = append(newRules, rules[insertIdx:]...)
-	policy.Rules = newRules
-
-	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
-}
-
-// --- HCL Editing Handlers (Advanced Mode) ---
-
-// handleSetIPForwarding toggles the global ip_forwarding setting
-
-// SystemSettingsRequest represents the payload for updating system settings
-
-// handleSystemSettings handles global system settings updates
-
-// handleGetRawHCL handles GET for the entire config as raw HCL
-
-// handleUpdateRawHCL handles PUT/POST for the entire config as raw HCL
-
-// handleSectionHCL handles GET/PUT for a specific config section as raw HCL
-// handleGetSectionHCL handles GET for a specific config section as raw HCL
-
-// handleUpdateSectionHCL handles PUT/POST for a specific config section as raw HCL
-
-// handleValidateHCL validates HCL without applying it
-
-// handleSaveConfig saves the current config to disk
-
-// --- Backup Management Handlers ---
-
-// handleBackups lists all available backups
-
-// handleCreateBackup creates a new manual backup
-
-// handleRestoreBackup restores a specific backup version
-
-// handleBackupContent returns the content of a specific backup
-
-// --- Safe Apply Handlers ---
-
-// handleSafeApply applies config with connectivity verification and rollback
-
-// handleConfirmApply confirms a pending apply (placeholder for full implementation)
-
-// handlePendingApply returns info about any pending apply
-
-// handlePinBackup pins or unpins a backup
-
-// handleGetBackupSettings gets backup settings
-
-// handleUpdateBackupSettings updates backup settings
-
-// handleUIMenu returns the navigation menu schema.
-func (s *Server) handleUIMenu(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	data, err := ui.MenuJSON()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Write(data)
-}
-
-// handleUIPages returns all page schemas.
-func (s *Server) handleUIPages(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	data, err := ui.AllPagesJSON()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Write(data)
-}
-
-// handleUIPage returns a single page schema.
-func (s *Server) handleUIPage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Extract page ID from path: /api/ui/page/{id}
-	pageID := ui.MenuID(strings.TrimPrefix(r.URL.Path, "/api/ui/page/"))
-	if pageID == "" {
-		http.Error(w, "Page ID required", http.StatusBadRequest)
-		return
-	}
-
-	page := ui.GetPage(pageID)
-	if page == nil {
-		WriteErrorCtx(w, r, http.StatusNotFound, "Page not found")
-		return
-	}
-
-	WriteJSON(w, http.StatusOK, page)
-}
-
-// handleHealth returns the overall health status.
-// Uses the health package to check system components.
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		WriteErrorCtx(w, r, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-
-	// Create a health checker with some basic checks
-	checker := health.NewChecker()
-
-	// Add nftables check (cached)
-	checker.Register("nftables", func(ctx context.Context) health.Check {
-		if s.healthy.Load() {
-			return health.Check{
-				Name:    "nftables",
-				Status:  health.StatusHealthy,
-				Message: "NFTables is responding",
-			}
-		}
-		return health.Check{
-			Name:    "nftables",
-			Status:  health.StatusUnhealthy,
-			Message: "NFTables is unresponsive",
-		}
-	})
-
-	checker.Register("control-plane", func(ctx context.Context) health.Check {
-		// Check if control plane is accessible
-		if s.client == nil {
-			return health.Check{
-				Name:    "control-plane",
-				Status:  health.StatusDegraded,
-				Message: "Control plane client not initialized",
-			}
-		}
-
-		// Try to get status from control plane
-		_, err := s.client.GetStatus()
-		if err != nil {
-			return health.Check{
-				Name:    "control-plane",
-				Status:  health.StatusUnhealthy,
-				Message: fmt.Sprintf("Control plane unreachable: %v", err),
-			}
-		}
-		return health.Check{
-			Name:    "control-plane",
-			Status:  health.StatusHealthy,
-			Message: "Control plane is responding",
-		}
-	})
-
-	checker.Register("config", func(ctx context.Context) health.Check {
-		// Check if config is loaded and valid
-		if s.Config == nil {
-			return health.Check{
-				Name:    "config",
-				Status:  health.StatusUnhealthy,
-				Message: "No configuration loaded",
-			}
-		}
-		return health.Check{
-			Name:    "config",
-			Status:  health.StatusHealthy,
-			Message: "Configuration loaded successfully",
-		}
-	})
-
-	// Run health checks
-	report := checker.Check(context.Background())
-
-	// Set HTTP status based on overall health
-	var statusCode int
-	switch report.Status {
-	case health.StatusHealthy:
-		statusCode = http.StatusOK
-	case health.StatusDegraded:
-		statusCode = http.StatusOK // Still 200 but indicates issues
-	case health.StatusUnhealthy:
-		statusCode = http.StatusServiceUnavailable
-	default:
-		statusCode = http.StatusServiceUnavailable
-	}
-
-	WriteJSON(w, statusCode, report)
-}
-
-// handleReadiness returns readiness status for Kubernetes-style probes.
-// Simpler check - just verifies basic services are ready.
-func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		WriteErrorCtx(w, r, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-
-	// Simple readiness check - are we ready to serve requests?
-	ready := true
-	message := "Ready"
-
-	if s.Config == nil {
-		ready = false
-		message = "Configuration not loaded"
-	} else if s.client == nil {
-		ready = false
-		message = "Control plane not connected"
-	}
-
-	if ready {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{
-			"status":  "ready",
-			"message": message,
-		})
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{
-			"status":  "not ready",
-			"message": message,
-		})
-	}
-}
-
-// ==============================================================================
-// Monitoring Handlers
-// ==============================================================================
-
-// MonitoringOverview is the combined monitoring data response.
-
-// handleMonitoringOverview returns all monitoring data in one request.
-
-// handleMonitoringInterfaces returns interface traffic statistics.
-
-// handleMonitoringPolicies returns firewall policy statistics.
-
-// handleMonitoringServices returns service statistics (DHCP, DNS).
-
-// handleMonitoringSystem returns system statistics (CPU, memory, load).
-
-// handleMonitoringConntrack returns connection tracking statistics.
-
 // require checks for sufficient permission from EITHER an API Key OR a User Session.
 func (s *Server) require(perm storage.Permission, handler http.Handler) http.Handler {
 	// Chain: handler -> audit -> CSRF -> auth check
@@ -1830,7 +793,7 @@ func (s *Server) require(perm storage.Permission, handler http.Handler) http.Han
 		// Bypass auth if not required by configuration (replicates legacy behavior)
 
 		s.configMu.RLock()
-		s.logger.Info("require middleware: checking bypass", "RequireAuth", s.Config.API.RequireAuth)
+		// s.logger.Info("require middleware: checking bypass")
 		if s.Config != nil && s.Config.API != nil && !s.Config.API.RequireAuth {
 			s.configMu.RUnlock()
 			s.logger.Info("require middleware: bypassing auth")
@@ -1845,7 +808,7 @@ func (s *Server) require(perm storage.Permission, handler http.Handler) http.Han
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			// Could be Session Token OR API Key.
 			token := strings.TrimPrefix(authHeader, "Bearer ")
-			if strings.HasPrefix(token, "gfw_") && s.apiKeyManager != nil {
+			if strings.HasPrefix(token, brand.APIKeyPrefixFull()) && s.apiKeyManager != nil {
 				apiKeyStr = token
 			}
 		} else if strings.HasPrefix(authHeader, "ApiKey ") {

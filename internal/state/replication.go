@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"grimm.is/flywall/internal/clock"
 	"io"
 	"net"
 	"sync"
 	"time"
+
+	"grimm.is/flywall/internal/clock"
 
 	"grimm.is/flywall/internal/logging"
 )
@@ -29,6 +30,13 @@ type ReplicationConfig struct {
 	PrimaryAddr    string        // For replica: where to connect to primary
 	ReconnectDelay time.Duration // How long to wait before reconnecting
 	SyncTimeout    time.Duration // Timeout for initial sync
+
+	// Security settings
+	SecretKey   string // PSK for HMAC authentication (required for secure mode)
+	TLSCertFile string // Server/client certificate file
+	TLSKeyFile  string // Server/client private key file
+	TLSCAFile   string // CA certificate for verification
+	TLSMutual   bool   // Require mutual TLS
 }
 
 // DefaultReplicationConfig returns sensible defaults.
@@ -38,6 +46,17 @@ func DefaultReplicationConfig() ReplicationConfig {
 		ListenAddr:     ":9999",
 		ReconnectDelay: 5 * time.Second,
 		SyncTimeout:    30 * time.Second,
+	}
+}
+
+// securityConfig converts ReplicationConfig to SecurityConfig.
+func (c ReplicationConfig) securityConfig() SecurityConfig {
+	return SecurityConfig{
+		SecretKey:   c.SecretKey,
+		TLSCertFile: c.TLSCertFile,
+		TLSKeyFile:  c.TLSKeyFile,
+		TLSCAFile:   c.TLSCAFile,
+		TLSMutual:   c.TLSMutual,
 	}
 }
 
@@ -118,7 +137,8 @@ func (r *Replicator) Stop() {
 
 // startPrimary starts the primary replication server.
 func (r *Replicator) startPrimary() error {
-	listener, err := net.Listen("tcp", r.config.ListenAddr)
+	// Use secure listener (TLS if configured)
+	listener, err := newSecureListener(r.config.ListenAddr, r.config.securityConfig())
 	if err != nil {
 		return fmt.Errorf("failed to start replication listener: %w", err)
 	}
@@ -156,6 +176,39 @@ func (r *Replicator) handleReplica(conn net.Conn) {
 
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
+
+	// PSK Authentication handshake (if secret_key is configured)
+	if r.config.SecretKey != "" {
+		nonce, err := generateNonce()
+		if err != nil {
+			r.logger.Warn("Failed to generate nonce", "addr", addr, "error", err)
+			conn.Close()
+			return
+		}
+
+		// Send challenge
+		if err := encoder.Encode(authChallenge{Nonce: nonce}); err != nil {
+			r.logger.Warn("Failed to send auth challenge", "addr", addr, "error", err)
+			conn.Close()
+			return
+		}
+
+		// Receive response
+		var resp authResponse
+		if err := decoder.Decode(&resp); err != nil {
+			r.logger.Warn("Failed to read auth response", "addr", addr, "error", err)
+			conn.Close()
+			return
+		}
+
+		// Verify HMAC
+		if !verifyMAC(nonce, resp.MAC, []byte(r.config.SecretKey)) {
+			r.logger.Warn("Authentication failed", "addr", addr)
+			conn.Close()
+			return
+		}
+		r.logger.Info("Replica authenticated", "addr", addr)
+	}
 
 	// Read sync request
 	var req syncRequest
@@ -290,13 +343,32 @@ func (r *Replicator) replicaLoop() {
 
 // connectToPrimary establishes connection and performs initial sync.
 func (r *Replicator) connectToPrimary() error {
-	conn, err := net.DialTimeout("tcp", r.config.PrimaryAddr, r.config.SyncTimeout)
+	// Use secure dialer (TLS if configured)
+	conn, err := dialSecure(r.config.PrimaryAddr, r.config.securityConfig(), r.config.SyncTimeout)
 	if err != nil {
 		return err
 	}
 
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
+
+	// PSK Authentication handshake (if secret_key is configured)
+	if r.config.SecretKey != "" {
+		// Receive challenge from server
+		var challenge authChallenge
+		if err := decoder.Decode(&challenge); err != nil {
+			conn.Close()
+			return fmt.Errorf("failed to read auth challenge: %w", err)
+		}
+
+		// Compute and send HMAC response
+		mac := computeMAC(challenge.Nonce, []byte(r.config.SecretKey))
+		if err := encoder.Encode(authResponse{MAC: mac}); err != nil {
+			conn.Close()
+			return fmt.Errorf("failed to send auth response: %w", err)
+		}
+		r.logger.Debug("Authenticated with primary")
+	}
 
 	// Send sync request
 	req := syncRequest{
@@ -444,4 +516,42 @@ type syncResponse struct {
 type replicationMessage struct {
 	Type   string  `json:"type"` // "change"
 	Change *Change `json:"change,omitempty"`
+}
+
+// ReplicatorStatus contains the operational status of the replicator.
+type ReplicatorStatus struct {
+	Mode         string `json:"mode"`
+	Connected    bool   `json:"connected"`
+	PeerAddress  string `json:"peer_address"`
+	SyncState    string `json:"sync_state"`
+	Version      uint64 `json:"version"`
+	ReplicaCount int    `json:"replica_count"`
+}
+
+// Status returns the current operational status.
+func (r *Replicator) Status() ReplicatorStatus {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	status := ReplicatorStatus{
+		Mode:        string(r.config.Mode),
+		Version:     r.store.CurrentVersion(),
+		PeerAddress: r.config.ListenAddr,
+	}
+
+	if r.config.Mode == ModeReplica {
+		status.PeerAddress = r.config.PrimaryAddr
+		if r.primary != nil {
+			status.Connected = true
+			status.SyncState = "synced"
+		} else {
+			status.SyncState = "connecting"
+		}
+	} else if r.config.Mode == ModePrimary {
+		status.ReplicaCount = len(r.replicas)
+		status.Connected = len(r.replicas) > 0
+		status.SyncState = "serving"
+	}
+
+	return status
 }

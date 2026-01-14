@@ -1,9 +1,10 @@
 <script lang="ts">
   /**
    * Routing Page
-   * Static routes management
+   * Static routes management + Kernel routing table view
    */
 
+  import { onMount } from "svelte";
   import { config, api } from "$lib/stores/app";
   import {
     Card,
@@ -23,7 +24,29 @@
   let editingIndex = $state<number | null>(null);
   let isEditMode = $derived(editingIndex !== null);
 
-  let activeTab = $state<"routes" | "marks" | "uid">("routes");
+  let activeTab = $state<"kernel" | "routes" | "marks" | "uid">("kernel");
+
+  // Kernel routes (live from system)
+  let kernelRoutes = $state<any[]>([]);
+  let kernelRoutesLoading = $state(false);
+  let kernelRoutesError = $state<string | null>(null);
+
+  onMount(() => {
+    loadKernelRoutes();
+  });
+
+  async function loadKernelRoutes() {
+    kernelRoutesLoading = true;
+    kernelRoutesError = null;
+    try {
+      const result = await api.getSystemRoutes();
+      kernelRoutes = result.routes || [];
+    } catch (e: any) {
+      kernelRoutesError = e.message || "Failed to load kernel routes";
+    } finally {
+      kernelRoutesLoading = false;
+    }
+  }
 
   // Route form
   let routeDestination = $state("");
@@ -286,21 +309,91 @@
 
   <div class="tabs">
     <Button
+      variant={activeTab === "kernel" ? "default" : "ghost"}
+      onclick={() => (activeTab = "kernel")}
+      aria-pressed={activeTab === "kernel"}>Kernel Routes</Button
+    >
+    <Button
       variant={activeTab === "routes" ? "default" : "ghost"}
       onclick={() => (activeTab = "routes")}
+      aria-pressed={activeTab === "routes"}
       >{$t("routing.static_routes")}</Button
     >
     <Button
       variant={activeTab === "marks" ? "default" : "ghost"}
-      onclick={() => (activeTab = "marks")}>{$t("routing.mark_rules")}</Button
+      onclick={() => (activeTab = "marks")}
+      aria-pressed={activeTab === "marks"}>{$t("routing.mark_rules")}</Button
     >
     <Button
       variant={activeTab === "uid" ? "default" : "ghost"}
-      onclick={() => (activeTab = "uid")}>{$t("routing.user_routing")}</Button
+      onclick={() => (activeTab = "uid")}
+      aria-pressed={activeTab === "uid"}>{$t("routing.user_routing")}</Button
     >
   </div>
 
-  {#if activeTab === "routes"}
+  {#if activeTab === "kernel"}
+    <div class="sub-header">
+      <h3>Kernel Routing Table</h3>
+      <Button
+        onclick={loadKernelRoutes}
+        size="sm"
+        disabled={kernelRoutesLoading}
+      >
+        <Icon name="refresh" size="sm" />
+        Refresh
+      </Button>
+    </div>
+    <Card>
+      {#if kernelRoutesLoading}
+        <div class="loading-state">
+          <Spinner size="md" />
+          <span>Loading kernel routes...</span>
+        </div>
+      {:else if kernelRoutesError}
+        <p class="error-message">{kernelRoutesError}</p>
+      {:else if kernelRoutes.length === 0}
+        <p class="empty-message">No kernel routes found</p>
+      {:else}
+        <div class="kernel-routes-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Destination</th>
+                <th>Gateway</th>
+                <th>Interface</th>
+                <th>Metric</th>
+                <th>Protocol</th>
+                <th>Scope</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each kernelRoutes as route}
+                <tr>
+                  <td
+                    ><code>{route.destination || route.dst || "default"}</code
+                    ></td
+                  >
+                  <td><code>{route.gateway || route.gw || "-"}</code></td>
+                  <td
+                    ><Badge variant="outline"
+                      >{route.interface || route.dev || "-"}</Badge
+                    ></td
+                  >
+                  <td>{route.metric || route.priority || "-"}</td>
+                  <td
+                    ><Badge variant="secondary"
+                      >{route.protocol || route.proto || "-"}</Badge
+                    ></td
+                  >
+                  <td>{route.scope || "-"}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+    </Card>
+  {:else if activeTab === "routes"}
     <div class="sub-header">
       <h3>{$t("routing.static_routes")}</h3>
       <Button onclick={openAddRoute} size="sm"
@@ -700,5 +793,55 @@
     margin-top: var(--space-4);
     padding-top: var(--space-4);
     border-top: 1px solid var(--color-border);
+  }
+
+  /* Kernel Routes Table */
+  .kernel-routes-table {
+    overflow-x: auto;
+  }
+
+  .kernel-routes-table table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+  }
+
+  .kernel-routes-table th,
+  .kernel-routes-table td {
+    padding: var(--space-2) var(--space-3);
+    text-align: left;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .kernel-routes-table th {
+    font-weight: 600;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .kernel-routes-table td code {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+  }
+
+  .kernel-routes-table tr:hover {
+    background: var(--color-backgroundSecondary);
+  }
+
+  .loading-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    padding: var(--space-8);
+    color: var(--color-muted);
+  }
+
+  .error-message {
+    color: var(--color-destructive);
+    text-align: center;
+    padding: var(--space-4);
   }
 </style>

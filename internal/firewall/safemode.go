@@ -23,7 +23,7 @@ type SafeModeConfig struct {
 // The interfaces parameter specifies which interfaces are considered "trusted"
 // for management access. If empty, all non-WAN interfaces are assumed trusted.
 func BuildSafeModeScript(tableName string, trustedInterfaces []string) string {
-	sb := NewScriptBuilder(tableName, "inet")
+	sb := NewScriptBuilder(tableName, "inet", "UTC")
 
 	// Flush and recreate table
 	sb.AddLine("flush ruleset")

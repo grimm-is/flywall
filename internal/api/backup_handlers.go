@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"grimm.is/flywall/internal/config"
 )
@@ -184,6 +185,10 @@ func (s *Server) handleSchedulerRun(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger via RPC
 	if err := s.client.TriggerTask(taskID); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			WriteErrorCtx(w, r, http.StatusNotFound, "Task not found")
+			return
+		}
 		WriteErrorCtx(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to trigger task: %v", err))
 		return
 	}

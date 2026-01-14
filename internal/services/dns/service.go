@@ -18,16 +18,17 @@ import (
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/logging"
 	"grimm.is/flywall/internal/services"
+	"grimm.is/flywall/internal/services/dns/querylog"
 	"grimm.is/flywall/internal/upgrade"
 
 	"github.com/miekg/dns"
 )
 
 type Service struct {
-	servers        []*dns.Server
-	config         *config.DNSServer
-	upstreams        []upstream // Unified list of upstreams (UDP, DoT, DoH)
-	dynamicUpstreams []upstream // From DHCP/etc
+	servers          []*dns.Server
+	config           *config.DNSServer
+	upstreams        []upstream                  // Unified list of upstreams (UDP, DoT, DoH)
+	dynamicUpstreams []upstream                  // From DHCP/etc
 	records          map[string]config.DNSRecord // FQDN -> Record
 	blockedDomains   map[string]bool             // Blocked domains
 	cache            map[string]cachedResponse
@@ -36,10 +37,13 @@ type Service struct {
 	stopCleanup      chan struct{}
 	upgradeMgr       *upgrade.Manager
 	fw               ValidatingFirewall
-	
+
 	// Egress Filter State
 	egressFilterEnabled bool
 	egressFilterTTL     int
+
+	// Query Logging
+	queryLog *querylog.Store
 }
 
 // ValidatingFirewall defines the interface for firewall authorization
@@ -82,6 +86,13 @@ func (s *Service) SetUpgradeManager(mgr *upgrade.Manager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.upgradeMgr = mgr
+}
+
+// SetQueryLog sets the query log store
+func (s *Service) SetQueryLog(store *querylog.Store) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queryLog = store
 }
 
 // Name returns the service name.
@@ -164,7 +175,7 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 	if cfg.DNS != nil && (len(cfg.DNS.Serve) > 0 || len(cfg.DNS.Forwarders) > 0 || cfg.DNS.Mode != "") {
 		activeMode = "new"
 	}
-	
+
 	// Update Egress Filter State
 	s.mu.Lock()
 	if cfg.DNS != nil {
@@ -716,6 +727,45 @@ func (s *Service) RemoveBlockedDomains(domains []string) {
 // Old Start/Stop methods replaced by interface methods
 
 func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	startTime := time.Now()
+	clientIP, _, _ := net.SplitHostPort(w.RemoteAddr().String())
+
+	var (
+		rcode        = dns.RcodeSuccess
+		upstreamAddr string
+		blocked      bool
+		blockList    string
+		resp         *dns.Msg
+		pType        string
+	)
+
+	if len(r.Question) > 0 {
+		pType = dns.TypeToString[r.Question[0].Qtype]
+	}
+
+	// Defer logging
+	defer func() {
+		if s.queryLog != nil && len(r.Question) > 0 {
+			entry := querylog.Entry{
+				Timestamp:  startTime,
+				ClientIP:   clientIP,
+				Domain:     strings.ToLower(r.Question[0].Name),
+				Type:       pType,
+				RCode:      dns.RcodeToString[rcode],
+				Upstream:   upstreamAddr,
+				DurationMs: time.Since(startTime).Milliseconds(),
+				Blocked:    blocked,
+				BlockList:  blockList,
+			}
+			// Async log
+			go func() {
+				if err := s.queryLog.RecordEntry(entry); err != nil {
+					// Silent failure or debug log
+				}
+			}()
+		}
+	}()
+
 	msg := new(dns.Msg)
 	msg.SetReply(r)
 	msg.Compress = false
@@ -730,16 +780,18 @@ func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	// Check Blocklists
 	s.mu.RLock()
-	blocked := s.blockedDomains[name]
+	isBlocked := s.blockedDomains[name]
 	// Also check without trailing dot
-	if !blocked && strings.HasSuffix(name, ".") {
-		blocked = s.blockedDomains[name[:len(name)-1]]
+	if !isBlocked && strings.HasSuffix(name, ".") {
+		isBlocked = s.blockedDomains[name[:len(name)-1]]
 	}
 	s.mu.RUnlock()
 
-	if blocked {
+	if isBlocked {
+		blocked = true
 		log.Printf("[DNS] Blocked query for %s", name)
 		msg.Rcode = dns.RcodeNameError // NXDOMAIN
+		rcode = dns.RcodeNameError
 		w.WriteMsg(msg)
 		return
 	}
@@ -751,8 +803,9 @@ func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	s.mu.RUnlock()
 
 	if found && clock.Now().Before(cached.expiresAt) {
-		resp := cached.msg.Copy()
+		resp = cached.msg.Copy()
 		resp.SetReply(r)
+		rcode = resp.Rcode
 		w.WriteMsg(resp)
 		return
 	}
@@ -763,12 +816,6 @@ func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	s.mu.RUnlock()
 
 	if ok {
-		// Check type matches (or handled CNAME?)
-		// For now strictly match type requested vs type configured
-		// If q.Qtype is A and we have A, good.
-		// If q.Qtype is AAAA and we have A, empty response (NODATA) or next logic?
-		// Simplified: only return if type matches.
-
 		rr := s.createRR(q, rec)
 		if rr != nil {
 			msg.Answer = append(msg.Answer, rr)
@@ -786,7 +833,15 @@ func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 			for _, srv := range cf.Servers {
 				cfUpstreams = append(cfUpstreams, upstream{Addr: srv, Protocol: "udp"})
 			}
-			s.forwardTo(w, r, cfUpstreams)
+
+			resp, upstreamAddr = s.forward(r, cfUpstreams)
+			if resp != nil {
+				rcode = resp.Rcode
+				w.WriteMsg(resp)
+			} else {
+				rcode = dns.RcodeServerFailure
+				dns.HandleFailed(w, r)
+			}
 			return
 		}
 	}
@@ -804,12 +859,20 @@ func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	s.mu.RUnlock()
 
 	if len(allUpstreams) > 0 {
-		s.forwardTo(w, r, allUpstreams)
+		resp, upstreamAddr = s.forward(r, allUpstreams)
+		if resp != nil {
+			rcode = resp.Rcode
+			w.WriteMsg(resp)
+		} else {
+			rcode = dns.RcodeServerFailure
+			dns.HandleFailed(w, r)
+		}
 		return
 	}
 
 	// NXDOMAIN
 	msg.Rcode = dns.RcodeNameError
+	rcode = dns.RcodeNameError
 	w.WriteMsg(msg)
 }
 
@@ -859,9 +922,9 @@ func (s *Service) createRR(q dns.Question, rec config.DNSRecord) dns.RR {
 	return nil
 }
 
-func (s *Service) forwardTo(w dns.ResponseWriter, r *dns.Msg, upstreams []upstream) {
+func (s *Service) forward(r *dns.Msg, upstreams []upstream) (*dns.Msg, string) {
 	if r == nil || len(r.Question) == 0 {
-		return
+		return nil, ""
 	}
 
 	c := new(dns.Client)
@@ -915,19 +978,16 @@ func (s *Service) forwardTo(w dns.ResponseWriter, r *dns.Msg, upstreams []upstre
 			// DNSSEC Validation Check
 			if s.config.DNSSEC && !validateResponse(resp) {
 				// Only warn for now, don't drop (Soft Fail)
-				// Real validation would require local trust anchors or hard fail mode
 				log.Printf("[DNSSEC] Warning: Response from %s not authenticated (AD bit unset)", up.Addr)
 			}
 
 			s.cacheResponse(r, resp)
-			w.WriteMsg(resp)
-			return
+			return resp, up.Addr
 		}
 	}
 
 	// Failed to forward
-	log.Printf("[DNS] All forwarders failed")
-	dns.HandleFailed(w, r)
+	return nil, ""
 }
 
 // GetCache returns the current DNS cache entries for upgrade state preservation
@@ -1019,7 +1079,6 @@ func (s *Service) cacheResponse(req, resp *dns.Msg) {
 		}
 	}
 
-	
 	// Snoop response for firewall authorization
 	s.snoopResponse(resp)
 }

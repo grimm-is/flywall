@@ -52,10 +52,12 @@ else
     ok 1 "flywall apply --dry-run exit code $EXIT_CODE"
 fi
 
-if echo "$OUTPUT" | grep -q "flush ruleset"; then
+if echo "$OUTPUT" | grep -q "table inet flywall"; then
     ok 0 "flywall apply --dry-run generated rules"
 else
     ok 1 "flywall apply --dry-run did not generate expected rules"
+    echo "# Output was:"
+    echo "$OUTPUT"
 fi
 
 # Scenario 3.2: Dry-run invalid config should fail

@@ -549,6 +549,22 @@
     color: var(--color-foreground);
   }
 
+  .scope-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-3);
+  }
+
+  .scope-header h4 {
+    margin: 0;
+  }
+
+  .scope-actions {
+    display: flex;
+    gap: var(--space-1);
+  }
+
   .scope-details {
     display: flex;
     flex-direction: column;

@@ -1,18 +1,42 @@
 <script lang="ts">
   /**
    * Logs Page
-   * Live streaming logs viewer
+   * Live streaming logs viewer + Audit trail
    */
 
   import { onMount, tick } from "svelte";
-  import { logs } from "$lib/stores/app";
-  import { Card, Button, Select, Badge, Toggle } from "$lib/components";
+  import { logs, api } from "$lib/stores/app";
+  import {
+    Card,
+    Button,
+    Select,
+    Badge,
+    Toggle,
+    Spinner,
+    Icon,
+  } from "$lib/components";
   import { t } from "svelte-i18n";
 
+  let activeTab = $state<"logs" | "audit">("logs");
   let autoScroll = $state(true);
   let levelFilter = $state("all");
   let sourceFilter = $state("all");
   let logContainer = $state<HTMLDivElement | null>(null);
+
+  // Audit state
+  interface AuditEvent {
+    id: number;
+    timestamp: string;
+    action: string;
+    user: string;
+    target: string;
+    details: string;
+    ip: string;
+  }
+
+  let auditEvents = $state<AuditEvent[]>([]);
+  let auditLoading = $state(false);
+  let auditError = $state<string | null>(null);
 
   const LOG_SOURCES = [
     { value: "all", label: $t("logs.all_sources") },
@@ -58,64 +82,178 @@
     }
   }
 
+  function getActionColor(action: string) {
+    if (action.startsWith("create") || action.startsWith("add"))
+      return "default";
+    if (action.startsWith("delete") || action.startsWith("remove"))
+      return "destructive";
+    if (action.startsWith("update") || action.startsWith("modify"))
+      return "warning";
+    if (action === "login") return "secondary";
+    return "outline";
+  }
+
+  async function loadAuditLog() {
+    auditLoading = true;
+    auditError = null;
+    try {
+      const result = await api.getAuditLog(100, 0);
+      auditEvents = result.events || [];
+    } catch (e: any) {
+      auditError = e.message || "Failed to load audit log";
+    } finally {
+      auditLoading = false;
+    }
+  }
+
+  function formatTimestamp(ts: string): string {
+    return new Date(ts).toLocaleString();
+  }
+
   // Auto-scroll when logs change
   $effect(() => {
     if (filteredLogs.length > 0 && autoScroll) {
       tick().then(scrollToBottom);
     }
   });
+
+  // Load audit on tab switch
+  $effect(() => {
+    if (activeTab === "audit" && auditEvents.length === 0) {
+      loadAuditLog();
+    }
+  });
 </script>
 
 <div class="logs-page">
-  <div class="page-header">
-    <div class="header-controls">
-      <Select
-        id="source-filter"
-        bind:value={sourceFilter}
-        options={LOG_SOURCES}
-      />
-      <Select
-        id="level-filter"
-        bind:value={levelFilter}
-        options={[
-          { value: "all", label: $t("logs.all_levels") },
-          { value: "error", label: $t("logs.errors") },
-          { value: "warn", label: $t("logs.warnings") },
-          { value: "info", label: $t("logs.info") },
-          { value: "debug", label: $t("logs.debug") },
-        ]}
-      />
-      <Toggle label={$t("logs.auto_scroll")} bind:checked={autoScroll} />
-      <Button variant="ghost" size="sm" onclick={clearLogs}
-        >{$t("logs.clear")}</Button
-      >
-    </div>
+  <!-- Tabs -->
+  <div class="tabs">
+    <button
+      class:active={activeTab === "logs"}
+      onclick={() => (activeTab = "logs")}
+    >
+      <Icon name="list" size="sm" /> Streaming Logs
+    </button>
+    <button
+      class:active={activeTab === "audit"}
+      onclick={() => (activeTab = "audit")}
+    >
+      <Icon name="history" size="sm" /> Audit Trail
+    </button>
   </div>
 
-  <Card>
-    <div class="log-viewer" bind:this={logContainer}>
-      {#if filteredLogs.length === 0}
-        <p class="empty-message">
-          {$t("common.no_items", { values: { items: $t("item.log") } })}
-        </p>
-      {:else}
-        {#each filteredLogs as log}
-          <div
-            class="log-entry"
-            class:error={log.level === "error"}
-            class:warn={log.level === "warn"}
-          >
-            <span class="log-time">{log.timestamp}</span>
-            <Badge variant={getLevelColor(log.level)}>{log.level}</Badge>
-            {#if log.source}
-              <span class="log-source">[{log.source}]</span>
-            {/if}
-            <span class="log-message">{log.message}</span>
-          </div>
-        {/each}
-      {/if}
+  {#if activeTab === "logs"}
+    <div class="page-header">
+      <div class="header-controls">
+        <Select
+          id="source-filter"
+          bind:value={sourceFilter}
+          options={LOG_SOURCES}
+        />
+        <Select
+          id="level-filter"
+          bind:value={levelFilter}
+          options={[
+            { value: "all", label: $t("logs.all_levels") },
+            { value: "error", label: $t("logs.errors") },
+            { value: "warn", label: $t("logs.warnings") },
+            { value: "info", label: $t("logs.info") },
+            { value: "debug", label: $t("logs.debug") },
+          ]}
+        />
+        <Toggle label={$t("logs.auto_scroll")} bind:checked={autoScroll} />
+        <Button variant="ghost" size="sm" onclick={clearLogs}
+          >{$t("logs.clear")}</Button
+        >
+      </div>
     </div>
-  </Card>
+
+    <Card>
+      <div class="log-viewer" bind:this={logContainer}>
+        {#if filteredLogs.length === 0}
+          <p class="empty-message">
+            {$t("common.no_items", { values: { items: $t("item.log") } })}
+          </p>
+        {:else}
+          {#each filteredLogs as log}
+            <div
+              class="log-entry"
+              class:error={log.level === "error"}
+              class:warn={log.level === "warn"}
+            >
+              <span class="log-time">{log.timestamp}</span>
+              <Badge variant={getLevelColor(log.level)}>{log.level}</Badge>
+              {#if log.source}
+                <span class="log-source">[{log.source}]</span>
+              {/if}
+              <span class="log-message">{log.message}</span>
+            </div>
+          {/each}
+        {/if}
+      </div>
+    </Card>
+  {:else}
+    <!-- Audit Tab -->
+    <div class="page-header">
+      <div class="header-controls">
+        <Button
+          variant="outline"
+          size="sm"
+          onclick={loadAuditLog}
+          disabled={auditLoading}
+        >
+          <Icon name="refresh" size="sm" /> Refresh
+        </Button>
+      </div>
+    </div>
+
+    <Card>
+      <div class="audit-viewer">
+        {#if auditLoading}
+          <div class="loading-state">
+            <Spinner size="md" />
+            <span>Loading audit log...</span>
+          </div>
+        {:else if auditError}
+          <div class="error-state">{auditError}</div>
+        {:else if auditEvents.length === 0}
+          <div class="empty-state">
+            <Icon name="check_circle" size={48} />
+            <p>No audit events</p>
+            <span class="text-muted">User actions will be logged here</span>
+          </div>
+        {:else}
+          <table class="audit-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>User</th>
+                <th>Action</th>
+                <th>Target</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each auditEvents as event}
+                <tr>
+                  <td class="timestamp">{formatTimestamp(event.timestamp)}</td>
+                  <td><Badge variant="secondary">{event.user || "-"}</Badge></td
+                  >
+                  <td
+                    ><Badge variant={getActionColor(event.action)}
+                      >{event.action}</Badge
+                    ></td
+                  >
+                  <td><code>{event.target || "-"}</code></td>
+                  <td class="details">{event.details || "-"}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+      </div>
+    </Card>
+  {/if}
 </div>
 
 <style>
@@ -126,19 +264,43 @@
     height: 100%;
   }
 
+  .tabs {
+    display: flex;
+    gap: var(--space-2);
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: var(--space-2);
+  }
+
+  .tabs button {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    background: none;
+    border: none;
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-md);
+    color: var(--color-muted);
+    cursor: pointer;
+    font-size: var(--text-sm);
+    font-weight: 500;
+    transition: all var(--transition-fast);
+  }
+
+  .tabs button:hover {
+    color: var(--color-foreground);
+  }
+
+  .tabs button.active {
+    background: var(--color-backgroundSecondary);
+    color: var(--color-foreground);
+  }
+
   .page-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     flex-wrap: wrap;
     gap: var(--space-4);
-  }
-
-  .page-header h2 {
-    font-size: var(--text-2xl);
-    font-weight: 600;
-    margin: 0;
-    color: var(--color-foreground);
   }
 
   .header-controls {
@@ -195,5 +357,86 @@
     text-align: center;
     padding: var(--space-6);
     margin: 0;
+  }
+
+  /* Audit styles */
+  .audit-viewer {
+    overflow-x: auto;
+  }
+
+  .audit-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+  }
+
+  .audit-table th,
+  .audit-table td {
+    padding: var(--space-3);
+    text-align: left;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .audit-table th {
+    font-weight: 600;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+  }
+
+  .audit-table td code {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    background: var(--color-backgroundSecondary);
+    padding: var(--space-1);
+    border-radius: var(--radius-sm);
+  }
+
+  .audit-table .timestamp {
+    white-space: nowrap;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+
+  .audit-table .details {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .loading-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    padding: var(--space-8);
+    color: var(--color-muted);
+  }
+
+  .error-state {
+    color: var(--color-destructive);
+    text-align: center;
+    padding: var(--space-4);
+  }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-8);
+    color: var(--color-muted);
+    text-align: center;
+  }
+
+  .empty-state p {
+    font-size: var(--text-lg);
+    font-weight: 500;
+    margin: 0;
+  }
+
+  .text-muted {
+    color: var(--color-muted);
   }
 </style>

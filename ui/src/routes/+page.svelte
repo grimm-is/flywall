@@ -1,720 +1,738 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
-  import {
-    currentView,
-    brand,
-    currentPage,
-    pages,
-    status,
-    config,
-    api,
-    theme,
-  } from "$lib/stores/app";
-  import {
-    connectWebSocket,
-    disconnectWebSocket,
-    wsConnected,
-  } from "$lib/stores/websocket";
-  import Button from "$lib/components/Button.svelte";
-  import Input from "$lib/components/Input.svelte";
-  import Card from "$lib/components/Card.svelte";
-  import Modal from "$lib/components/Modal.svelte";
-  import SearchBar from "$lib/components/SearchBar.svelte";
-  import ThemeToggle from "$lib/components/ThemeToggle.svelte";
-  import Toast from "$lib/components/Toast.svelte";
-  import NotificationBell from "$lib/components/NotificationBell.svelte";
-  import { t } from "svelte-i18n";
+    import { t } from "svelte-i18n";
+    import { onMount } from "svelte";
+    import {
+        zones,
+        wanZones,
+        lanZones,
+        totalDevices,
+        type AggregatedZone,
+    } from "$lib/stores/zones";
+    import { containers } from "$lib/stores/runtime";
+    import { api } from "$lib/stores/app";
+    import TopologyGraph from "$lib/components/TopologyGraph.svelte";
+    import ZoneCard from "$lib/components/ZoneCard.svelte";
+    import Icon from "$lib/components/Icon.svelte";
 
-  // Page components
-  import {
-    Dashboard,
-    Interfaces,
-    Firewall,
-    DHCP,
-    DNS,
-    NAT,
-    Zones,
-    IPSets,
-    Routing,
-    VPN,
-    Network,
-    Logs,
-    Scanner,
-    NetworkLearning,
-    Settings,
-    NotFound,
-  } from "$lib/pages";
+    // System stats
+    let systemStats = $state<any>(null);
+    let statsError = $state<string | null>(null);
 
-  // Login form state
-  let loginUsername = $state("");
-  let loginPassword = $state("");
-  let loginError = $state("");
-
-  // Setup form state
-  let setupUsername = $state("admin");
-  let setupPassword = $state("");
-  let setupConfirm = $state("");
-  let setupError = $state("");
-  let sidebarOpen = $state(false);
-
-  function closeSidebar() {
-    sidebarOpen = false;
-  }
-
-  async function handleLogin() {
-    loginError = "";
-    try {
-      await api.login(loginUsername, loginPassword);
-      await api.loadDashboard();
-      currentView.set("app");
-    } catch (e: any) {
-      loginError = e.message || "Login failed";
+    async function loadStats() {
+        try {
+            systemStats = await api.getSystemStats();
+            statsError = null;
+        } catch (e: any) {
+            statsError = e.message || "Failed to load stats";
+        }
     }
-  }
 
-  async function handleSetup() {
-    setupError = "";
-    if (setupPassword !== setupConfirm) {
-      setupError = "Passwords do not match";
-      return;
+    function formatBytes(bytes: number): string {
+        if (bytes === 0) return "0 B";
+        const k = 1024;
+        const sizes = ["B", "KB", "MB", "GB", "TB"];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
     }
-    if (setupPassword.length < 8) {
-      setupError = "Password must be at least 8 characters";
-      return;
+
+    function formatUptime(seconds: number): string {
+        const days = Math.floor(seconds / 86400);
+        const hours = Math.floor((seconds % 86400) / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        if (days > 0) return `${days}d ${hours}h`;
+        if (hours > 0) return `${hours}h ${mins}m`;
+        return `${mins}m`;
     }
-    try {
-      await api.createAdmin(setupUsername, setupPassword);
-      await api.loadDashboard();
-      currentView.set("app");
-    } catch (e: any) {
-      setupError = e.message || "Setup failed";
+
+    // Hero visualization collapsed state (persisted)
+    let heroCollapsed = $state(false);
+
+    // Load from localStorage on mount
+    $effect(() => {
+        const saved = localStorage.getItem("dashboard:hero-collapsed");
+        if (saved !== null) heroCollapsed = saved === "true";
+    });
+
+    function toggleHero() {
+        heroCollapsed = !heroCollapsed;
+        localStorage.setItem("dashboard:hero-collapsed", String(heroCollapsed));
     }
-  }
 
-  // Connect WebSocket when authenticated
-  onMount(() => {
-    // Sync current page from hash
-    currentPage.syncWithHash();
-
-    // Connect if already authenticated
-    if ($currentView === "app") {
-      connectWebSocket(["status", "logs", "stats", "notification"]);
+    // Uplink Groups (Multi-WAN)
+    interface UplinkGroup {
+        name: string;
+        active_uplink: string;
+        uplinks: Array<{
+            name: string;
+            enabled: boolean;
+            healthy: boolean;
+            interface: string;
+            weight?: number;
+        }>;
     }
-  });
 
-  onDestroy(() => {
-    disconnectWebSocket();
-  });
+    let uplinkGroups = $state<UplinkGroup[]>([]);
+    let uplinkLoading = $state(false);
 
-  // Also connect when transitioning to app view
-  $effect(() => {
-    if ($currentView === "app") {
-      connectWebSocket(["status", "logs", "stats", "notification"]);
+    async function loadUplinkGroups() {
+        uplinkLoading = true;
+        try {
+            uplinkGroups = await api.getUplinkGroups();
+        } catch (e) {
+            console.log("Uplinks not configured or unavailable");
+            uplinkGroups = [];
+        } finally {
+            uplinkLoading = false;
+        }
     }
-  });
 
-  function toggleTheme() {
-    const current = $theme;
-    const next =
-      current === "light" ? "dark" : current === "dark" ? "system" : "light";
-    theme.set(next);
-  }
+    async function switchUplink(groupName: string, uplinkName: string) {
+        try {
+            await api.switchUplink(groupName, uplinkName);
+            await loadUplinkGroups();
+        } catch (e: any) {
+            console.error("Failed to switch uplink:", e);
+        }
+    }
 
-  const pageTitle = $derived(
-    $pages.find((p) => p.id === $currentPage)?.label || "Dashboard",
-  );
+    async function toggleUplink(
+        groupName: string,
+        uplinkName: string,
+        enabled: boolean,
+    ) {
+        try {
+            await api.toggleUplink(groupName, uplinkName, enabled);
+            await loadUplinkGroups();
+        } catch (e: any) {
+            console.error("Failed to toggle uplink:", e);
+        }
+    }
+
+    onMount(() => {
+        loadStats();
+        loadUplinkGroups();
+        const interval = setInterval(loadStats, 10000); // Refresh every 10s
+        return () => clearInterval(interval);
+    });
+
+    // Build topology graph from aggregated zones
+    let topologyGraph = $derived(() => {
+        const nodes: any[] = [
+            { id: "router", type: "router", label: "Router", ip: "" },
+        ];
+        const links: any[] = [];
+
+        // Connect WAN zones to internet
+        if ($wanZones.length > 0) {
+            nodes.push({
+                id: "internet",
+                type: "cloud",
+                label: "Internet",
+                ip: "",
+            });
+            for (const zone of $wanZones) {
+                nodes.push({
+                    id: zone.name,
+                    type: "wan",
+                    label: zone.name.toUpperCase(),
+                    ip: zone.ips[0] || "",
+                });
+                links.push({ source: "router", target: zone.name });
+                links.push({ source: zone.name, target: "internet" });
+            }
+        }
+
+        // LAN zones connect to router
+        for (const zone of $lanZones) {
+            nodes.push({
+                id: zone.name,
+                type: "switch",
+                label: zone.name.toUpperCase(),
+                ip: zone.ip || "",
+                deviceCount: zone.deviceCount,
+            });
+            links.push({ source: "router", target: zone.name });
+        }
+
+        // Containers connect to router (Host)
+        for (const c of $containers) {
+            const name = c.Names[0]?.replace(/^\//, "") || c.Id.slice(0, 12);
+            // Find primary IP
+            let ip = "";
+            const networks = Object.values(c.NetworkSettings.Networks);
+            if (networks.length > 0) ip = networks[0].IPAddress;
+
+            nodes.push({
+                id: c.Id,
+                type: "container",
+                label: name,
+                ip: ip,
+                description: c.Image,
+                icon: "container",
+            });
+            links.push({ source: "router", target: c.Id }); // Logic: Host runs containers
+        }
+
+        return { nodes, links };
+    });
 </script>
 
-<!-- Loading View -->
-{#if $currentView === "loading"}
-  <div class="loading-view">
-    <div class="loading-content">
-      <div class="loading-icon">🛡️</div>
-      <p class="loading-text">{$t("common.loading")}</p>
-    </div>
-  </div>
-
-  <!-- Setup View -->
-{:else if $currentView === "setup"}
-  <div class="auth-view">
-    <div class="auth-container">
-      <div class="auth-header">
-        <div class="auth-icon">🛡️</div>
-        <h1 class="auth-title">
-          {$t("auth.setup_title", { values: { name: $brand?.name } })}
-        </h1>
-        <p class="auth-subtitle">{$t("auth.setup_subtitle")}</p>
-      </div>
-
-      <Card class="auth-card">
-        <form
-          onsubmit={(e) => {
-            e.preventDefault();
-            handleSetup();
-          }}
-        >
-          <div class="form-stack">
-            <Input
-              id="setup-username"
-              label={$t("auth.username")}
-              bind:value={setupUsername}
-              placeholder={$t("auth.username_placeholder")}
-              required
-            />
-
-            <Input
-              id="setup-password"
-              type="password"
-              label={$t("auth.password")}
-              bind:value={setupPassword}
-              placeholder={$t("auth.password_min_chars")}
-              required
-            />
-
-            <Input
-              id="setup-confirm"
-              type="password"
-              label={$t("auth.confirm_password")}
-              bind:value={setupConfirm}
-              placeholder={$t("auth.confirm_password_placeholder")}
-              required
-            />
-
-            {#if setupError}
-              <div class="error-message">{setupError}</div>
-            {/if}
-
-            <Button type="submit">{$t("auth.create_account")}</Button>
-          </div>
-        </form>
-      </Card>
-    </div>
-  </div>
-
-  <!-- Login View -->
-{:else if $currentView === "login"}
-  <div class="auth-view">
-    <div class="auth-container">
-      <div class="auth-header">
-        <div class="auth-icon">🛡️</div>
-        <h1 class="auth-title">{$brand?.name}</h1>
-        <p class="auth-subtitle">{$t("auth.signin_subtitle")}</p>
-      </div>
-
-      <Card class="auth-card">
-        <form
-          onsubmit={(e) => {
-            e.preventDefault();
-            handleLogin();
-          }}
-        >
-          <div class="form-stack">
-            <Input
-              id="login-username"
-              label={$t("auth.username")}
-              bind:value={loginUsername}
-              placeholder={$t("auth.username")}
-              required
-            />
-
-            <Input
-              id="login-password"
-              type="password"
-              label={$t("auth.password")}
-              bind:value={loginPassword}
-              placeholder={$t("auth.password")}
-              required
-            />
-
-            {#if loginError}
-              <div class="error-message">{loginError}</div>
-            {/if}
-
-            <Button type="submit">{$t("auth.login")}</Button>
-          </div>
-        </form>
-      </Card>
-    </div>
-  </div>
-
-  <!-- Main App View -->
-{:else}
-  <Toast />
-  <div class="app-layout">
-    <!-- Mobile Overlay -->
-    <div
-      class="sidebar-overlay"
-      class:visible={sidebarOpen}
-      onclick={closeSidebar}
-      role="presentation"
-    ></div>
-
-    <!-- Sidebar -->
-    <aside class="sidebar" class:open={sidebarOpen}>
-      <div class="sidebar-header">
-        <div class="brand-icon">🛡️</div>
-        <span class="brand-name">{$brand?.name}</span>
-      </div>
-
-      <nav class="sidebar-nav">
-        <a
-          href="#dashboard"
-          class="nav-item"
-          class:active={$currentPage === "dashboard"}
-        >
-          {$t("nav.dashboard")}
-        </a>
-        <a
-          href="#interfaces"
-          class="nav-item"
-          class:active={$currentPage === "interfaces"}
-        >
-          {$t("nav.interfaces")}
-        </a>
-        <a
-          href="#firewall"
-          class="nav-item"
-          class:active={$currentPage === "firewall"}
-        >
-          {$t("nav.firewall")}
-        </a>
-        <a
-          href="#learning"
-          class="nav-item"
-          class:active={$currentPage === "learning"}
-        >
-          {$t("nav.learning")}
-        </a>
-        <a href="#nat" class="nav-item" class:active={$currentPage === "nat"}>
-          {$t("nav.nat")}
-        </a>
-        <a
-          href="#zones"
-          class="nav-item"
-          class:active={$currentPage === "zones"}
-        >
-          {$t("nav.zones")}
-        </a>
-        <a
-          href="#ipsets"
-          class="nav-item"
-          class:active={$currentPage === "ipsets"}
-        >
-          {$t("nav.ipsets")}
-        </a>
-        <a href="#dhcp" class="nav-item" class:active={$currentPage === "dhcp"}>
-          {$t("nav.dhcp")}
-        </a>
-        <a href="#dns" class="nav-item" class:active={$currentPage === "dns"}>
-          {$t("nav.dns")}
-        </a>
-        <a
-          href="#routing"
-          class="nav-item"
-          class:active={$currentPage === "routing"}
-        >
-          {$t("nav.routing")}
-        </a>
-        <a href="#vpn" class="nav-item" class:active={$currentPage === "vpn"}>
-          {$t("nav.vpn")}
-        </a>
-
-        <div class="nav-divider"></div>
-
-        <a
-          href="#network"
-          class="nav-item"
-          class:active={$currentPage === "network"}
-        >
-          {$t("nav.network")}
-        </a>
-        <a href="#logs" class="nav-item" class:active={$currentPage === "logs"}>
-          {$t("nav.logs")}
-        </a>
-        <a
-          href="#scanner"
-          class="nav-item"
-          class:active={$currentPage === "scanner"}
-        >
-          {$t("nav.scanner")}
-        </a>
-        <a
-          href="#settings"
-          class="nav-item"
-          class:active={$currentPage === "settings"}
-        >
-          {$t("nav.settings")}
-        </a>
-      </nav>
-
-      <div class="sidebar-footer">
-        <ThemeToggle />
-      </div>
-    </aside>
-
-    <!-- Main Content -->
-    <div class="main-wrapper">
-      <header class="header">
-        <button
-          class="mobile-menu-toggle"
-          onclick={() => (sidebarOpen = !sidebarOpen)}
-        >
-          ☰
-        </button>
-        <h1 class="page-title">{pageTitle}</h1>
-
-        <SearchBar />
-
-        <div class="header-actions">
-          <span
-            class="status-indicator"
-            class:online={$config?.ip_forwarding}
-            title={$config?.ip_forwarding
-              ? "IP forwarding is enabled - routing traffic between networks"
-              : "IP forwarding is disabled - no traffic routing"}
-            aria-label={$config?.ip_forwarding
-              ? "Router status: Active"
-              : "Router status: Standby"}
-          >
-            {$config?.ip_forwarding
-              ? $t("dashboard.active_state")
-              : $t("dashboard.disabled_state")}
-          </span>
-          <NotificationBell />
-          <button class="logout-btn" onclick={() => api.logout()}
-            >{$t("auth.logout")}</button
-          >
+<div class="topology-page">
+    <header class="page-header">
+        <div class="page-title">
+            <h1>Topology</h1>
+            <span class="device-count">{$totalDevices} devices online</span>
         </div>
-      </header>
+        <div class="header-actions">
+            <button class="btn-secondary">
+                <Icon name="radar" size={16} />
+                Scan Network
+            </button>
+            <button
+                class="btn-icon"
+                onclick={toggleHero}
+                aria-label="Toggle visualization"
+            >
+                <Icon
+                    name={heroCollapsed ? "expand_more" : "expand_less"}
+                    size={20}
+                />
+            </button>
+        </div>
+    </header>
 
-      <main class="main-content">
-        {#if $currentPage === "dashboard"}
-          <Dashboard />
-        {:else if $currentPage === "interfaces"}
-          <Interfaces />
-        {:else if $currentPage === "firewall"}
-          <Firewall />
-        {:else if $currentPage === "learning"}
-          <NetworkLearning />
-        {:else if $currentPage === "dhcp"}
-          <DHCP />
-        {:else if $currentPage === "dns"}
-          <DNS />
-        {:else if $currentPage === "nat"}
-          <NAT />
-        {:else if $currentPage === "zones"}
-          <Zones />
-        {:else if $currentPage === "ipsets"}
-          <IPSets />
-        {:else if $currentPage === "routing"}
-          <Routing />
-        {:else if $currentPage === "vpn"}
-          <VPN />
-        {:else if $currentPage === "network"}
-          <Network />
-        {:else if $currentPage === "logs"}
-          <Logs />
-        {:else if $currentPage === "scanner"}
-          <Scanner />
-        {:else if $currentPage === "settings"}
-          <Settings />
-        {:else}
-          <NotFound />
-        {/if}
-      </main>
-    </div>
-  </div>
-{/if}
+    {#if !heroCollapsed}
+        <section class="hero-visualization">
+            <TopologyGraph graph={topologyGraph()} />
+        </section>
+    {/if}
+
+    <!-- System Stats -->
+    {#if systemStats}
+        <section class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon">
+                    <Icon name="schedule" size={24} />
+                </div>
+                <div class="stat-content">
+                    <span class="stat-label">Uptime</span>
+                    <span class="stat-value"
+                        >{formatUptime(systemStats.uptime_seconds || 0)}</span
+                    >
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">
+                    <Icon name="memory" size={24} />
+                </div>
+                <div class="stat-content">
+                    <span class="stat-label">CPU</span>
+                    <span class="stat-value"
+                        >{(systemStats.cpu_percent || 0).toFixed(1)}%</span
+                    >
+                </div>
+                <div
+                    class="stat-bar"
+                    role="progressbar"
+                    aria-valuenow={Math.min(systemStats.cpu_percent || 0, 100)}
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-label="CPU Usage"
+                >
+                    <div
+                        class="stat-bar-fill"
+                        style="width: {Math.min(
+                            systemStats.cpu_percent || 0,
+                            100,
+                        )}%"
+                    ></div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">
+                    <Icon name="dns" size={24} />
+                </div>
+                <div class="stat-content">
+                    <span class="stat-label">Memory</span>
+                    <span class="stat-value"
+                        >{formatBytes(systemStats.memory_used || 0)} / {formatBytes(
+                            systemStats.memory_total || 0,
+                        )}</span
+                    >
+                </div>
+                <div
+                    class="stat-bar"
+                    role="progressbar"
+                    aria-valuenow={systemStats.memory_total
+                        ? Math.round(
+                              (systemStats.memory_used /
+                                  systemStats.memory_total) *
+                                  100,
+                          )
+                        : 0}
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-label="Memory Usage"
+                >
+                    <div
+                        class="stat-bar-fill"
+                        style="width: {systemStats.memory_total
+                            ? (systemStats.memory_used /
+                                  systemStats.memory_total) *
+                              100
+                            : 0}%"
+                    ></div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">
+                    <Icon name="hard_drive" size={24} />
+                </div>
+                <div class="stat-content">
+                    <span class="stat-label">Disk</span>
+                    <span class="stat-value"
+                        >{formatBytes(systemStats.disk_used || 0)} / {formatBytes(
+                            systemStats.disk_total || 0,
+                        )}</span
+                    >
+                </div>
+                <div
+                    class="stat-bar"
+                    role="progressbar"
+                    aria-valuenow={systemStats.disk_total
+                        ? Math.round(
+                              (systemStats.disk_used / systemStats.disk_total) *
+                                  100,
+                          )
+                        : 0}
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-label="Disk Usage"
+                >
+                    <div
+                        class="stat-bar-fill"
+                        style="width: {systemStats.disk_total
+                            ? (systemStats.disk_used / systemStats.disk_total) *
+                              100
+                            : 0}%"
+                    ></div>
+                </div>
+            </div>
+        </section>
+    {/if}
+
+    <!-- Uplink Groups (Multi-WAN) -->
+    {#if uplinkGroups.length > 0}
+        <section class="uplinks-section">
+            <h2 class="section-title">Multi-WAN Uplinks</h2>
+            <div class="uplinks-grid">
+                {#each uplinkGroups as group}
+                    <div class="uplink-group-card">
+                        <div class="uplink-group-header">
+                            <span class="uplink-group-name">{group.name}</span>
+                            <span class="uplink-active"
+                                >Active: {group.active_uplink || "None"}</span
+                            >
+                        </div>
+                        <div class="uplink-list">
+                            {#each group.uplinks as uplink}
+                                <div
+                                    class="uplink-item"
+                                    class:active={uplink.name ===
+                                        group.active_uplink}
+                                >
+                                    <div class="uplink-info">
+                                        <span class="uplink-name"
+                                            >{uplink.name}</span
+                                        >
+                                        <span class="uplink-interface"
+                                            >({uplink.interface})</span
+                                        >
+                                        <span
+                                            class="uplink-status"
+                                            class:healthy={uplink.healthy}
+                                            class:unhealthy={!uplink.healthy}
+                                            title={uplink.healthy
+                                                ? "Healthy"
+                                                : "Unhealthy"}
+                                            aria-label={uplink.healthy
+                                                ? "Status: Healthy"
+                                                : "Status: Unhealthy"}
+                                        >
+                                            {uplink.healthy ? "●" : "○"}
+                                        </span>
+                                    </div>
+                                    <div class="uplink-actions">
+                                        <button
+                                            class="uplink-switch"
+                                            class:selected={uplink.name ===
+                                                group.active_uplink}
+                                            onclick={() =>
+                                                switchUplink(
+                                                    group.name,
+                                                    uplink.name,
+                                                )}
+                                            disabled={uplink.name ===
+                                                group.active_uplink ||
+                                                !uplink.enabled}
+                                        >
+                                            {uplink.name === group.active_uplink
+                                                ? "Active"
+                                                : "Switch"}
+                                        </button>
+                                        <button
+                                            class="uplink-toggle"
+                                            class:enabled={uplink.enabled}
+                                            onclick={() =>
+                                                toggleUplink(
+                                                    group.name,
+                                                    uplink.name,
+                                                    !uplink.enabled,
+                                                )}
+                                        >
+                                            {uplink.enabled ? "On" : "Off"}
+                                        </button>
+                                    </div>
+                                </div>
+                            {/each}
+                        </div>
+                    </div>
+                {/each}
+            </div>
+        </section>
+    {/if}
+
+    <section class="zones-grid">
+        <h2 class="section-title">Zones</h2>
+        <div class="zones-cards">
+            {#each $zones as zone (zone.name)}
+                <ZoneCard {zone} />
+            {:else}
+                <div class="empty-state">
+                    <Icon name="hub" size={48} />
+                    <p>No zones configured</p>
+                    <a href="/interfaces" class="btn-primary"
+                        >Configure Interfaces</a
+                    >
+                </div>
+            {/each}
+        </div>
+    </section>
+</div>
 
 <style>
-  /* Loading View */
-  .loading-view {
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background-color: var(--color-background);
-  }
-
-  .loading-content {
-    text-align: center;
-  }
-
-  .loading-icon {
-    font-size: 3rem;
-    margin-bottom: var(--space-4);
-  }
-
-  .loading-text {
-    color: var(--color-muted);
-  }
-
-  /* Auth Views (Login/Setup) */
-  .auth-view {
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-4);
-    background-color: var(--color-background);
-  }
-
-  .auth-container {
-    width: 100%;
-    max-width: 400px;
-  }
-
-  .auth-header {
-    text-align: center;
-    margin-bottom: var(--space-6);
-  }
-
-  .auth-icon {
-    font-size: 3rem;
-    margin-bottom: var(--space-4);
-  }
-
-  .auth-title {
-    font-size: var(--text-2xl);
-    font-weight: 700;
-    color: var(--color-foreground);
-    margin: 0 0 var(--space-2) 0;
-  }
-
-  .auth-subtitle {
-    color: var(--color-muted);
-    margin: 0;
-  }
-
-  .form-stack {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-  }
-
-  .error-message {
-    padding: var(--space-3);
-    background-color: rgba(239, 68, 68, 0.1);
-    border: 1px solid var(--color-destructive);
-    border-radius: var(--radius-md);
-    color: var(--color-destructive);
-    font-size: var(--text-sm);
-  }
-
-  /* App Layout */
-  .app-layout {
-    display: flex;
-    min-height: 100vh;
-  }
-
-  /* Sidebar */
-  .sidebar {
-    width: 240px;
-    background-color: var(--color-surface);
-    border-right: 1px solid var(--color-border);
-    display: flex;
-    flex-direction: column;
-    position: sticky;
-    top: 0;
-    height: 100vh;
-  }
-
-  .sidebar-header {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    padding: var(--space-4) var(--space-4);
-    border-bottom: 1px solid var(--color-border);
-  }
-
-  .brand-icon {
-    font-size: 1.5rem;
-  }
-
-  .brand-name {
-    font-weight: 600;
-    color: var(--color-foreground);
-  }
-
-  .sidebar-nav {
-    flex: 1;
-    padding: var(--space-2);
-  }
-
-  .nav-item {
-    display: block;
-    width: 100%;
-    padding: var(--space-3) var(--space-4);
-    text-align: left;
-    background: none;
-    border: none;
-    border-radius: var(--radius-md);
-    color: var(--color-foreground);
-    font-size: var(--text-sm);
-    font-family: inherit;
-    cursor: pointer;
-    transition: background-color var(--transition-fast);
-    text-decoration: none;
-  }
-
-  .nav-item:hover {
-    background-color: var(--color-surfaceHover);
-  }
-
-  .nav-item.active {
-    background-color: var(--color-primary);
-    color: var(--color-primaryForeground);
-  }
-
-  .sidebar-footer {
-    padding: var(--space-4);
-    border-top: 1px solid var(--color-border);
-  }
-
-  /* Main Content Wrapper */
-  .main-wrapper {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  /* Header */
-  .header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--space-4) var(--space-6);
-    background-color: var(--color-background);
-    border-bottom: 1px solid var(--color-border);
-  }
-
-  .page-title {
-    font-size: var(--text-xl);
-    font-weight: 600;
-    margin: 0;
-    color: var(--color-foreground);
-  }
-
-  .header-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-4);
-  }
-
-  .status-indicator {
-    padding: var(--space-1) var(--space-3);
-    border-radius: var(--radius-full);
-    font-size: var(--text-sm);
-    font-weight: 500;
-    background-color: var(--color-destructive);
-    color: var(--color-destructiveForeground);
-  }
-
-  .status-indicator.online {
-    background-color: var(--color-success);
-    color: var(--color-successForeground);
-  }
-
-  .logout-btn {
-    padding: var(--space-2) var(--space-4);
-    background: none;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    color: var(--color-foreground);
-    font-size: var(--text-sm);
-    cursor: pointer;
-    transition: background-color var(--transition-fast);
-  }
-
-  .logout-btn:hover {
-    background-color: var(--color-surfaceHover);
-  }
-
-  /* Main Content */
-  .main-content {
-    flex: 1;
-    padding: var(--space-6);
-    overflow-y: auto;
-    background-color: var(--color-backgroundSecondary);
-  }
-
-  /* Navigation Divider */
-  .nav-divider {
-    height: 1px;
-    background-color: var(--color-border);
-    margin: var(--space-2) var(--space-3);
-  }
-
-  /* Mobile Menu Toggle */
-  .mobile-menu-toggle {
-    display: none;
-    background: none;
-    border: none;
-    padding: var(--space-2);
-    cursor: pointer;
-    font-size: 1.5rem;
-  }
-
-  /* Mobile Responsive Styles */
-  @media (max-width: 768px) {
-    .app-layout {
-      flex-direction: column;
+    .topology-page {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-6);
     }
 
-    .sidebar {
-      position: fixed;
-      left: -100%;
-      top: 0;
-      z-index: 1000;
-      width: 280px;
-      transition: left 0.3s ease;
-      box-shadow: var(--shadow-lg);
+    .page-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
     }
 
-    .sidebar.open {
-      left: 0;
+    .page-title {
+        display: flex;
+        align-items: baseline;
+        gap: var(--space-3);
     }
 
-    .sidebar-overlay {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background-color: rgba(0, 0, 0, 0.5);
-      z-index: 999;
+    .page-title h1 {
+        font-size: var(--text-2xl);
+        font-weight: 600;
+        color: var(--dashboard-text);
     }
 
-    .sidebar-overlay.visible {
-      display: block;
-    }
-
-    .mobile-menu-toggle {
-      display: block;
-    }
-
-    .header {
-      gap: var(--space-2);
+    .device-count {
+        font-size: var(--text-sm);
+        color: var(--dashboard-text-muted);
     }
 
     .header-actions {
-      gap: var(--space-2);
+        display: flex;
+        gap: var(--space-2);
     }
 
-    .main-content {
-      padding: var(--space-4);
+    .btn-secondary {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: var(--space-2) var(--space-4);
+        background: var(--dashboard-card);
+        border: 1px solid var(--dashboard-border);
+        border-radius: var(--radius-md);
+        color: var(--dashboard-text);
+        font-size: var(--text-sm);
+        cursor: pointer;
+        transition: all var(--transition-fast);
     }
 
-    /* Login form mobile */
-  }
-
-  /* Tablet Responsive */
-  @media (max-width: 1024px) and (min-width: 769px) {
-    .sidebar {
-      width: 200px;
+    .btn-secondary:hover {
+        background: var(--dashboard-input);
     }
 
-    .main-content {
-      padding: var(--space-4);
+    .btn-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        background: var(--dashboard-card);
+        border: 1px solid var(--dashboard-border);
+        border-radius: var(--radius-md);
+        color: var(--dashboard-text-muted);
+        cursor: pointer;
+        transition: all var(--transition-fast);
     }
-  }
+
+    .btn-icon:hover {
+        background: var(--dashboard-input);
+        color: var(--dashboard-text);
+    }
+
+    .hero-visualization {
+        background: var(--dashboard-card);
+        border: 1px solid var(--dashboard-border);
+        border-radius: var(--radius-lg);
+        height: 350px;
+        overflow: hidden;
+    }
+
+    .section-title {
+        font-size: var(--text-lg);
+        font-weight: 600;
+        color: var(--dashboard-text);
+        margin-bottom: var(--space-4);
+    }
+
+    .zones-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+        gap: var(--space-4);
+    }
+
+    .empty-state {
+        grid-column: 1 / -1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--space-4);
+        padding: var(--space-12);
+        background: var(--dashboard-card);
+        border: 1px dashed var(--dashboard-border);
+        border-radius: var(--radius-lg);
+        color: var(--dashboard-text-muted);
+        text-align: center;
+    }
+
+    .btn-primary {
+        padding: var(--space-2) var(--space-4);
+        background: var(--color-primary);
+        color: var(--color-primaryForeground);
+        border: none;
+        border-radius: var(--radius-md);
+        font-size: var(--text-sm);
+        cursor: pointer;
+        text-decoration: none;
+    }
+
+    /* Mobile */
+    @media (max-width: 768px) {
+        .hero-visualization {
+            height: 250px;
+        }
+
+        .zones-cards {
+            grid-template-columns: 1fr;
+        }
+
+        .stats-grid {
+            grid-template-columns: 1fr 1fr;
+        }
+    }
+
+    /* Stats Grid */
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: var(--space-4);
+        margin-bottom: var(--space-6);
+    }
+
+    .stat-card {
+        background: var(--dashboard-card);
+        border: 1px solid var(--dashboard-border);
+        border-radius: var(--radius-lg);
+        padding: var(--space-4);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
+    }
+
+    .stat-card .stat-icon {
+        color: var(--color-primary);
+        opacity: 0.8;
+    }
+
+    .stat-content {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-1);
+    }
+
+    .stat-label {
+        font-size: var(--text-xs);
+        color: var(--dashboard-text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .stat-value {
+        font-size: var(--text-lg);
+        font-weight: 600;
+        color: var(--dashboard-text);
+    }
+
+    .stat-bar {
+        height: 4px;
+        background: var(--dashboard-border);
+        border-radius: 2px;
+        overflow: hidden;
+    }
+
+    .stat-bar-fill {
+        height: 100%;
+        background: var(--color-primary);
+        border-radius: 2px;
+        transition: width 0.3s ease;
+    }
+
+    /* Uplinks Section */
+    .uplinks-section {
+        margin-bottom: var(--space-6);
+    }
+
+    .uplinks-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: var(--space-4);
+    }
+
+    .uplink-group-card {
+        background: var(--dashboard-card);
+        border: 1px solid var(--dashboard-border);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+    }
+
+    .uplink-group-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: var(--space-3) var(--space-4);
+        background: var(--color-backgroundSecondary);
+        border-bottom: 1px solid var(--dashboard-border);
+    }
+
+    .uplink-group-name {
+        font-weight: 600;
+        color: var(--dashboard-text);
+    }
+
+    .uplink-active {
+        font-size: var(--text-xs);
+        color: var(--dashboard-text-muted);
+    }
+
+    .uplink-list {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .uplink-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: var(--space-3) var(--space-4);
+        border-bottom: 1px solid var(--dashboard-border);
+    }
+
+    .uplink-item:last-child {
+        border-bottom: none;
+    }
+
+    .uplink-item.active {
+        background: rgba(var(--color-primary-rgb, 59, 130, 246), 0.1);
+    }
+
+    .uplink-info {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+    }
+
+    .uplink-name {
+        font-weight: 500;
+        color: var(--dashboard-text);
+    }
+
+    .uplink-interface {
+        font-size: var(--text-xs);
+        color: var(--dashboard-text-muted);
+    }
+
+    .uplink-status {
+        font-size: var(--text-sm);
+    }
+
+    .uplink-status.healthy {
+        color: var(--color-success, #22c55e);
+    }
+
+    .uplink-status.unhealthy {
+        color: var(--color-muted);
+    }
+
+    .uplink-actions {
+        display: flex;
+        gap: var(--space-2);
+    }
+
+    .uplink-switch,
+    .uplink-toggle {
+        padding: var(--space-1) var(--space-2);
+        font-size: var(--text-xs);
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .uplink-switch {
+        background: var(--color-backgroundSecondary);
+        border: 1px solid var(--dashboard-border);
+        color: var(--dashboard-text);
+    }
+
+    .uplink-switch.selected {
+        background: var(--color-primary);
+        color: white;
+        border-color: var(--color-primary);
+    }
+
+    .uplink-switch:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .uplink-toggle {
+        background: var(--color-destructive);
+        border: none;
+        color: white;
+    }
+
+    .uplink-toggle.enabled {
+        background: var(--color-success, #22c55e);
+    }
 </style>

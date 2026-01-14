@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,10 +19,10 @@ import (
 	"grimm.is/flywall/internal/config"
 	fw "grimm.is/flywall/internal/firewall"
 	"grimm.is/flywall/internal/host"
+	"grimm.is/flywall/internal/i18n"
 	"grimm.is/flywall/internal/logging"
 	"grimm.is/flywall/internal/monitor"
 	"grimm.is/flywall/internal/tls"
-	"grimm.is/flywall/internal/i18n"
 )
 
 // Printer is the global message printer for the CLI
@@ -43,6 +46,15 @@ func RunCtl(configFile string, testMode bool, stateDir string, dryRun bool, list
 // runCtlOnce contains the actual execution logic
 func runCtlOnce(configFile string, testMode bool, stateDir string, dryRun bool, listeners map[string]interface{}) (err error) {
 	rtCfg := NewCtlRuntimeConfig(configFile, testMode, stateDir, dryRun, listeners)
+
+	// Propagate stateDir to environment so brand.GetStateDir() works correctly
+	// for both this process and child processes (API, Proxy)
+	if rtCfg.StateDir != "" {
+		envVar := brand.ConfigEnvPrefix + "_STATE_DIR"
+		if os.Getenv(envVar) == "" {
+			os.Setenv(envVar, rtCfg.StateDir)
+		}
+	}
 
 	// Dry-run mode: generate rules and exit before any daemon setup
 	if rtCfg.DryRun {
@@ -136,8 +148,7 @@ func runCtlOnce(configFile string, testMode bool, stateDir string, dryRun bool, 
 
 	// 2. Enforce Loopback Health (Repair)
 	if err := host.EnforceLoopback(cfg); err != nil {
-		logging.Error(fmt.Sprintf("Failed to enforce loopback health: %v", err))
-		return err
+		logging.Warn(fmt.Sprintf("Warning: Failed to enforce loopback health (ignoring): %v", err))
 	}
 
 	// Apply service defaults (defaults for mDNS, etc.)
@@ -155,7 +166,7 @@ func runCtlOnce(configFile string, testMode bool, stateDir string, dryRun bool, 
 	defer stateStore.Close()
 
 	// Configure replication
-	replicationStop := configureReplication(cfg, stateStore)
+	replicator, replicationStop := configureReplication(cfg, stateStore)
 	defer replicationStop()
 
 	// Initialize network stack
@@ -178,21 +189,25 @@ func runCtlOnce(configFile string, testMode bool, stateDir string, dryRun bool, 
 	}
 	defer services.Shutdown()
 
+	// Configure HA (must be after core services for callbacks)
+	haStop := configureHA(cfg, services)
+	defer haStop()
+
 	// Test mode: run and exit early, only validating core configuration
 	// We skip starting the control plane server, device services, etc. to avoid hangs and side effects.
 	if rtCfg.TestMode {
 		return runTestMode(cfg, netMgr)
 	}
 
+	// Initialize additional services (Alerting, DDNS, etc.)
+	initializeAdditionalServices(ctx, cfg, services)
+
 	// Start control plane RPC server
-	if err := startControlPlaneServer(cfg, configFile, netMgr, services, listeners); err != nil {
+	if err := startControlPlaneServer(cfg, configFile, netMgr, services, replicator, listeners); err != nil {
 		logging.Error(err.Error())
 		os.Exit(1)
 	}
 	services.ctlServer.SetDisarmFunc(monitorsCancel)
-
-	// Initialize additional services
-	initializeAdditionalServices(ctx, cfg, services)
 
 	// Initialize device management
 	initializeDeviceServices(ctx, cfg, services)
@@ -269,7 +284,7 @@ func runDryRun(configFile string) error {
 		return fmt.Errorf("dry-run generation failed: %w", err)
 	}
 
-	Printer.Println(rules)
+	fmt.Println(rules)
 	return nil
 }
 
@@ -290,9 +305,27 @@ func spawnAPI(ctx context.Context, exe string, cfg *config.Config, wg *sync.Wait
 
 		args := []string{"_api-server"}
 
-		// Force API to listen on Unix socket
-		// The proxy will handle the public TCP port
-		socketPath := "/var/run/flywall/api/api.sock"
+		socketPath := filepath.Join(brand.GetRunDir(), "api", "api.sock")
+		dir := filepath.Dir(socketPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			logging.Error(fmt.Sprintf("Failed to create socket directory: %v", err))
+		}
+		// Chown to nobody (65534) if running as root
+		if os.Geteuid() == 0 {
+			// Best effort lookup
+			uid, gid := 65534, 65534
+			if u, err := user.Lookup("nobody"); err == nil {
+				if id, err := strconv.Atoi(u.Uid); err == nil {
+					uid = id
+				}
+				if id, err := strconv.Atoi(u.Gid); err == nil {
+					gid = id
+				}
+			}
+			if err := os.Chown(dir, uid, gid); err != nil {
+				logging.Error(fmt.Sprintf("Failed to chown socket directory: %v", err))
+			}
+		}
 		args = append(args, "-listen", socketPath)
 
 		// Check for flags
@@ -323,6 +356,12 @@ func spawnAPI(ctx context.Context, exe string, cfg *config.Config, wg *sync.Wait
 				newEnv = append(newEnv, e)
 			}
 		}
+
+		// Disable sandbox on non-Linux platforms (e.g. Darwin)
+		if runtime.GOOS != "linux" {
+			newEnv = append(newEnv, "FLYWALL_NO_SANDBOX=1")
+		}
+
 		cmd.Env = newEnv
 
 		if inheritedFile != nil {
@@ -503,7 +542,11 @@ func spawnProxy(ctx context.Context, exe string, cfg *config.Config, wg *sync.Wa
 		}
 
 		// Explicitly use Unix socket path
-		targetSock := "/var/run/flywall/api/api.sock"
+		targetSock := filepath.Join(brand.GetRunDir(), "api", "api.sock")
+		// No need to chown here, spawnAPI does it, but we ensure existence
+		if err := os.MkdirAll(filepath.Dir(targetSock), 0755); err != nil {
+			logging.Error(fmt.Sprintf("Failed to create socket directory: %v", err))
+		}
 
 		args = append(args, "-listen", listenPort, "-target", targetSock)
 
@@ -525,13 +568,21 @@ func spawnProxy(ctx context.Context, exe string, cfg *config.Config, wg *sync.Wa
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
-		// Environment cleanup (same as API)
+		// Build clean environment
+		// We must explicitly ensure FLYWALL_UPGRADE_STANDBY is NOT passed to child
+		// to prevent recursion loops where 'flywall api' thinks it's an upgrade standby.
 		newEnv := make([]string, 0, len(os.Environ()))
 		for _, e := range os.Environ() {
 			if !strings.HasPrefix(e, "FLYWALL_UPGRADE_STANDBY=") {
 				newEnv = append(newEnv, e)
 			}
 		}
+
+		// Disable sandbox on non-Linux platforms (e.g. Darwin)
+		if runtime.GOOS != "linux" || os.Getenv("FLYWALL_NO_SANDBOX") == "1" {
+			args = append(args, "-no-chroot")
+		}
+
 		cmd.Env = newEnv
 
 		logging.Info(fmt.Sprintf("Spawning Proxy: %v", args))

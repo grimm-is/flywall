@@ -14,26 +14,36 @@
     disabled?: boolean;
     type?: "button" | "submit" | "reset";
     class?: string;
+    title?: string;
     onclick?: (e: MouseEvent) => void;
+    [key: string]: any;
   }
 
   let {
     variant = "default",
     size = "md",
     disabled = false,
+    loading = false,
     type = "button",
     class: className = "",
+    title,
     onclick,
     children,
-  }: Props & { children?: any } = $props();
+    ...rest
+  }: Props & { children?: any; loading?: boolean } = $props();
 </script>
 
 <button
   {type}
-  {disabled}
+  disabled={disabled || loading}
   class="btn btn-{variant} btn-{size} {className}"
+  {title}
   {onclick}
+  {...rest}
 >
+  {#if loading}
+    <span class="spinner"></span>
+  {/if}
   {@render children?.()}
 </button>
 
@@ -122,5 +132,20 @@
 
   .btn-link:hover:not(:disabled) {
     opacity: 0.8;
+  }
+
+  .spinner {
+    width: 1em;
+    height: 1em;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 </style>

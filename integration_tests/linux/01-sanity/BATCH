@@ -1,0 +1,8 @@
+# Batch Test Directory
+# All test files in this directory will run in a single VM session.
+# Each file becomes a TAP14 subtest.
+#
+# Benefits:
+# - Single VM boot instead of one per test
+# - Reduced overhead for fast tests
+# - Results still reported per-file

@@ -1,11 +1,17 @@
 package ctlplane
 
 import (
+	"time"
+
+	"grimm.is/flywall/internal/alerting"
+	"grimm.is/flywall/internal/analytics"
 	"grimm.is/flywall/internal/config"
-	"grimm.is/flywall/internal/device"
 	"grimm.is/flywall/internal/firewall"
+	"grimm.is/flywall/internal/identity"
 	"grimm.is/flywall/internal/learning"
 	"grimm.is/flywall/internal/learning/flowdb"
+	"grimm.is/flywall/internal/metrics"
+	"grimm.is/flywall/internal/services/dns/querylog"
 	"grimm.is/flywall/internal/services/scanner"
 
 	"github.com/stretchr/testify/mock"
@@ -19,6 +25,14 @@ type MockControlPlaneClient struct {
 func (m *MockControlPlaneClient) Close() error {
 	args := m.Called()
 	return args.Error(0)
+}
+
+func (m *MockControlPlaneClient) GetReplicationStatus() (*GetReplicationStatusReply, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*GetReplicationStatusReply), args.Error(1)
 }
 
 func (m *MockControlPlaneClient) GetStatus() (*Status, error) {
@@ -250,6 +264,34 @@ func (m *MockControlPlaneClient) SetMaxBackups(maxBackups int) (*SetMaxBackupsRe
 	return callArgs.Get(0).(*SetMaxBackupsReply), callArgs.Error(1)
 }
 
+// --- Device Identity ---
+
+func (m *MockControlPlaneClient) UpdateDeviceIdentity(args *UpdateDeviceIdentityArgs) (*identity.DeviceIdentity, error) {
+	callArgs := m.Called(args)
+	if callArgs.Get(0) == nil {
+		return nil, callArgs.Error(1)
+	}
+	return callArgs.Get(0).(*identity.DeviceIdentity), callArgs.Error(1)
+}
+
+func (m *MockControlPlaneClient) GetDeviceGroups() ([]identity.DeviceGroup, error) {
+	callArgs := m.Called()
+	if callArgs.Get(0) == nil {
+		return nil, callArgs.Error(1)
+	}
+	return callArgs.Get(0).([]identity.DeviceGroup), callArgs.Error(1)
+}
+
+func (m *MockControlPlaneClient) UpdateDeviceGroup(group identity.DeviceGroup) error {
+	callArgs := m.Called(group)
+	return callArgs.Error(0)
+}
+
+func (m *MockControlPlaneClient) DeleteDeviceGroup(id string) error {
+	callArgs := m.Called(id)
+	return callArgs.Error(0)
+}
+
 func (m *MockControlPlaneClient) GetLogs(args *GetLogsArgs) (*GetLogsReply, error) {
 	callArgs := m.Called(args)
 	if callArgs.Get(0) == nil {
@@ -272,6 +314,14 @@ func (m *MockControlPlaneClient) GetLogStats() (*GetLogStatsReply, error) {
 		return nil, callArgs.Error(1)
 	}
 	return callArgs.Get(0).(*GetLogStatsReply), callArgs.Error(1)
+}
+
+func (m *MockControlPlaneClient) GetPolicyStats() (map[string]*metrics.PolicyStats, error) {
+	callArgs := m.Called()
+	if callArgs.Get(0) == nil {
+		return nil, callArgs.Error(1)
+	}
+	return callArgs.Get(0).(map[string]*metrics.PolicyStats), callArgs.Error(1)
 }
 
 func (m *MockControlPlaneClient) TriggerTask(taskName string) error {
@@ -368,20 +418,6 @@ func (m *MockControlPlaneClient) GetRoutes() ([]Route, error) {
 	return callArgs.Get(0).([]Route), callArgs.Error(1)
 }
 
-// --- Device Identity Management ---
-
-func (m *MockControlPlaneClient) UpdateDeviceIdentity(args *UpdateDeviceIdentityArgs) (*device.DeviceIdentity, error) {
-	return nil, nil
-}
-
-func (m *MockControlPlaneClient) LinkMAC(mac, identityID string) error {
-	return nil
-}
-
-func (m *MockControlPlaneClient) UnlinkMAC(mac string) error {
-	return nil
-}
-
 // --- Ping (Connectivity Verification) ---
 
 func (m *MockControlPlaneClient) GetNotifications(sinceID int64) ([]Notification, int64, error) {
@@ -476,6 +512,14 @@ func (m *MockControlPlaneClient) ToggleUplink(groupName, uplinkName string, enab
 	return m.Called(groupName, uplinkName, enabled).Error(0)
 }
 
+func (m *MockControlPlaneClient) TestUplink(groupName, uplinkName string) (*UplinkStatus, error) {
+	callArgs := m.Called(groupName, uplinkName)
+	if callArgs.Get(0) == nil {
+		return nil, callArgs.Error(1)
+	}
+	return callArgs.Get(0).(*UplinkStatus), callArgs.Error(1)
+}
+
 func (m *MockControlPlaneClient) GetFlows(state string, limit, offset int) ([]flowdb.FlowWithHints, map[string]int64, error) {
 	callArgs := m.Called(state, limit, offset)
 	var flows []flowdb.FlowWithHints
@@ -567,3 +611,63 @@ func (m *MockControlPlaneClient) ExitSafeMode() error {
 
 // Compile-time check
 var _ ControlPlaneClient = (*MockControlPlaneClient)(nil)
+
+func (m *MockControlPlaneClient) GetAnalyticsBandwidth(args *GetAnalyticsBandwidthArgs) ([]BandwidthPoint, error) {
+	callArgs := m.Called(args)
+	if callArgs.Get(0) == nil {
+		return nil, callArgs.Error(1)
+	}
+	return callArgs.Get(0).([]BandwidthPoint), callArgs.Error(1)
+}
+
+func (m *MockControlPlaneClient) GetAnalyticsTopTalkers(args *GetAnalyticsTopTalkersArgs) ([]analytics.Summary, error) {
+	callArgs := m.Called(args)
+	if callArgs.Get(0) == nil {
+		return nil, callArgs.Error(1)
+	}
+	return callArgs.Get(0).([]analytics.Summary), callArgs.Error(1)
+}
+
+func (m *MockControlPlaneClient) GetAnalyticsFlows(args *GetAnalyticsFlowsArgs) ([]analytics.Summary, error) {
+	callArgs := m.Called(args)
+	if callArgs.Get(0) == nil {
+		return nil, callArgs.Error(1)
+	}
+	return callArgs.Get(0).([]analytics.Summary), callArgs.Error(1)
+}
+
+func (m *MockControlPlaneClient) GetAlertHistory(limit int) ([]alerting.AlertEvent, error) {
+	args := m.Called(limit)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]alerting.AlertEvent), args.Error(1)
+}
+
+func (m *MockControlPlaneClient) GetAlertRules() ([]alerting.AlertRule, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]alerting.AlertRule), args.Error(1)
+}
+
+func (m *MockControlPlaneClient) UpdateAlertRule(rule alerting.AlertRule) error {
+	return m.Called(rule).Error(0)
+}
+
+func (m *MockControlPlaneClient) GetDNSQueryHistory(limit, offset int, search string) ([]querylog.Entry, error) {
+	args := m.Called(limit, offset, search)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]querylog.Entry), args.Error(1)
+}
+
+func (m *MockControlPlaneClient) GetDNSStats(from, to time.Time) (*querylog.Stats, error) {
+	args := m.Called(from, to)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*querylog.Stats), args.Error(1)
+}

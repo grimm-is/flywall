@@ -67,12 +67,23 @@ func LoadFileWithOptions(path string, opts LoadOptions) (*LoadResult, error) {
 	case ".json":
 		return LoadJSONWithOptions(data, opts)
 	default:
-		// Try HCL first, fall back to JSON
-		result, err := LoadHCLWithOptions(data, path, opts)
-		if err != nil {
-			return LoadJSONWithOptions(data, opts)
+		// Try HCL first
+		hclResult, hclErr := LoadHCLWithOptions(data, path, opts)
+		if hclErr == nil {
+			return hclResult, nil
 		}
-		return result, nil
+
+		// Fall back to JSON
+		jsonResult, jsonErr := LoadJSONWithOptions(data, opts)
+		if jsonErr == nil {
+			return jsonResult, nil
+		}
+
+		// If both fail, return a combined error or just the HCL one if it looks like HCL
+		if strings.Contains(string(data), "{") && strings.Contains(string(data), "\"") && !strings.Contains(string(data), "=") {
+			return nil, fmt.Errorf("failed to parse config as HCL or JSON. JSON error: %w", jsonErr)
+		}
+		return nil, fmt.Errorf("failed to parse config as HCL: %w (JSON fallback error: %v)", hclErr, jsonErr)
 	}
 }
 

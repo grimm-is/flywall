@@ -183,8 +183,27 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 	}
 
 	// Start expiration reaper
+	// Calculate reaper interval based on minimum lease time
+	minInterval := 1 * time.Minute
+	for _, ls := range s.leaseStores {
+		lt := ls.getLeaseTime()
+		if lt < minInterval {
+			minInterval = lt
+		}
+	}
+	// Run reaper at least at 1/2 of min lease time, or max 1 minute, min 1 second
+	reaperInterval := minInterval / 2
+	if reaperInterval > 1*time.Minute {
+		reaperInterval = 1 * time.Minute
+	}
+	if reaperInterval < 1*time.Second {
+		reaperInterval = 1 * time.Second
+	}
+
+	log.Printf("[DHCP] Starting expiration reaper (interval: %v)", reaperInterval)
+
 	s.stopReaper = make(chan struct{})
-	go s.runExpirationReaper(s.stopReaper)
+	go s.runExpirationReaper(s.stopReaper, reaperInterval)
 
 	s.running = true
 
@@ -192,8 +211,8 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 }
 
 // runExpirationReaper periodically checks for and removes expired leases
-func (s *Service) runExpirationReaper(stop <-chan struct{}) {
-	ticker := time.NewTicker(1 * time.Minute)
+func (s *Service) runExpirationReaper(stop <-chan struct{}, interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	log.Printf("[DHCP] Expiration reaper started")
@@ -371,7 +390,7 @@ func (s *LeaseStore) persistLease(mac string, ip net.IP, hostname string) error 
 		IP:         ip.String(),
 		Hostname:   hostname,
 		LeaseStart: clock.Now(),
-		LeaseEnd:   clock.Now().Add(24 * time.Hour), // Should match scope config
+		LeaseEnd:   clock.Now().Add(s.getLeaseTime()),
 	}
 
 	// Synchronous write to ensure persistence
@@ -395,6 +414,7 @@ func (s *LeaseStore) getLeaseTime() time.Duration {
 	if s.leaseTime > 0 {
 		return s.leaseTime
 	}
+	log.Printf("[DHCP] DEBUG: getLeaseTime returning default 24h (s.leaseTime=%v)", s.leaseTime)
 	return 24 * time.Hour
 }
 
@@ -459,6 +479,11 @@ func (s *LeaseStore) ExpireLeases(dnsUpdater DNSUpdater, listener ExpirationList
 
 			// Remove lease
 			delete(s.Leases, mac)
+			if s.bucket != nil {
+				if err := s.bucket.Delete(mac); err != nil {
+					log.Printf("[DHCP] Warning: Failed to delete expired lease from store: %v", err)
+				}
+			}
 			if ip != nil {
 				delete(s.TakenIPs, ip.String()) // Maintain reverse lookup
 			}
@@ -502,6 +527,17 @@ func (s *Service) createServer(scope config.DHCPScope) (*dhcpInstance, *LeaseSto
 		ReservedIPs:  make(map[string]string),
 		RangeStart:   startIP,
 		RangeEnd:     endIP,
+	}
+
+	// Parse lease time
+	log.Printf("[DHCP] DEBUG: Scope '%s' Config LeaseTime='%s'", scope.Name, scope.LeaseTime)
+	if scope.LeaseTime != "" {
+		d, err := time.ParseDuration(scope.LeaseTime)
+		if err != nil {
+			log.Printf("[DHCP] Warning: invalid lease_time '%s' for scope %s: %v. Using default 24h.", scope.LeaseTime, scope.Name, err)
+		} else {
+			ls.leaseTime = d
+		}
 	}
 
 	// Initialize bucket and load existing leases
@@ -687,7 +723,7 @@ func handleDiscover(m *dhcpv4.DHCPv4, store *LeaseStore, scope config.DHCPScope,
 		dhcpv4.WithRouter(routerIP),
 		dhcpv4.WithNetmask(net.IPv4Mask(255, 255, 255, 0)), // Assuming /24 for now
 		dhcpv4.WithDNS(parseIPs(scope.DNS)...),
-		dhcpv4.WithLeaseTime(uint32(24 * time.Hour.Seconds())),
+		dhcpv4.WithLeaseTime(uint32(store.getLeaseTime().Seconds())),
 	}
 
 	// Add scope custom options
@@ -771,7 +807,7 @@ func handleRequest(m *dhcpv4.DHCPv4, store *LeaseStore, scope config.DHCPScope, 
 		dhcpv4.WithRouter(routerIP),
 		dhcpv4.WithNetmask(net.IPv4Mask(255, 255, 255, 0)),
 		dhcpv4.WithDNS(parseIPs(scope.DNS)...),
-		dhcpv4.WithLeaseTime(uint32(24 * time.Hour.Seconds())),
+		dhcpv4.WithLeaseTime(uint32(store.getLeaseTime().Seconds())),
 	}
 
 	// Add scope custom options

@@ -1,11 +1,13 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
+	"grimm.is/flywall/internal/i18n"
 	"grimm.is/flywall/internal/tui"
 )
+
+var Printer = i18n.NewCLIPrinter()
 
 // Test Config Struct
 type FirewallRule struct {

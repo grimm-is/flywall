@@ -34,7 +34,7 @@ func TestLookupVendor_LPM(t *testing.T) {
 			"001122":    {Manufacturer: "Broadcom (OUI-24)"},  // 24-bit match
 			"0011223":   {Manufacturer: "Chipset X (OUI-28)"}, // 28-bit match
 			"001122334": {Manufacturer: "Device Y (OUI-36)"},  // 36-bit match
-			"AABBCC":    {Manufacturer: "Vendor B"},
+			"D0D1D2":    {Manufacturer: "Vendor B"},           // Use D0 (not A/2/6/E in 2nd char)
 		},
 	}
 	var buf bytes.Buffer
@@ -53,8 +53,8 @@ func TestLookupVendor_LPM(t *testing.T) {
 		{"00:11:22:AA:BB:CC", "Broadcom (OUI-24)"},
 		{"00:11:22:30:00:00", "Chipset X (OUI-28)"}, // Matches 0011223...
 		{"00:11:22:33:4F:FF", "Device Y (OUI-36)"},  // Matches 001122334...
-		{"AA-BB-CC-DD-EE-FF", "Vendor B"},
-		{"00:11:22", "Broadcom (OUI-24)"}, // Exact OUI
+		{"D0-D1-D2-DD-EE-FF", "Vendor B"},           // Second char is 0, not locally-administered
+		{"00:11:22", "Broadcom (OUI-24)"},           // Exact OUI
 		{"00:11:2", ""},                   // Too short
 		{"XX:YY:ZZ:00:00:00", ""},         // Unknown
 		{"", ""},                          // Empty

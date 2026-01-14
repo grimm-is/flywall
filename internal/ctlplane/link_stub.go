@@ -157,3 +157,47 @@ func (lm *LinkManager) GetMAC(name string) (string, error) {
 func (lm *LinkManager) GetMTU(name string) (int, error) {
 	return 1500, nil
 }
+
+// ============================================================================
+// HA Virtual MAC Support (Stubs)
+// ============================================================================
+
+// SetHardwareAddr sets the MAC address of an interface (Stub).
+func (lm *LinkManager) SetHardwareAddr(name string, mac []byte) error {
+	return fmt.Errorf("not supported on this platform")
+}
+
+// GetHardwareAddr returns the current MAC address (Stub).
+func (lm *LinkManager) GetHardwareAddr(name string) ([]byte, error) {
+	return []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, nil
+}
+
+// FormatMAC formats a MAC address byte slice as a colon-separated string.
+func FormatMAC(mac []byte) string {
+	if len(mac) != 6 {
+		return ""
+	}
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x",
+		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
+}
+
+// ParseMAC parses a MAC address string (Stub).
+func ParseMAC(macStr string) ([]byte, error) {
+	return nil, fmt.Errorf("not supported on this platform")
+}
+
+// GenerateVirtualMAC generates a locally-administered MAC address (Stub).
+func GenerateVirtualMAC(ifaceName string) []byte {
+	hash := uint32(0)
+	for _, c := range ifaceName {
+		hash = hash*31 + uint32(c)
+	}
+	return []byte{
+		0x02,
+		0x67,
+		0x63,
+		byte(hash >> 16),
+		byte(hash >> 8),
+		byte(hash),
+	}
+}

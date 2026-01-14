@@ -1,10 +1,11 @@
 <script lang="ts">
     /**
      * PolicyEditor - Main orchestrator for ClearPath Policy Editor
-     * Handles data fetching, group filtering, and rule list rendering
+     * Dashboard-native styling using CSS variables
      */
     import { onMount, onDestroy } from "svelte";
     import RuleRow from "./RuleRow.svelte";
+    import Icon from "../Icon.svelte";
     import { t } from "svelte-i18n";
     import {
         rulesApi,
@@ -17,8 +18,12 @@
         type RuleWithStats,
     } from "$lib/stores/rules";
 
-    export let title = "Firewall Rules";
-    export let showGroupFilter = true;
+    interface Props {
+        title?: string;
+        showGroupFilter?: boolean;
+    }
+
+    let { title = "Firewall Rules", showGroupFilter = true }: Props = $props();
 
     // Load data on mount
     onMount(() => {
@@ -35,156 +40,310 @@
         rulesApi.selectGroup(group);
     }
 
-    function handleToggleRule(id: string, disabled: boolean) {
-        // TODO: API call to toggle rule
-        console.log("Toggle rule", id, disabled);
-    }
-
-    function handleDeleteRule(id: string) {
-        // TODO: API call to delete rule
-        if (confirm("Delete this rule?")) {
-            console.log("Delete rule", id);
+    async function handleToggleRule(id: string, disabled: boolean) {
+        try {
+            await rulesApi.toggleRule(id, disabled);
+        } catch (e) {
+            alert(
+                `Failed to toggle rule: ${e instanceof Error ? e.message : e}`,
+            );
         }
     }
 
-    function handleDuplicateRule(rule: RuleWithStats) {
-        // TODO: API call to duplicate
-        console.log("Duplicate rule", rule);
+    async function handleDeleteRule(id: string) {
+        if (confirm("Delete this rule?")) {
+            try {
+                await rulesApi.deleteRule(id);
+            } catch (e) {
+                alert(
+                    `Failed to delete rule: ${e instanceof Error ? e.message : e}`,
+                );
+            }
+        }
+    }
+
+    async function handleDuplicateRule(rule: RuleWithStats) {
+        try {
+            const newRule = {
+                ...rule,
+                name: `${rule.name || "Rule"} (Copy)`,
+                description: rule.description,
+            };
+            delete (newRule as any).id;
+            delete (newRule as any).stats;
+            await rulesApi.createRule(newRule);
+        } catch (e) {
+            alert(
+                `Failed to duplicate rule: ${e instanceof Error ? e.message : e}`,
+            );
+        }
+    }
+
+    function handleEditRule(rule: RuleWithStats) {
+        // TODO: Open modal for editing
+        alert(
+            `Edit rule: ${rule.name || rule.id}\n\nRule editor modal coming soon.`,
+        );
     }
 
     function handleCreateRule() {
-        alert("Please use the Classic view to manage rules for now.");
+        // TODO: Open modal for creating
+        alert("Create Rule\n\nRule creator modal coming soon.");
     }
 </script>
 
-<div class="flex flex-col h-full">
+<div class="policy-editor">
     <!-- Header -->
-    <div
-        class="flex items-center justify-between px-4 py-3 border-b border-gray-800 bg-gray-900"
-    >
-        <h2 class="text-lg font-semibold text-white">{title}</h2>
+    <div class="editor-header">
+        <h2 class="editor-title">{title}</h2>
 
-        <div class="flex items-center gap-3">
+        <div class="header-actions">
             <!-- Group Filter -->
             {#if showGroupFilter && $groups.length > 0}
-                <div class="flex items-center gap-2">
+                <div class="group-filter">
                     <button
-                        class="px-3 py-1.5 text-xs rounded transition-colors"
-                        class:bg-blue-600={!$selectedGroup}
-                        class:text-white={!$selectedGroup}
-                        class:bg-gray-800={$selectedGroup}
-                        class:text-gray-400={$selectedGroup}
-                        on:click={() => handleGroupSelect(null)}
+                        class="filter-btn"
+                        class:active={!$selectedGroup}
+                        onclick={() => handleGroupSelect(null)}
                     >
                         {$t("policy.all")}
                     </button>
                     {#each $groups as group (group.name)}
                         <button
-                            class="px-3 py-1.5 text-xs rounded transition-colors"
-                            class:bg-blue-600={$selectedGroup === group.name}
-                            class:text-white={$selectedGroup === group.name}
-                            class:bg-gray-800={$selectedGroup !== group.name}
-                            class:text-gray-400={$selectedGroup !== group.name}
-                            on:click={() => handleGroupSelect(group.name)}
+                            class="filter-btn"
+                            class:active={$selectedGroup === group.name}
+                            onclick={() => handleGroupSelect(group.name)}
                         >
                             {group.name}
-                            <span class="ml-1 opacity-60">({group.count})</span>
+                            <span class="group-count">({group.count})</span>
                         </button>
                     {/each}
                 </div>
             {/if}
 
             <!-- Add Rule Button -->
-            <button
-                class="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded transition-colors"
-                on:click={handleCreateRule}
-            >
-                <svg
-                    class="w-4 h-4"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                >
-                    <path d="M12 5v14M5 12h14" />
-                </svg>
+            <button class="btn-primary" onclick={handleCreateRule}>
+                <Icon name="add" size="sm" />
                 {$t("policy.add_rule")}
             </button>
         </div>
     </div>
 
-    <!-- Loading State -->
-    {#if $isLoading && $flatRules.length === 0}
-        <div class="flex-1 flex items-center justify-center text-gray-500">
-            <div class="animate-pulse">{$t("policy.loading_rules")}</div>
-        </div>
-
-        <!-- Error State -->
-    {:else if $lastError}
-        <div class="flex-1 flex items-center justify-center">
-            <div
-                class="text-red-400 bg-red-900/20 px-4 py-3 rounded border border-red-800"
-            >
-                {$lastError}
+    <!-- Content -->
+    <div class="editor-content">
+        {#if $isLoading && $flatRules.length === 0}
+            <!-- Loading State -->
+            <div class="state-container">
+                <div class="loading-pulse">{$t("policy.loading_rules")}</div>
             </div>
-        </div>
+        {:else if $lastError}
+            <!-- Error State -->
+            <div class="state-container">
+                <div class="error-message">{$lastError}</div>
+            </div>
+        {:else if $filteredRules.length === 0}
+            <!-- Empty State -->
+            <div class="state-container empty-state">
+                <Icon name="inbox" size="lg" />
+                <p>{$t("policy.no_rules")}</p>
+                <button class="btn-primary" onclick={handleCreateRule}>
+                    {$t("policy.create_first_rule")}
+                </button>
+            </div>
+        {:else}
+            <!-- Rules List -->
+            <div class="rules-list">
+                {#each $filteredRules as rule (rule.id || `${rule.policy_from}-${rule.policy_to}-${rule.name}`)}
+                    <RuleRow
+                        {rule}
+                        onToggle={handleToggleRule}
+                        onEdit={handleEditRule}
+                        onDelete={handleDeleteRule}
+                        onDuplicate={handleDuplicateRule}
+                    />
+                {/each}
+            </div>
+        {/if}
+    </div>
 
-        <!-- Empty State -->
-    {:else if $filteredRules.length === 0}
-        <div
-            class="flex-1 flex flex-col items-center justify-center text-gray-500 gap-4"
-        >
-            <svg
-                class="w-16 h-16 opacity-30"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1"
-            >
-                <path
-                    d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"
-                />
-            </svg>
-            <p>{$t("policy.no_rules")}</p>
-            <button
-                class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-500 transition-colors"
-            >
-                {$t("policy.create_first_rule")}
-            </button>
-        </div>
-
-        <!-- Rules List -->
-    {:else}
-        <div class="flex-1 overflow-y-auto">
-            {#each $filteredRules as rule (rule.id || `${rule.policy_from}-${rule.policy_to}-${rule.name}`)}
-                <RuleRow
-                    {rule}
-                    onToggle={handleToggleRule}
-                    onDelete={handleDeleteRule}
-                    onDuplicate={handleDuplicateRule}
-                />
-            {/each}
-        </div>
-    {/if}
-
-    <!-- Footer Stats -->
-    <div
-        class="flex items-center justify-between px-4 py-2 border-t border-gray-800 bg-gray-900/50 text-xs text-gray-500"
-    >
-        <div>
+    <!-- Footer -->
+    <div class="editor-footer">
+        <div class="rule-count">
             {$filteredRules.length} rule{$filteredRules.length !== 1 ? "s" : ""}
             {#if $selectedGroup}
                 in "{$selectedGroup}"
             {/if}
         </div>
-        <div class="flex items-center gap-2">
+        <div class="live-indicator">
             {#if $isLoading}
-                <span class="animate-pulse">{$t("policy.updating")}</span>
+                <span class="loading-pulse">{$t("policy.updating")}</span>
             {:else}
                 <span>{$t("policy.live_stats")}</span>
             {/if}
-            <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"
-            ></span>
+            <span class="pulse-dot"></span>
         </div>
     </div>
 </div>
+
+<style>
+    .policy-editor {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        background: var(--dashboard-card);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+    }
+
+    /* Header */
+    .editor-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: var(--space-3) var(--space-4);
+        border-bottom: 1px solid var(--dashboard-border);
+        background: var(--dashboard-canvas);
+    }
+
+    .editor-title {
+        font-size: var(--text-lg);
+        font-weight: 600;
+        color: var(--dashboard-text);
+        margin: 0;
+    }
+
+    .header-actions {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+    }
+
+    /* Group Filter */
+    .group-filter {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+    }
+
+    .filter-btn {
+        padding: var(--space-1) var(--space-3);
+        font-size: var(--text-xs);
+        border-radius: var(--radius-md);
+        border: 1px solid var(--dashboard-border);
+        background: var(--dashboard-input);
+        color: var(--dashboard-text-muted);
+        cursor: pointer;
+        transition: all var(--transition-fast);
+    }
+
+    .filter-btn:hover {
+        background: var(--dashboard-border);
+        color: var(--dashboard-text);
+    }
+
+    .filter-btn.active {
+        background: var(--color-primary);
+        color: var(--color-primaryForeground);
+        border-color: var(--color-primary);
+    }
+
+    .group-count {
+        opacity: 0.6;
+        margin-left: var(--space-1);
+    }
+
+    /* Primary Button */
+    .btn-primary {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: var(--space-2) var(--space-3);
+        background: var(--color-primary);
+        color: var(--color-primaryForeground);
+        border: none;
+        border-radius: var(--radius-md);
+        font-size: var(--text-sm);
+        font-weight: 500;
+        cursor: pointer;
+        transition: all var(--transition-fast);
+    }
+
+    .btn-primary:hover {
+        filter: brightness(1.1);
+    }
+
+    /* Content */
+    .editor-content {
+        flex: 1;
+        overflow-y: auto;
+    }
+
+    .rules-list {
+        display: flex;
+        flex-direction: column;
+    }
+
+    /* States */
+    .state-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        min-height: 200px;
+        gap: var(--space-4);
+        color: var(--dashboard-text-muted);
+    }
+
+    .empty-state {
+        padding: var(--space-8);
+    }
+
+    .loading-pulse {
+        animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+        0%,
+        100% {
+            opacity: 1;
+        }
+        50% {
+            opacity: 0.5;
+        }
+    }
+
+    .error-message {
+        padding: var(--space-3) var(--space-4);
+        background: rgba(239, 68, 68, 0.1);
+        border: 1px solid var(--color-destructive);
+        border-radius: var(--radius-md);
+        color: var(--color-destructive);
+    }
+
+    /* Footer */
+    .editor-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: var(--space-2) var(--space-4);
+        border-top: 1px solid var(--dashboard-border);
+        background: var(--dashboard-canvas);
+        font-size: var(--text-xs);
+        color: var(--dashboard-text-muted);
+    }
+
+    .live-indicator {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+    }
+
+    .pulse-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: var(--radius-full);
+        background: var(--color-success);
+        animation: pulse 2s ease-in-out infinite;
+    }
+</style>

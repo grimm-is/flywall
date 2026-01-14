@@ -1,12 +1,14 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v2"
 	"grimm.is/flywall/internal/api/spec"
+	"grimm.is/flywall/internal/i18n"
 )
+
+var Printer = i18n.NewCLIPrinter()
 
 func main() {
 	doc, err := spec.GenerateSpec()

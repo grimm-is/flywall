@@ -23,6 +23,9 @@ func (m *Manager) Start(ctx context.Context) error {
 // Stop stops the firewall service.
 // We don't close the nftables connection as it's not supported by the library,
 // and we generally want the firewall to persist even if the control plane stops.
+//
+// Restart safety: On daemon restart, ApplyConfig() performs a full table flush
+// before re-applying rules, preventing duplicate or stale rules.
 func (m *Manager) Stop(ctx context.Context) error {
 	return nil
 }

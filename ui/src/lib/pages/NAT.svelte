@@ -41,9 +41,9 @@
 
   const natColumns = [
     { key: "type", label: "Type" },
-    { key: "protocol", label: $t("common.protocol") },
-    { key: "destination", label: $t("common.destination") },
-    { key: "to_address", label: "Forward To" },
+    { key: "proto", label: $t("common.protocol") },
+    { key: "dest_port", label: $t("common.destination") },
+    { key: "to_ip", label: "Forward To" },
     { key: "snat_ip", label: "SNAT IP" },
     { key: "description", label: $t("common.description") },
   ];
@@ -118,7 +118,7 @@
       if (ruleType === "masquerade") {
         newRule = {
           type: "masquerade",
-          interface: ruleInterface,
+          out_interface: ruleInterface,
         };
       } else if (ruleType === "snat") {
         newRule = {
@@ -132,10 +132,10 @@
       } else {
         newRule = {
           type: "dnat",
-          protocol: ruleProtocol,
-          destination: ruleDestPort,
-          to_address: ruleToAddress,
-          to_port: ruleToPort || ruleDestPort,
+          proto: ruleProtocol,
+          dest_port: String(ruleDestPort),
+          to_ip: ruleToAddress,
+          to_port: ruleToPort ? String(ruleToPort) : String(ruleDestPort),
           description: ruleDescription,
         };
       }
@@ -196,7 +196,7 @@
             </Badge>
 
             {#if rule.type === "masquerade"}
-              <span class="rule-detail">Outbound on {rule.interface}</span>
+              <span class="rule-detail">Outbound on {rule.out_interface}</span>
             {:else if rule.type === "snat"}
               <span class="rule-detail">
                 <span class="mono">{rule.src_ip || "Any"}</span>
@@ -208,8 +208,8 @@
               </span>
             {:else}
               <span class="rule-detail mono">
-                {rule.protocol?.toUpperCase() || "TCP"}:{rule.destination} → {rule.to_address}:{rule.to_port ||
-                  rule.destination}
+                {rule.proto?.toUpperCase() || "TCP"}:{rule.dest_port} → {rule.to_ip}:{rule.to_port ||
+                  rule.dest_port}
               </span>
               {#if rule.description}
                 <span class="rule-desc">{rule.description}</span>

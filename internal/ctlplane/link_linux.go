@@ -654,3 +654,106 @@ func (lm *LinkManager) GetMTU(name string) (int, error) {
 	}
 	return link.Attrs().MTU, nil
 }
+
+// ============================================================================
+// HA Virtual MAC Support
+// ============================================================================
+
+// SetHardwareAddr sets the MAC address of an interface.
+// The interface is automatically brought down, MAC changed, and brought back up.
+// This is used for HA failover to apply a virtual MAC address.
+func (lm *LinkManager) SetHardwareAddr(name string, mac []byte) error {
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		return fmt.Errorf("interface %s not found: %w", name, err)
+	}
+
+	// Check if interface is up
+	wasUp := link.Attrs().OperState == netlink.OperUp ||
+		link.Attrs().Flags&0x1 != 0 // IFF_UP flag
+
+	// Interface must be down to change MAC (Linux requirement)
+	if wasUp {
+		if err := netlink.LinkSetDown(link); err != nil {
+			return fmt.Errorf("failed to bring down %s: %w", name, err)
+		}
+	}
+
+	// Set the new MAC address
+	if err := netlink.LinkSetHardwareAddr(link, mac); err != nil {
+		// Try to restore the link state before returning error
+		if wasUp {
+			_ = netlink.LinkSetUp(link)
+		}
+		return fmt.Errorf("failed to set MAC on %s: %w", name, err)
+	}
+
+	// Restore link state
+	if wasUp {
+		if err := netlink.LinkSetUp(link); err != nil {
+			return fmt.Errorf("MAC changed but failed to bring up %s: %w", name, err)
+		}
+	}
+
+	log.Printf("[Link] Set MAC address on %s to %s", name, FormatMAC(mac))
+	return nil
+}
+
+// GetHardwareAddr returns the current MAC address of an interface as a byte slice.
+func (lm *LinkManager) GetHardwareAddr(name string) ([]byte, error) {
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		return nil, fmt.Errorf("interface %s not found: %w", name, err)
+	}
+	return link.Attrs().HardwareAddr, nil
+}
+
+// FormatMAC formats a MAC address byte slice as a colon-separated string.
+func FormatMAC(mac []byte) string {
+	if len(mac) != 6 {
+		return ""
+	}
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x",
+		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
+}
+
+// ParseMAC parses a MAC address string (colon or hyphen separated) to bytes.
+func ParseMAC(macStr string) ([]byte, error) {
+	// Normalize hyphens to colons
+	macStr = strings.ReplaceAll(macStr, "-", ":")
+	parts := strings.Split(macStr, ":")
+	if len(parts) != 6 {
+		return nil, fmt.Errorf("invalid MAC address format: %s", macStr)
+	}
+
+	mac := make([]byte, 6)
+	for i, part := range parts {
+		var b int
+		_, err := fmt.Sscanf(part, "%02x", &b)
+		if err != nil {
+			return nil, fmt.Errorf("invalid MAC address byte %s: %w", part, err)
+		}
+		mac[i] = byte(b)
+	}
+	return mac, nil
+}
+
+// GenerateVirtualMAC generates a locally-administered MAC address based on interface name.
+// Uses the format 02:gc:ic:XX:XX:XX where XX:XX:XX is derived from the interface name hash.
+// Locally-administered MACs have bit 1 of the first octet set (02, 06, 0A, 0E, etc.).
+func GenerateVirtualMAC(ifaceName string) []byte {
+	// Simple hash of interface name
+	hash := uint32(0)
+	for _, c := range ifaceName {
+		hash = hash*31 + uint32(c)
+	}
+
+	return []byte{
+		0x02,             // Locally-administered, unicast
+		0x67,             // 'g' for flywall
+		0x63,             // 'c' for flywall
+		byte(hash >> 16), // Derived from interface name
+		byte(hash >> 8),
+		byte(hash),
+	}
+}

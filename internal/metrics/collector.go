@@ -4,13 +4,14 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"grimm.is/flywall/internal/clock"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"grimm.is/flywall/internal/clock"
 
 	"grimm.is/flywall/internal/logging"
 )
@@ -31,9 +32,21 @@ type Collector struct {
 	systemStats    *SystemStats
 	conntrackStats *ConntrackStats
 
+	// Baseline persistence for restart continuity
+	baselineBucket BaselinePersister
+
 	// Reload counters for testing
 	reloadSuccess int64
 	reloadFailure int64
+}
+
+// BaselinePersister interface for saving/loading counter baselines.
+// This allows the collector to persist baselines without depending on state package directly.
+type BaselinePersister interface {
+	SaveInterfaceBaseline(name string, rxBytes, txBytes uint64) error
+	LoadInterfaceBaseline(name string) (rxBytes, txBytes uint64, err error)
+	SavePolicyBaseline(key string, packets, bytes uint64) error
+	LoadPolicyBaseline(key string) (packets, bytes uint64, err error)
 }
 
 // InterfaceStats holds traffic statistics for a network interface.
@@ -52,6 +65,15 @@ type InterfaceStats struct {
 	TxBytesPS float64 `json:"tx_bytes_per_sec"`
 	LinkUp    bool    `json:"link_up"`
 	Speed     uint64  `json:"speed_mbps,omitempty"`
+
+	// Previous values for rate calculation (not exported to JSON)
+	prevRxBytes   uint64    `json:"-"`
+	prevTxBytes   uint64    `json:"-"`
+	prevTimestamp time.Time `json:"-"`
+
+	// Baseline offset for counter resets (persisted across restarts)
+	baselineRxBytes uint64 `json:"-"`
+	baselineTxBytes uint64 `json:"-"`
 }
 
 // PolicyStats holds firewall policy match statistics.
@@ -65,6 +87,19 @@ type PolicyStats struct {
 	Dropped   uint64 `json:"dropped"`
 	Rejected  uint64 `json:"rejected"`
 	LastMatch int64  `json:"last_match_unix,omitempty"`
+
+	// Rate calculations (packets/sec, bytes/sec)
+	PacketsPS float64 `json:"packets_per_sec"`
+	BytesPS   float64 `json:"bytes_per_sec"`
+
+	// Previous values for rate calculation (not exported to JSON)
+	prevPackets   uint64    `json:"-"`
+	prevBytes     uint64    `json:"-"`
+	prevTimestamp time.Time `json:"-"`
+
+	// Baseline offset for counter resets (persisted across restarts)
+	baselinePackets uint64 `json:"-"`
+	baselineBytes   uint64 `json:"-"`
 }
 
 // ServiceStats holds statistics for firewall services.
@@ -144,9 +179,18 @@ func NewCollector(logger *logging.Logger, interval time.Duration) *Collector {
 	}
 }
 
+// SetBaselinePersister sets the baseline persister for saving/loading counter baselines.
+// Call this before Start() to enable baseline persistence.
+func (c *Collector) SetBaselinePersister(bp BaselinePersister) {
+	c.baselineBucket = bp
+}
+
 // Start begins the metrics collection loop.
 func (c *Collector) Start() {
 	c.logger.Info("Starting metrics collector", "interval", c.interval.String())
+
+	// Load baselines from state store
+	c.loadBaselines()
 
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
@@ -164,7 +208,65 @@ func (c *Collector) Start() {
 
 // Stop stops the metrics collection loop.
 func (c *Collector) Stop() {
+	// Save baselines before stopping
+	c.saveBaselines()
 	close(c.stopCh)
+}
+
+// loadBaselines loads counter baselines from state store on startup.
+func (c *Collector) loadBaselines() {
+	if c.baselineBucket == nil {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Load interface baselines
+	for name, stats := range c.interfaceStats {
+		rxBytes, txBytes, err := c.baselineBucket.LoadInterfaceBaseline(name)
+		if err == nil {
+			stats.baselineRxBytes = rxBytes
+			stats.baselineTxBytes = txBytes
+			c.logger.Debug("Loaded interface baseline", "interface", name, "rx", rxBytes, "tx", txBytes)
+		}
+	}
+
+	// Load policy baselines
+	for key, stats := range c.policyStats {
+		packets, bytes, err := c.baselineBucket.LoadPolicyBaseline(key)
+		if err == nil {
+			stats.baselinePackets = packets
+			stats.baselineBytes = bytes
+			c.logger.Debug("Loaded policy baseline", "policy", key, "packets", packets, "bytes", bytes)
+		}
+	}
+}
+
+// saveBaselines saves current counter values as baselines for next startup.
+func (c *Collector) saveBaselines() {
+	if c.baselineBucket == nil {
+		return
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Save interface baselines
+	for name, stats := range c.interfaceStats {
+		if err := c.baselineBucket.SaveInterfaceBaseline(name, stats.RxBytes, stats.TxBytes); err != nil {
+			c.logger.Warn("Failed to save interface baseline", "interface", name, "error", err)
+		}
+	}
+
+	// Save policy baselines
+	for key, stats := range c.policyStats {
+		if err := c.baselineBucket.SavePolicyBaseline(key, stats.Packets, stats.Bytes); err != nil {
+			c.logger.Warn("Failed to save policy baseline", "policy", key, "error", err)
+		}
+	}
+
+	c.logger.Info("Saved metrics baselines", "interfaces", len(c.interfaceStats), "policies", len(c.policyStats))
 }
 
 // collectMetrics gathers all metrics and updates the registry.
@@ -214,163 +316,67 @@ func (c *Collector) collectMetrics() {
 }
 
 // collectInterfaceStats gathers interface traffic counters from nftables.
-func (c *Collector) collectInterfaceStats(ctx context.Context) error {
-	// Get nftables counters for input/output chains
-	cmd := exec.CommandContext(ctx, "nft", "list", "counters")
-	output, err := cmd.Output()
+func (c *Collector) collectInterfaceStats(_ context.Context) error {
+	// Use native netlink-based collection instead of exec.Command
+	ifaceStats, err := collectInterfaceStatsNative("flywall")
 	if err != nil {
-		return fmt.Errorf("nft list counters failed: %w", err)
+		return err
 	}
 
-	// Parse the output to extract interface statistics
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "counter") {
-			continue
-		}
-
-		// Parse counter line: counter packets 1234 bytes 5678 comment "interface-eth0-in"
-		parts := strings.Fields(line)
-		if len(parts) < 6 {
-			continue
-		}
-
-		var packets, bytes int64
-		var interfaceName, direction string
-
-		for i, part := range parts {
-			switch part {
-			case "packets":
-				if i+1 < len(parts) {
-					packets, _ = strconv.ParseInt(parts[i+1], 10, 64)
-				}
-			case "bytes":
-				if i+1 < len(parts) {
-					bytes, _ = strconv.ParseInt(parts[i+1], 10, 64)
-				}
-			case "comment":
-				if i+1 < len(parts) {
-					comment := strings.Trim(parts[i+1], `"`)
-					// Parse comment format: "interface-eth0-in" or "interface-eth0-out"
-					if strings.HasPrefix(comment, "interface-") {
-						parts := strings.Split(comment, "-")
-						if len(parts) >= 3 {
-							interfaceName = parts[1]
-							direction = parts[2]
-						}
-					}
-				}
-			}
-		}
-
-		if interfaceName != "" && direction != "" {
-			// Update interface metrics
-			if direction == "in" {
-				c.registry.InterfaceRxBytes.WithLabelValues(interfaceName).Set(float64(bytes))
-				c.registry.InterfaceRxPackets.WithLabelValues(interfaceName).Set(float64(packets))
-			} else if direction == "out" {
-				c.registry.InterfaceTxBytes.WithLabelValues(interfaceName).Set(float64(bytes))
-				c.registry.InterfaceTxPackets.WithLabelValues(interfaceName).Set(float64(packets))
-			}
-		}
+	for ifaceName, counters := range ifaceStats {
+		// Interface metrics need 2 labels: interface, zone
+		// Zone is unknown from nftables counters, use empty string
+		c.registry.InterfaceRxBytes.WithLabelValues(ifaceName, "").Set(float64(counters.RxBytes))
+		c.registry.InterfaceRxPackets.WithLabelValues(ifaceName, "").Set(float64(counters.RxPackets))
+		c.registry.InterfaceTxBytes.WithLabelValues(ifaceName, "").Set(float64(counters.TxBytes))
+		c.registry.InterfaceTxPackets.WithLabelValues(ifaceName, "").Set(float64(counters.TxPackets))
 	}
 
 	return nil
 }
 
 // collectIPSetStats gathers IPSet size and update information.
-func (c *Collector) collectIPSetStats(ctx context.Context) error {
-	// Get list of IP sets
-	cmd := exec.CommandContext(ctx, "nft", "list", "sets")
-	output, err := cmd.Output()
+func (c *Collector) collectIPSetStats(_ context.Context) error {
+	// Use native netlink-based collection instead of exec.Command
+	nftStats, err := collectNFTablesNative("flywall")
 	if err != nil {
-		return fmt.Errorf("nft list sets failed: %w", err)
+		return err
 	}
 
-	// Parse the output to extract IPSet information
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "set") {
-			continue
-		}
-
-		// Parse set line: set firewall_blocklist { type ipv4_addr; flags interval; size 256; }
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
-			continue
-		}
-
-		setName := strings.TrimSuffix(parts[1], "{")
-		setName = strings.TrimSpace(setName)
-
-		// Extract size from the set definition
-		for _, part := range parts {
-			if strings.HasPrefix(part, "size") {
-				sizeStr := strings.TrimSuffix(part, ";")
-				size, err := strconv.ParseInt(sizeStr[5:], 10, 64) // Skip "size "
-				if err == nil {
-					c.registry.IPSetSize.WithLabelValues(setName).Set(float64(size))
-				}
-			}
-		}
+	for setName, elementCount := range nftStats.Sets {
+		// IPSetSize needs 2 labels: name, type
+		// Use "ipv4_addr" as default type since we don't track set types yet
+		c.registry.IPSetSize.WithLabelValues(setName, "ipv4_addr").Set(float64(elementCount))
 	}
 
 	return nil
 }
 
 // collectRuleStats gathers rule match counters from nftables.
-func (c *Collector) collectRuleStats(ctx context.Context) error {
-	// Get nftables rules with counters
-	cmd := exec.CommandContext(ctx, "nft", "list", "ruleset")
-	output, err := cmd.Output()
+func (c *Collector) collectRuleStats(_ context.Context) error {
+	// Use native netlink-based collection instead of exec.Command
+	nftStats, err := collectNFTablesNative("flywall")
 	if err != nil {
-		return fmt.Errorf("nft list ruleset failed: %w", err)
+		return err
 	}
 
-	// Parse the output to extract rule counters
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "counter packets") {
+	// Process rule stats by chain:action
+	for key, packets := range nftStats.RuleStats {
+		// key format: "chain:action"
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) != 2 {
 			continue
 		}
+		chain := parts[0]
+		action := parts[1]
 
-		// Parse rule with counter: counter packets 1234 bytes 5678 drop
-		parts := strings.Fields(line)
-		if len(parts) < 6 {
-			continue
-		}
+		c.registry.RuleMatches.WithLabelValues(chain, "unknown", action).Add(float64(packets))
 
-		var packets int64
-		var action, chain string
-
-		for i, part := range parts {
-			switch part {
-			case "packets":
-				if i+1 < len(parts) {
-					packets, _ = strconv.ParseInt(parts[i+1], 10, 64)
-				}
-			case "bytes":
-				_ = part // Suppress unused variable warning
-			case "drop", "accept", "reject":
-				action = part
-			}
-		}
-
-		// Find the chain this rule belongs to (look backwards in output)
-		// For now, use a generic chain name
-		if action != "" {
-			chain = "filter" // Default chain
-			c.registry.RuleMatches.WithLabelValues(chain, "unknown", action).Add(float64(packets))
-
-			// Update action-specific counters
-			if action == "drop" {
-				c.registry.DroppedPackets.WithLabelValues(chain, "rule").Add(float64(packets))
-			} else if action == "accept" {
-				c.registry.AcceptedPackets.WithLabelValues(chain, "rule").Add(float64(packets))
-			}
+		// Update action-specific counters
+		if action == "drop" {
+			c.registry.DroppedPackets.WithLabelValues(chain, "rule").Add(float64(packets))
+		} else if action == "accept" {
+			c.registry.AcceptedPackets.WithLabelValues(chain, "rule").Add(float64(packets))
 		}
 	}
 
@@ -406,6 +412,8 @@ func (c *Collector) collectInterfaceStatsFromSys(_ context.Context) error {
 		return fmt.Errorf("failed to read /sys/class/net: %w", err)
 	}
 
+	now := clock.Now()
+
 	for _, entry := range entries {
 		name := entry.Name()
 		if name == "lo" {
@@ -420,9 +428,27 @@ func (c *Collector) collectInterfaceStatsFromSys(_ context.Context) error {
 
 		basePath := fmt.Sprintf("/sys/class/net/%s/statistics", name)
 
-		// Read counters
-		stats.RxBytes = readSysUint64(basePath + "/rx_bytes")
-		stats.TxBytes = readSysUint64(basePath + "/tx_bytes")
+		// Read current counters
+		currentRxBytes := readSysUint64(basePath + "/rx_bytes")
+		currentTxBytes := readSysUint64(basePath + "/tx_bytes")
+
+		// Calculate rates with reset detection
+		if !stats.prevTimestamp.IsZero() {
+			elapsed := now.Sub(stats.prevTimestamp).Seconds()
+			if elapsed > 0 {
+				stats.RxBytesPS = c.calculateRate(currentRxBytes, stats.prevRxBytes, elapsed)
+				stats.TxBytesPS = c.calculateRate(currentTxBytes, stats.prevTxBytes, elapsed)
+			}
+		}
+
+		// Store for next iteration
+		stats.prevRxBytes = currentRxBytes
+		stats.prevTxBytes = currentTxBytes
+		stats.prevTimestamp = now
+
+		// Apply baseline offset for cumulative counters (handles restarts)
+		stats.RxBytes = stats.baselineRxBytes + currentRxBytes
+		stats.TxBytes = stats.baselineTxBytes + currentTxBytes
 		stats.RxPackets = readSysUint64(basePath + "/rx_packets")
 		stats.TxPackets = readSysUint64(basePath + "/tx_packets")
 		stats.RxErrors = readSysUint64(basePath + "/rx_errors")
@@ -455,79 +481,72 @@ func (c *Collector) collectInterfaceStatsFromSys(_ context.Context) error {
 	return nil
 }
 
+// calculateRate computes the rate between two counter values, handling resets.
+// If current < previous (counter reset), treats current as the delta from zero.
+func (c *Collector) calculateRate(current, previous uint64, elapsedSeconds float64) float64 {
+	if elapsedSeconds <= 0 {
+		return 0
+	}
+
+	var delta uint64
+	if current < previous {
+		// Counter reset detected - use current value as delta
+		// (assumes reset to zero, current is new accumulated value)
+		delta = current
+		c.logger.Debug("Counter reset detected", "current", current, "previous", previous)
+	} else {
+		delta = current - previous
+	}
+
+	return float64(delta) / elapsedSeconds
+}
+
 // collectPolicyStats gathers firewall policy chain counters.
-func (c *Collector) collectPolicyStats(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "nft", "-j", "list", "chains")
-	output, err := cmd.Output()
+func (c *Collector) collectPolicyStats(_ context.Context) error {
+	// Use native netlink-based collection instead of exec.Command
+	nftStats, err := collectNFTablesNative("flywall")
 	if err != nil {
-		// Non-fatal: nftables might not be running
-		return nil
+		return nil // Non-fatal
 	}
 
-	// Parse chain names and look for policy chains (format: zone_from_to_zone)
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		// Look for chain definitions with counters
-		if strings.Contains(line, "chain") && strings.Contains(line, "policy") {
-			// Extract chain name and policy counters
-			// This is simplified - real implementation would parse JSON output
-		}
-	}
+	now := clock.Now()
 
-	// Get counters from named counters
-	cmd = exec.CommandContext(ctx, "nft", "list", "counters")
-	output, err = cmd.Output()
-	if err != nil {
-		return nil
-	}
+	// Process policy counters
+	for policyName, counters := range nftStats.PolicyStats {
+		// Parse policy name: policy-wan-to-lan
+		policyParts := strings.Split(policyName, "-")
+		if len(policyParts) >= 4 {
+			fromZone := policyParts[1]
+			toZone := policyParts[3]
+			key := fromZone + "->" + toZone
 
-	lines = strings.Split(string(output), "\n")
-	var currentCounter string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "counter") && strings.Contains(line, "policy-") {
-			// Parse: counter inet firewall policy-wan-to-lan { packets 1234 bytes 5678 }
-			parts := strings.Fields(line)
-			for i, part := range parts {
-				if strings.HasPrefix(part, "policy-") {
-					currentCounter = part
+			stats, ok := c.policyStats[key]
+			if !ok {
+				stats = &PolicyStats{
+					Name:     policyName,
+					FromZone: fromZone,
+					ToZone:   toZone,
 				}
-				if part == "packets" && i+1 < len(parts) {
-					packets, _ := strconv.ParseUint(parts[i+1], 10, 64)
-					if currentCounter != "" {
-						// Parse policy name: policy-wan-to-lan
-						policyParts := strings.Split(currentCounter, "-")
-						if len(policyParts) >= 4 {
-							fromZone := policyParts[1]
-							toZone := policyParts[3]
-							key := fromZone + "->" + toZone
-							if _, ok := c.policyStats[key]; !ok {
-								c.policyStats[key] = &PolicyStats{
-									Name:     currentCounter,
-									FromZone: fromZone,
-									ToZone:   toZone,
-								}
-							}
-							c.policyStats[key].Packets = packets
-						}
-					}
-				}
-				if part == "bytes" && i+1 < len(parts) {
-					bytes, _ := strconv.ParseUint(parts[i+1], 10, 64)
-					if currentCounter != "" {
-						policyParts := strings.Split(currentCounter, "-")
-						if len(policyParts) >= 4 {
-							fromZone := policyParts[1]
-							toZone := policyParts[3]
-							key := fromZone + "->" + toZone
-							if stats, ok := c.policyStats[key]; ok {
-								stats.Bytes = bytes
-							}
-						}
-					}
+				c.policyStats[key] = stats
+			}
+
+			// Calculate rates with reset detection
+			if !stats.prevTimestamp.IsZero() {
+				elapsed := now.Sub(stats.prevTimestamp).Seconds()
+				if elapsed > 0 {
+					stats.PacketsPS = c.calculateRate(counters.Packets, stats.prevPackets, elapsed)
+					stats.BytesPS = c.calculateRate(counters.Bytes, stats.prevBytes, elapsed)
 				}
 			}
+
+			// Store for next iteration
+			stats.prevPackets = counters.Packets
+			stats.prevBytes = counters.Bytes
+			stats.prevTimestamp = now
+
+			// Apply baseline offset for cumulative counters
+			stats.Packets = stats.baselinePackets + counters.Packets
+			stats.Bytes = stats.baselineBytes + counters.Bytes
 		}
 	}
 

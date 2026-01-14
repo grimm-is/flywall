@@ -71,9 +71,10 @@ type TLSConfig struct {
 	KeyFile  string `hcl:"key_file,optional" json:"key_file,omitempty"`
 }
 
-// ReplicationConfig configures state replication between nodes.
+// ReplicationConfig configures state replication and HA between nodes.
+// ReplicationConfig configures replication and high-availability.
 type ReplicationConfig struct {
-	// Mode: "primary" or "replica"
+	// Mode: "primary", "replica", or "standalone" (default, no HA)
 	Mode string `hcl:"mode" json:"mode"`
 
 	// Listen address for replication traffic (e.g. ":9000")
@@ -82,8 +83,108 @@ type ReplicationConfig struct {
 	// Address of the primary node (only for replica mode)
 	PrimaryAddr string `hcl:"primary_addr,optional" json:"primary_addr,omitempty"`
 
-	// Secret key for authentication (optional)
+	// Address of the peer node (used for HA heartbeat - both nodes need this)
+	PeerAddr string `hcl:"peer_addr,optional" json:"peer_addr,omitempty"`
+
+	// Secret key for PSK authentication (required for secure replication)
 	SecretKey string `hcl:"secret_key,optional" json:"secret_key,omitempty"`
+
+	// TLS configuration for encrypted replication
+	TLSCertFile string `hcl:"tls_cert,optional" json:"tls_cert,omitempty"`
+	TLSKeyFile  string `hcl:"tls_key,optional" json:"tls_key,omitempty"`
+	TLSCAFile   string `hcl:"tls_ca,optional" json:"tls_ca,omitempty"`
+	TLSMutual   bool   `hcl:"tls_mutual,optional" json:"tls_mutual,omitempty"` // Require client certs
+
+	// HA configuration for high-availability failover
+	HA *HAConfig `hcl:"ha,block" json:"ha,omitempty"`
+}
+
+// HAConfig configures high-availability failover between two nodes.
+type HAConfig struct {
+	// Enabled activates HA monitoring and failover
+	Enabled bool `hcl:"enabled,optional" json:"enabled,omitempty"`
+
+	// Priority determines which node becomes primary (lower = higher priority)
+	// Default: 100. Set one node to 50 and another to 150 for deterministic election.
+	Priority int `hcl:"priority,optional" json:"priority,omitempty"`
+
+	// Virtual IPs to migrate on failover (for LAN-side gateway addresses)
+	VirtualIPs []VirtualIP `hcl:"virtual_ip,block" json:"virtual_ips,omitempty"`
+
+	// Virtual MACs to migrate on failover (for DHCP-assigned WAN interfaces)
+	VirtualMACs []VirtualMAC `hcl:"virtual_mac,block" json:"virtual_macs,omitempty"`
+
+	// HeartbeatInterval is seconds between heartbeat messages (default: 1)
+	HeartbeatInterval int `hcl:"heartbeat_interval,optional" json:"heartbeat_interval,omitempty"`
+
+	// FailureThreshold is missed heartbeats before declaring peer dead (default: 3)
+	FailureThreshold int `hcl:"failure_threshold,optional" json:"failure_threshold,omitempty"`
+
+	// FailbackMode controls behavior when original primary recovers:
+	//   "auto"   - automatically failback after FailbackDelay
+	//   "manual" - require manual intervention to failback
+	//   "never"  - never failback, new primary stays primary
+	FailbackMode string `hcl:"failback_mode,optional" json:"failback_mode,omitempty"`
+
+	// FailbackDelay is seconds to wait before automatic failback (default: 60)
+	FailbackDelay int `hcl:"failback_delay,optional" json:"failback_delay,omitempty"`
+
+	// HeartbeatPort is the UDP port for HA heartbeat messages (default: 9002)
+	HeartbeatPort int `hcl:"heartbeat_port,optional" json:"heartbeat_port,omitempty"`
+
+	// ConntrackSync enables connection state replication via conntrackd
+	ConntrackSync *ConntrackSyncConfig `hcl:"conntrack_sync,block" json:"conntrack_sync,omitempty"`
+}
+
+// ConntrackSyncConfig configures connection tracking state synchronization.
+// Uses conntrackd to replicate established connections between HA nodes,
+// allowing TCP sessions to survive failover without being reset.
+type ConntrackSyncConfig struct {
+	// Enabled activates conntrack synchronization
+	Enabled bool `hcl:"enabled,optional" json:"enabled,omitempty"`
+
+	// Interface is the network interface for sync traffic (default: HA peer link)
+	Interface string `hcl:"interface,optional" json:"interface,omitempty"`
+
+	// MulticastGroup for sync traffic (default: 225.0.0.50)
+	// Set to empty string to use unicast mode with peer address
+	MulticastGroup string `hcl:"multicast_group,optional" json:"multicast_group,omitempty"`
+
+	// Port for sync traffic (default: 3780)
+	Port int `hcl:"port,optional" json:"port,omitempty"`
+
+	// ExpectSync enables expectation table sync for ALG protocols (FTP, SIP, etc.)
+	ExpectSync bool `hcl:"expect_sync,optional" json:"expect_sync,omitempty"`
+}
+
+// VirtualIP defines a shared IP address for HA failover.
+// This IP is added to the interface on the active node and removed on failover.
+type VirtualIP struct {
+	// Address is the virtual IP in CIDR notation (e.g., "192.168.1.1/24")
+	Address string `hcl:"address" json:"address"`
+
+	// Interface is the network interface to add the VIP to (e.g., "eth1")
+	Interface string `hcl:"interface" json:"interface"`
+
+	// Label is an optional interface label for the address (e.g., "eth1:vip")
+	Label string `hcl:"label,optional" json:"label,omitempty"`
+}
+
+// VirtualMAC defines a shared MAC address for HA failover.
+// Used when the interface gets its IP via DHCP from an upstream provider.
+// On failover, the backup node applies this MAC and reclaims the DHCP lease.
+type VirtualMAC struct {
+	// Address is the virtual MAC address (e.g., "02:gc:ic:00:00:01").
+	// If empty, a locally-administered MAC is auto-generated from the interface name.
+	Address string `hcl:"address,optional" json:"address,omitempty"`
+
+	// Interface is the network interface to apply the VMAC to (e.g., "eth0")
+	Interface string `hcl:"interface" json:"interface"`
+
+	// DHCP indicates this interface uses DHCP. On failover, the backup will
+	// attempt to reclaim the same DHCP lease by sending a REQUEST with the
+	// previous lease's offered IP.
+	DHCP bool `hcl:"dhcp,optional" json:"dhcp,omitempty"`
 }
 
 // SchedulerConfig defines scheduler settings.
@@ -117,4 +218,7 @@ type SystemConfig struct {
 	// Sysctl allows manual override of sysctl parameters
 	// Applied after profile tuning
 	Sysctl map[string]string `hcl:"sysctl,optional" json:"sysctl,omitempty"`
+
+	// Timezone for scheduled rules (e.g. "America/Los_Angeles"). Defaults to "UTC".
+	Timezone string `hcl:"timezone,optional" json:"timezone,omitempty"`
 }

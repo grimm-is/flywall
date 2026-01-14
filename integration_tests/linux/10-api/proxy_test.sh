@@ -38,13 +38,13 @@ diag "Control plane started (PID $CTL_PID)"
 # Wait for sockets (Manual loop to capture logs on failure)
 diag "Waiting for API socket..."
 for i in $(seq 1 15); do
-    if [ -S "/var/run/flywall/api/api.sock" ]; then
+    if [ -S "/var/run/api/api.sock" ]; then
         break
     fi
     sleep 1
 done
 
-if [ ! -S "/var/run/flywall/api/api.sock" ]; then
+if [ ! -S "/var/run/api/api.sock" ]; then
     diag "TIMEOUT waiting for API socket"
     diag "Process List:"
     ps aux
@@ -59,8 +59,8 @@ diag "Waiting for Proxy port 8080..."
 wait_for_port 8080
 
 # Verify Socket
-if [ -S "/var/run/flywall/api/api.sock" ]; then
-    pass "Unix socket /var/run/flywall/api/api.sock created"
+if [ -S "/var/run/api/api.sock" ]; then
+    pass "Unix socket /var/run/api/api.sock created"
 else
     fail "Unix socket missing"
 fi
@@ -74,7 +74,7 @@ else
 fi
 
 # Check logs for confirmation of architecture
-if grep -q "Starting API server on /var/run/flywall/api/api.sock (unix, HTTP)" "$CTL_LOG"; then
+if grep -q "Starting API server on /var/run/api/api.sock (unix, HTTP)" "$CTL_LOG"; then
     pass "API log confirms Unix listener"
 else
     diag "CTL Log Content:"

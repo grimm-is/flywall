@@ -46,6 +46,7 @@ func LoadConfigFromBytes(filename string, data []byte) (*ConfigFile, error) {
 
 	// Parse for reading (into Go struct)
 	var cfg Config
+
 	if err := hclsimple.Decode(filename, data, nil, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to decode config: %w", err)
 	}
@@ -185,16 +186,24 @@ func (cf *ConfigFile) SetSection(sectionType string, sectionHCL string) error {
 
 	body := cf.hclFile.Body()
 
-	// Find and remove existing block
+	// Find existing block to replace in-place
+	found := false
 	for _, block := range body.Blocks() {
 		if block.Type() == sectionType {
-			body.RemoveBlock(block)
+			// Replace body content to preserve block header comments/position
+			dstBody := block.Body()
+			clearBody(dstBody)
+			copyBody(dstBody, newBlock.Body())
+			found = true
 			break
 		}
 	}
 
-	// Append new block
-	appendBlock(body, newBlock)
+	if !found {
+		// Append new block
+		body.AppendNewline()
+		appendBlock(body, newBlock)
+	}
 
 	// Re-decode to update Config struct
 	return cf.reloadConfig()
@@ -213,7 +222,7 @@ func (cf *ConfigFile) SetSectionByLabel(sectionType string, labels []string, sec
 
 	body := cf.hclFile.Body()
 
-	// Find and remove existing block with matching label or name (if fallback)
+	// Find and replace existing block in-place
 	found := false
 	for _, block := range body.Blocks() {
 		if block.Type() == sectionType {
@@ -229,7 +238,9 @@ func (cf *ConfigFile) SetSectionByLabel(sectionType string, labels []string, sec
 					}
 				}
 				if matchAll {
-					body.RemoveBlock(block)
+					dstBody := block.Body()
+					clearBody(dstBody)
+					copyBody(dstBody, newBlock.Body())
 					found = true
 					break
 				}
@@ -241,7 +252,9 @@ func (cf *ConfigFile) SetSectionByLabel(sectionType string, labels []string, sec
 				if attr != nil {
 					val := strings.Trim(string(attr.Expr().BuildTokens(nil).Bytes()), "\" ")
 					if val == labels[0] {
-						body.RemoveBlock(block)
+						dstBody := block.Body()
+						clearBody(dstBody)
+						copyBody(dstBody, newBlock.Body())
 						found = true
 						break
 					}
@@ -250,8 +263,11 @@ func (cf *ConfigFile) SetSectionByLabel(sectionType string, labels []string, sec
 		}
 	}
 
-	// Append new block
-	appendBlock(body, newBlock)
+	if !found {
+		// Append new block
+		body.AppendNewline()
+		appendBlock(body, newBlock)
+	}
 
 	return cf.reloadConfig()
 }
@@ -485,19 +501,27 @@ func parseBlock(hclSource, filename string) (*hclwrite.Block, error) {
 }
 
 func appendBlock(body *hclwrite.Body, src *hclwrite.Block) {
-	newBlock := body.AppendNewBlock(src.Type(), src.Labels())
-	srcBody := src.Body()
-	dstBody := newBlock.Body()
+	body.AppendBlock(src)
+}
 
-	// Copy attributes
-	for name, attr := range srcBody.Attributes() {
-		dstBody.SetAttributeRaw(name, attr.Expr().BuildTokens(nil))
+// clearBody removes all attributes and blocks from a body.
+func clearBody(body *hclwrite.Body) {
+	for name := range body.Attributes() {
+		body.RemoveAttribute(name)
 	}
+	for _, block := range body.Blocks() {
+		body.RemoveBlock(block)
+	}
+}
 
-	// Copy nested blocks
-	for _, nested := range srcBody.Blocks() {
-		appendBlock(dstBody, nested)
-	}
+// copyBody copies attributes and blocks from src to dst, attempt to preserve comments.
+func copyBody(dst, src *hclwrite.Body) {
+	// hclwrite's Body doesn't have an easy way to copy with comments.
+	// But we can get the tokens of the source body and append them.
+	// Note: BuildTokens includes the opening and closing braces if it's a block body?
+	// Actually, src is a Body. src.BuildTokens(nil) returns tokens of the content.
+	tokens := src.BuildTokens(nil)
+	dst.AppendUnstructuredTokens(tokens)
 }
 
 // NewConfigFile creates a new empty config file.

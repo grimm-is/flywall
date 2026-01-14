@@ -114,3 +114,38 @@ func (s *Server) ToggleUplink(args *ToggleUplinkArgs, reply *ToggleUplinkReply) 
 	reply.Success = true
 	return nil
 }
+
+// TestUplink triggers a manual connectivity test for an uplink
+func (s *Server) TestUplink(args *TestUplinkArgs, reply *TestUplinkReply) error {
+	if s.uplinkManager == nil {
+		return fmt.Errorf("uplink manager not initialized")
+	}
+
+	group := s.uplinkManager.GetGroup(args.GroupName)
+	if group == nil {
+		return fmt.Errorf("uplink group %s not found", args.GroupName)
+	}
+
+	uplink := group.GetUplink(args.UplinkName)
+	if uplink == nil {
+		return fmt.Errorf("uplink %s not found in group %s", args.UplinkName, args.GroupName)
+	}
+
+	// Return current health status (health checks run periodically in background)
+
+	reply.UplinkStatus = UplinkStatus{
+		Name:       uplink.Name,
+		Type:       string(uplink.Type),
+		Interface:  uplink.Interface,
+		Gateway:    uplink.Gateway,
+		PublicIP:   uplink.LocalIP,
+		Healthy:    uplink.Healthy,
+		Enabled:    uplink.Enabled,
+		Latency:    uplink.Latency.String(),
+		PacketLoss: uplink.PacketLoss,
+		Throughput: uplink.Throughput,
+		Tier:       uplink.Tier,
+		Weight:     uplink.Weight,
+	}
+	return nil
+}

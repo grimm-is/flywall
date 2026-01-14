@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"grimm.is/flywall/internal/clock"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"grimm.is/flywall/internal/clock"
 
 	"grimm.is/flywall/internal/logging"
 
@@ -20,6 +22,7 @@ import (
 
 // WireGuardConfig represents WireGuard VPN configuration.
 type WireGuardConfig struct {
+	Name             string          `hcl:"name,label" json:"name,omitempty"`
 	Enabled          bool            `hcl:"enabled" json:"enabled"`
 	Interface        string          `hcl:"interface" json:"interface"`
 	ManagementAccess bool            `hcl:"management_access" json:"management_access"`
@@ -31,6 +34,9 @@ type WireGuardConfig struct {
 	DNS              []string        `hcl:"dns" json:"dns,omitempty"`
 	MTU              int             `hcl:"mtu" json:"mtu,omitempty"`
 	FWMark           int             `hcl:"fwmark" json:"fwmark,omitempty"`
+	Table            string          `hcl:"table,optional" json:"table,omitempty"`         // Routing table ID or "auto"/"off"
+	PostUp           []string        `hcl:"post_up,optional" json:"post_up,omitempty"`     // Commands to run after up
+	PostDown         []string        `hcl:"post_down,optional" json:"post_down,omitempty"` // Commands to run after down
 	Peers            []WireGuardPeer `hcl:"peer,block" json:"peers,omitempty"`
 }
 
@@ -480,6 +486,15 @@ func (m *WireGuardManager) Up() error {
 	// Iterate over peers and add routes for AllowedIPs if they route to this interface
 	// Note: WireGuard kernel module generally handles routing for AllowedIPs if the interface route exists.
 	// However, we usually need explicit routes for the allowed IP ranges to the dev.
+
+	// Parse Table ID
+	var tableID int
+	if m.config.Table != "" && m.config.Table != "auto" && m.config.Table != "off" {
+		if id, err := strconv.Atoi(m.config.Table); err == nil {
+			tableID = id
+		}
+	}
+
 	for _, p := range m.config.Peers {
 		for _, ipRange := range p.AllowedIPs {
 			_, dst, err := net.ParseCIDR(ipRange)
@@ -490,10 +505,11 @@ func (m *WireGuardManager) Up() error {
 			route := netlink.Route{
 				LinkIndex: l.Attrs().Index,
 				Dst:       dst,
+				Table:     tableID,
 			}
 			if err := netlink.RouteAdd(&route); err != nil {
 				if !strings.Contains(err.Error(), "file exists") {
-					m.logger.Warn("Failed to add route", "dst", ipRange, "error", err)
+					m.logger.Warn("Failed to add route", "dst", ipRange, "table", tableID, "error", err)
 				}
 			}
 		}

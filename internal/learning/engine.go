@@ -410,35 +410,35 @@ func (e *Engine) ProcessPacket(pkt *PacketInfo) (bool, error) {
 }
 
 // ProcessSNI handles SNI hint discovered from separate inspection process
+// Deprecated: Use ProcessTLSHint instead for JA3 support
 func (e *Engine) ProcessSNI(srcMAC, srcIP, dstIP, sni string) {
-	if sni == "" {
+	e.ProcessTLSHint(srcMAC, srcIP, dstIP, sni, "", "")
+}
+
+// ProcessTLSHint handles TLS Client Hello data including SNI and JA3 fingerprint
+func (e *Engine) ProcessTLSHint(srcMAC, srcIP, dstIP, sni, ja3Hash, ja3Raw string) {
+	if sni == "" && ja3Hash == "" {
 		return
 	}
 
-	// 1. Identify App from Signatures
-	appName := IdentifyApp(sni)
-	if appName == "" {
-		// Fallback: If IdentifyApp returns empty, maybe use the domain itself as a hint
-		// But IdentifyApp is preferred.
-		// We can still add the SNI as a domain hint.
+	// 1. Identify App from Signatures (uses SNI)
+	appName := ""
+	if sni != "" {
+		appName = IdentifyApp(sni)
 	}
 
 	// 2. Identify Vendor from MAC
 	vendor := network.LookupVendor(srcMAC)
 
 	// 3. Find/Update Flow and Annotate
-	// We need to find the flow. But SNI packets are TCP port 443 specific.
+	// We need to find the flow. TLS packets are TCP port 443 specific.
 	// We assume destination port 443.
-	// We might not have the flow in DB yet if the packet hook hasn't run or is racing.
-	// We'll try to find it.
-
 	e.mu.RLock()
-	// Note: We use 443 as default for SNI.
 	flow, err := e.db.FindFlow(srcMAC, "TCP", 443)
 	e.mu.RUnlock()
 
 	if err != nil {
-		e.logger.Error("failed to find flow for SNI annotation", "error", err)
+		e.logger.Error("failed to find flow for TLS annotation", "error", err)
 		return
 	}
 
@@ -452,29 +452,34 @@ func (e *Engine) ProcessSNI(srcMAC, srcIP, dstIP, sni string) {
 			flow.Vendor = vendor
 			updates = true
 		}
+		// Update JA3 if we have it and flow doesn't
+		if ja3Hash != "" && flow.JA3Hash == "" {
+			flow.JA3Hash = ja3Hash
+			flow.JA3Raw = ja3Raw
+			updates = true
+		}
 
 		if updates {
 			if err := e.db.UpsertFlow(flow); err != nil {
-				e.logger.Error("failed to update flow with annotations", "error", err)
+				e.logger.Error("failed to update flow with TLS annotations", "error", err)
 			}
 		}
 
-		// Add Domain Hint
-		hint := &flowdb.DomainHint{
-			FlowID:     flow.ID,
-			Domain:     sni,
-			Confidence: 100, // SNI is high confidence
-			Source:     flowdb.SourceSNIPeek,
-			DetectedAt: clock.Now(),
-		}
-		if err := e.db.AddHint(hint); err != nil {
-			e.logger.Error("failed to add SNI hint", "error", err)
+		// Add Domain Hint from SNI
+		if sni != "" {
+			hint := &flowdb.DomainHint{
+				FlowID:     flow.ID,
+				Domain:     sni,
+				Confidence: 100, // SNI is high confidence
+				Source:     flowdb.SourceSNIPeek,
+				DetectedAt: clock.Now(),
+			}
+			if err := e.db.AddHint(hint); err != nil {
+				e.logger.Error("failed to add SNI hint", "error", err)
+			}
 		}
 	} else {
-		// Flow doesn't exist yet? Create it?
-		// Usually ProcessPacket creates it. If we are faster than ProcessPacket, we can try to create it.
-		// But we needSrcIP/DstIP which we have.
-		// Let's create it.
+		// Flow doesn't exist yet? Create it.
 		newFlow := &flowdb.Flow{
 			SrcMAC:             srcMAC,
 			SrcIP:              srcIP,
@@ -484,6 +489,8 @@ func (e *Engine) ProcessSNI(srcMAC, srcIP, dstIP, sni string) {
 			LearningModeActive: e.IsLearningMode(),
 			App:                appName,
 			Vendor:             vendor,
+			JA3Hash:            ja3Hash,
+			JA3Raw:             ja3Raw,
 			State:              flowdb.StatePending,
 		}
 		if newFlow.LearningModeActive {
@@ -491,19 +498,52 @@ func (e *Engine) ProcessSNI(srcMAC, srcIP, dstIP, sni string) {
 		}
 
 		if err := e.db.UpsertFlow(newFlow); err != nil {
-			e.logger.Error("failed to create flow from SNI", "error", err)
+			e.logger.Error("failed to create flow from TLS", "error", err)
 			return
 		}
 
-		// Add Hint
-		hint := &flowdb.DomainHint{
-			FlowID:     newFlow.ID,
-			Domain:     sni,
-			Confidence: 100,
-			Source:     flowdb.SourceSNIPeek,
-			DetectedAt: clock.Now(),
+		// Add Hint from SNI
+		if sni != "" {
+			hint := &flowdb.DomainHint{
+				FlowID:     newFlow.ID,
+				Domain:     sni,
+				Confidence: 100,
+				Source:     flowdb.SourceSNIPeek,
+				DetectedAt: clock.Now(),
+			}
+			e.db.AddHint(hint)
 		}
-		e.db.AddHint(hint)
+	}
+}
+
+// ProcessTLSServerHint handles TLS Server Hello data (JA3S fingerprint)
+func (e *Engine) ProcessTLSServerHint(srcMAC string, ja3sHash, ja3sRaw string) {
+	if ja3sHash == "" {
+		return
+	}
+
+	// Find the flow for this client
+	e.mu.RLock()
+	flow, err := e.db.FindFlow(srcMAC, "TCP", 443)
+	e.mu.RUnlock()
+
+	if err != nil {
+		e.logger.Error("failed to find flow for JA3S annotation", "error", err)
+		return
+	}
+
+	if flow == nil {
+		// No flow yet - that's okay, client hello will create it
+		return
+	}
+
+	// Update JA3S if we have it and flow doesn't
+	if flow.JA3SHash == "" {
+		flow.JA3SHash = ja3sHash
+		flow.JA3SRaw = ja3sRaw
+		if err := e.db.UpsertFlow(flow); err != nil {
+			e.logger.Error("failed to update flow with JA3S", "error", err)
+		}
 	}
 }
 

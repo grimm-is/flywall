@@ -10,6 +10,7 @@ TEST_TIMEOUT=30
 plan 4
 
 require_root
+require_linux
 require_binary
 
 cleanup_on_exit
@@ -56,20 +57,22 @@ ok 0 "Control plane started with UID routing config"
 # Wait for rules to be applied
 dilated_sleep 2
 
-# Check if UID routing rules appear in nftables
-# Should see: meta skuid 65534 meta mark set ...
-NFT_OUTPUT=$(nft list table inet flywall 2>/dev/null || echo "")
-if echo "$NFT_OUTPUT" | grep -q "skuid.*65534"; then
-    ok 0 "UID routing rule found in nftables (skuid 65534)"
+# Check if UID routing rule appears in ip rules
+# Should see: from all uidrange 65534-65534 lookup <table_id>
+IP_RULE_OUTPUT=$(ip rule show 2>/dev/null || echo "")
+if echo "$IP_RULE_OUTPUT" | grep -q "uidrange 65534-65534"; then
+    ok 0 "UID routing rule found in ip rules (uidrange 65534)"
 else
-    ok 1 "UID routing rule not found in nftables"
-    diag "Expected: meta skuid 65534 meta mark set ..."
-    diag "NFT Output snippet:"
-    echo "$NFT_OUTPUT" | grep -E "skuid|uid" || echo "(no uid-related rules found)"
+    ok 1 "UID routing rule not found in ip rules"
+    diag "Expected: from all uidrange 65534-65534 lookup ..."
+    diag "IP Rule Output snippet:"
+    echo "$IP_RULE_OUTPUT" | grep "uidrange" || echo "(no uid-related rules found)"
+    echo "# DEBUG: Full IP Rules:"
+    ip rule show
 fi
 
 # Verify output chain exists for connmark restore
-if echo "$NFT_OUTPUT" | grep -q "output"; then
+if nft list chain inet flywall output >/dev/null 2>&1; then
     ok 0 "Output chain present for mark restore"
 else
     ok 1 "Output chain missing"

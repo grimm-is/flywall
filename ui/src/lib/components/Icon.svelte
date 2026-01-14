@@ -1,7 +1,7 @@
 <script lang="ts">
   interface Props {
     name: string;
-    size?: "sm" | "md" | "lg";
+    size?: "sm" | "md" | "lg" | number;
     filled?: boolean;
     class?: string;
   }
@@ -13,14 +13,19 @@
     class: className = "",
   }: Props = $props();
 
-  const sizeMap = {
+  const sizeMap: Record<string, string> = {
     sm: "16px",
     md: "20px",
     lg: "24px",
   };
 
+  // Handle both string sizes and numeric pixel values
+  const fontSize = $derived(
+    typeof size === "number" ? `${size}px` : sizeMap[size] || "20px",
+  );
+
   const style = $derived(`
-    font-size: ${sizeMap[size]};
+    font-size: ${fontSize};
     font-variation-settings: 'FILL' ${filled ? 1 : 0}, 'wght' 400, 'GRAD' 0, 'opsz' 24;
   `);
 

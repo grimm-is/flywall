@@ -28,10 +28,29 @@
         role: string;
     }
 
-    // Computed state from config
-    const ipForwarding = $derived($config?.ip_forwarding ?? false);
-    const mssClamping = $derived($config?.mss_clamping ?? false);
-    const flowOffload = $derived($config?.enable_flow_offload ?? false);
+    // Local state for toggles to ensure immediate feedback and prevent flickering
+    let localIPForwarding = $state($config?.ip_forwarding ?? false);
+    let localMSSClamping = $state($config?.mss_clamping ?? false);
+    let localFlowOffload = $state($config?.enable_flow_offload ?? false);
+
+    let updatingStates = $state<Record<string, boolean>>({});
+
+    // Sync with config store
+    $effect(() => {
+        if (!$config) return;
+
+        // Use untrack for the local state updates to prevent reactivity loops
+        // although we depend on $config and updatingStates
+        if (!updatingStates["ip_forwarding"]) {
+            localIPForwarding = $config.ip_forwarding ?? false;
+        }
+        if (!updatingStates["mss_clamping"]) {
+            localMSSClamping = $config.mss_clamping ?? false;
+        }
+        if (!updatingStates["enable_flow_offload"]) {
+            localFlowOffload = $config.enable_flow_offload ?? false;
+        }
+    });
 
     async function loadUsers() {
         try {
@@ -42,13 +61,20 @@
     }
 
     async function updateSetting(key: string, value: boolean) {
+        console.log(`[SETTINGS] updateSetting: ${key} = ${value}`);
+        updatingStates[key] = true;
         loading = true;
         try {
             const payload = { [key]: value };
             await api.updateSettings(payload);
         } catch (e) {
             console.error(`Failed to update ${key}:`, e);
+            // Revert local state on error
+            if (key === "ip_forwarding") localIPForwarding = !value;
+            if (key === "mss_clamping") localMSSClamping = !value;
+            if (key === "enable_flow_offload") localFlowOffload = !value;
         } finally {
+            updatingStates[key] = false;
             loading = false;
         }
     }
@@ -142,10 +168,48 @@
         }
     }
 
+    // Scheduler Logic
+    interface SchedulerTask {
+        id: string;
+        name: string;
+        description: string;
+        enabled: boolean;
+        schedule: string;
+        type: string;
+    }
+
+    let schedulerTasks = $state<SchedulerTask[]>([]);
+    let schedulerLoading = $state(false);
+    let runningTask = $state<string | null>(null);
+
+    async function loadSchedulerTasks() {
+        schedulerLoading = true;
+        try {
+            schedulerTasks = await api.getSchedulerStatus();
+        } catch (e) {
+            console.error("Failed to load scheduler tasks", e);
+        } finally {
+            schedulerLoading = false;
+        }
+    }
+
+    async function handleRunTask(taskId: string) {
+        runningTask = taskId;
+        try {
+            await api.runSchedulerTask(taskId);
+            alertStore.success(`Task "${taskId}" triggered successfully`);
+        } catch (e: any) {
+            alertStore.error(e.message || `Failed to run task "${taskId}"`);
+        } finally {
+            runningTask = null;
+        }
+    }
+
     onMount(() => {
         loadUsers();
         loadBackups();
         checkSafeMode();
+        loadSchedulerTasks();
     });
 
     async function handleDeleteUser(username: string) {
@@ -170,74 +234,82 @@
 
     <!-- General Settings -->
     <div class="section-title">{$t("settings.general")}</div>
-    <div class="settings-grid">
-        <!-- IP Forwarding -->
-        <Card>
-            <div class="setting-item">
-                <div class="setting-info">
-                    <div class="setting-label">
-                        {$t("settings.ip_forwarding")}
+    {#if $config}
+        <div class="settings-grid">
+            <!-- IP Forwarding -->
+            <Card>
+                <div class="setting-item">
+                    <div class="setting-info">
+                        <div class="setting-label">
+                            {$t("settings.ip_forwarding")}
+                        </div>
+                        <div class="setting-desc">
+                            {$t("settings.ip_forwarding_desc")}
+                        </div>
                     </div>
-                    <div class="setting-desc">
-                        {$t("settings.ip_forwarding_desc")}
+                    <div class="setting-control">
+                        <Toggle
+                            label={$t("settings.ip_forwarding")}
+                            bind:checked={localIPForwarding}
+                            onchange={(val) =>
+                                updateSetting("ip_forwarding", val)}
+                        />
                     </div>
                 </div>
-                <div class="setting-control">
-                    <Toggle
-                        checked={ipForwarding}
-                        onchange={(val) => updateSetting("ip_forwarding", val)}
-                        disabled={loading}
-                    />
-                </div>
-            </div>
-        </Card>
+            </Card>
 
-        <!-- MSS Clamping -->
-        <Card>
-            <div class="setting-item">
-                <div class="setting-info">
-                    <div class="setting-label">
-                        {$t("settings.mss_clamping")}
+            <!-- MSS Clamping -->
+            <Card>
+                <div class="setting-item">
+                    <div class="setting-info">
+                        <div class="setting-label">
+                            {$t("settings.mss_clamping")}
+                        </div>
+                        <div class="setting-desc">
+                            {$t("settings.mss_clamping_desc")}
+                        </div>
                     </div>
-                    <div class="setting-desc">
-                        {$t("settings.mss_clamping_desc")}
+                    <div class="setting-control">
+                        <Toggle
+                            label={$t("settings.mss_clamping")}
+                            bind:checked={localMSSClamping}
+                            onchange={(val) =>
+                                updateSetting("mss_clamping", val)}
+                        />
                     </div>
                 </div>
-                <div class="setting-control">
-                    <Toggle
-                        checked={mssClamping}
-                        onchange={(val) => updateSetting("mss_clamping", val)}
-                        disabled={loading}
-                    />
-                </div>
-            </div>
-        </Card>
+            </Card>
 
-        <!-- Flow Offload -->
-        <Card>
-            <div class="setting-item">
-                <div class="setting-info">
-                    <div class="setting-label">
-                        {$t("settings.flow_offload")}
-                        <Badge variant="warning"
-                            >{$t("settings.experimental")}</Badge
-                        >
+            <!-- Flow Offload -->
+            <Card>
+                <div class="setting-item">
+                    <div class="setting-info">
+                        <div class="setting-label">
+                            {$t("settings.flow_offload")}
+                            <Badge variant="warning"
+                                >{$t("settings.experimental")}</Badge
+                            >
+                        </div>
+                        <div class="setting-desc">
+                            {$t("settings.flow_offload_desc")}
+                        </div>
                     </div>
-                    <div class="setting-desc">
-                        {$t("settings.flow_offload_desc")}
+                    <div class="setting-control">
+                        <Toggle
+                            label={$t("settings.flow_offload")}
+                            bind:checked={localFlowOffload}
+                            onchange={(val) =>
+                                updateSetting("enable_flow_offload", val)}
+                        />
                     </div>
                 </div>
-                <div class="setting-control">
-                    <Toggle
-                        checked={flowOffload}
-                        onchange={(val) =>
-                            updateSetting("enable_flow_offload", val)}
-                        disabled={loading}
-                    />
-                </div>
-            </div>
-        </Card>
-    </div>
+            </Card>
+        </div>
+    {:else}
+        <div class="loading-state">
+            <Spinner /> Loading settings...
+        </div>
+    {/if}
 
     <!-- User Management -->
     <div class="section-header">
@@ -392,6 +464,91 @@
             </table>
         </div>
     </Card>
+
+    <!-- Scheduled Tasks -->
+    <div class="section-header">
+        <div class="section-title">Scheduled Tasks</div>
+        <Button
+            size="sm"
+            variant="outline"
+            onclick={loadSchedulerTasks}
+            disabled={schedulerLoading}
+        >
+            Refresh
+        </Button>
+    </div>
+
+    <Card class="p-0">
+        <div class="table-container">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Task</th>
+                        <th>Schedule</th>
+                        <th>Type</th>
+                        <th class="actions">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {#if schedulerLoading}
+                        <tr>
+                            <td colspan="4" class="empty-row">
+                                <Spinner size="sm" /> Loading tasks...
+                            </td>
+                        </tr>
+                    {:else if schedulerTasks.length === 0}
+                        <tr>
+                            <td colspan="4" class="empty-row"
+                                >No scheduled tasks</td
+                            >
+                        </tr>
+                    {:else}
+                        {#each schedulerTasks as task}
+                            <tr>
+                                <td>
+                                    <div class="task-info">
+                                        <span class="task-name"
+                                            >{task.name}</span
+                                        >
+                                        {#if task.description}
+                                            <span class="task-desc"
+                                                >{task.description}</span
+                                            >
+                                        {/if}
+                                    </div>
+                                </td>
+                                <td>{task.schedule}</td>
+                                <td>
+                                    <Badge
+                                        variant={task.type === "system"
+                                            ? "secondary"
+                                            : "outline"}
+                                    >
+                                        {task.type}
+                                    </Badge>
+                                </td>
+                                <td class="actions">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onclick={() => handleRunTask(task.id)}
+                                        disabled={runningTask !== null}
+                                        aria-label={`Run task ${task.name}`}
+                                    >
+                                        {#if runningTask === task.id}
+                                            <Spinner size="sm" />
+                                        {:else}
+                                            Run Now
+                                        {/if}
+                                    </Button>
+                                </td>
+                            </tr>
+                        {/each}
+                    {/if}
+                </tbody>
+            </table>
+        </div>
+    </Card>
 </div>
 
 <style>
@@ -502,5 +659,26 @@
         text-align: center;
         color: var(--color-muted);
         padding: var(--space-8);
+    }
+
+    /* Task info styling */
+    .task-info {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-1);
+    }
+
+    .task-name {
+        font-weight: 500;
+    }
+
+    .task-desc {
+        font-size: var(--text-xs);
+        color: var(--color-muted);
+    }
+
+    .system-actions {
+        display: flex;
+        gap: var(--space-2);
     }
 </style>

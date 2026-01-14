@@ -1,12 +1,13 @@
 <script lang="ts">
   /**
    * RuleRow - Single rule display with inline expansion
-   * Core component of ClearPath Policy Editor - renders "natural language" rule sentence
+   * Dashboard-native styling using CSS variables
    */
   import { slide } from "svelte/transition";
   import AddressPill from "./AddressPill.svelte";
   import Sparkline from "../Sparkline.svelte";
   import { t } from "svelte-i18n";
+  import Icon from "../Icon.svelte";
 
   // Types matching backend DTOs
   interface ResolvedAddress {
@@ -22,6 +23,31 @@
     packets: number;
     bytes: number;
     sparkline_data: number[];
+    packets_per_sec?: number;
+    bytes_per_sec?: number;
+    last_match_unix?: number;
+  }
+
+  // Heat level calculation (0-1 scale)
+  function getHeatLevel(stats: RuleStats | undefined): number {
+    if (!stats) return 0;
+    const pps = stats.packets_per_sec || 0;
+    if (pps <= 0) return 0;
+    return Math.min(1, Math.log10(pps + 1) / 3);
+  }
+
+  // Heat color: green -> yellow -> red
+  function getHeatColor(heat: number): string {
+    const hue = 120 - (heat * 120);
+    return `hsl(${hue}, 70%, 50%)`;
+  }
+
+  // Format packets per second
+  function formatPps(pps: number | undefined): string {
+    if (!pps || pps <= 0) return '';
+    if (pps < 1000) return `${pps.toFixed(0)} pps`;
+    if (pps < 1000000) return `${(pps / 1000).toFixed(1)}K pps`;
+    return `${(pps / 1000000).toFixed(1)}M pps`;
   }
 
   interface RuleWithStats {
@@ -44,13 +70,25 @@
     policy_to?: string;
   }
 
-  export let rule: RuleWithStats;
-  export let isSelected = false;
-  export let onToggle: ((id: string, disabled: boolean) => void) | null = null;
-  export let onDelete: ((id: string) => void) | null = null;
-  export let onDuplicate: ((rule: RuleWithStats) => void) | null = null;
+  interface Props {
+    rule: RuleWithStats;
+    isSelected?: boolean;
+    onToggle?: ((id: string, disabled: boolean) => void) | null;
+    onEdit?: ((rule: RuleWithStats) => void) | null;
+    onDelete?: ((id: string) => void) | null;
+    onDuplicate?: ((rule: RuleWithStats) => void) | null;
+  }
 
-  let expanded = false;
+  let {
+    rule,
+    isSelected = false,
+    onToggle = null,
+    onEdit = null,
+    onDelete = null,
+    onDuplicate = null,
+  }: Props = $props();
+
+  let expanded = $state(false);
 
   function toggleRule() {
     if (onToggle && rule.id) {
@@ -66,223 +104,151 @@
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
   }
 
-  $: portDisplay = rule.services?.length
-    ? rule.services.join(", ")
-    : rule.dest_port
-      ? String(rule.dest_port)
-      : "Any";
+  let portDisplay = $derived(
+    rule.services?.length
+      ? rule.services.join(", ")
+      : rule.dest_port
+        ? String(rule.dest_port)
+        : "Any",
+  );
 
-  $: actionColors = {
-    accept: {
-      bg: "bg-green-900/60",
-      text: "text-green-400",
-      border: "border-green-700",
-    },
-    drop: {
-      bg: "bg-red-900/60",
-      text: "text-red-400",
-      border: "border-red-700",
-    },
-    reject: {
-      bg: "bg-orange-900/60",
-      text: "text-orange-400",
-      border: "border-orange-700",
-    },
-  }[rule.action?.toLowerCase()] || {
-    bg: "bg-gray-800",
-    text: "text-gray-400",
-    border: "border-gray-600",
-  };
+  let actionStyle = $derived.by(() => {
+    const action = rule.action?.toLowerCase();
+    if (action === "accept") return "action-accept";
+    if (action === "drop") return "action-drop";
+    if (action === "reject") return "action-reject";
+    return "action-default";
+  });
 </script>
 
 <div
-  class="group border-b border-gray-800 transition-colors"
-  class:bg-gray-900={!isSelected && !expanded}
-  class:bg-gray-850={!isSelected && expanded}
+  class="rule-row-container"
   class:selected={isSelected}
-  class:opacity-50={rule.disabled}
+  class:disabled={rule.disabled}
 >
   <!-- Main Row -->
   <div
-    class="flex items-center h-12 px-4 gap-3 cursor-pointer hover:bg-white/5"
-    on:click={() => (expanded = !expanded)}
-    on:keydown={(e) => e.key === "Enter" && (expanded = !expanded)}
+    class="rule-row-main"
+    onclick={() => (expanded = !expanded)}
+    onkeydown={(e) => e.key === "Enter" && (expanded = !expanded)}
     role="button"
     tabindex="0"
   >
-    <!-- Drag Handle -->
-    <div
-      class="text-gray-600 hover:text-gray-400 cursor-grab opacity-0 group-hover:opacity-100 transition-opacity"
-    >
-      <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-        <circle cx="8" cy="6" r="2" /><circle cx="16" cy="6" r="2" />
-        <circle cx="8" cy="12" r="2" /><circle cx="16" cy="12" r="2" />
-        <circle cx="8" cy="18" r="2" /><circle cx="16" cy="18" r="2" />
-      </svg>
-    </div>
-
-    <!-- Enable/Disable Toggle -->
+    <!-- Toggle Switch -->
     <button
-      class="w-8 h-4 rounded-full transition-colors relative flex-shrink-0"
-      class:bg-green-600={!rule.disabled}
-      class:bg-gray-600={rule.disabled}
-      on:click|stopPropagation={toggleRule}
+      class="toggle-switch"
+      class:enabled={!rule.disabled}
+      onclick={(e) => {
+        e.stopPropagation();
+        toggleRule();
+      }}
       title={rule.disabled ? "Enable rule" : "Disable rule"}
     >
-      <div
-        class="absolute w-3 h-3 bg-white rounded-full top-0.5 transition-all"
-        class:left-0.5={rule.disabled}
-        class:left-4={!rule.disabled}
-      ></div>
+      <span class="toggle-knob"></span>
     </button>
 
-    <!-- Rule Sentence: From [Source] To [Dest] On [Port] -->
-    <div class="flex-1 flex items-center gap-2 text-sm min-w-0">
-      <span
-        class="text-gray-500 text-xs uppercase tracking-wider font-semibold shrink-0"
-        >{$t("policy.from")}</span
-      >
+    <!-- Rule Sentence -->
+    <div class="rule-sentence">
+      <span class="label">{$t("policy.from")}</span>
       <AddressPill resolved={rule.resolved_src} raw={rule.src_ip || ""} />
-
-      <span
-        class="text-gray-500 text-xs uppercase tracking-wider font-semibold shrink-0"
-        >{$t("policy.to")}</span
-      >
+      <span class="label">{$t("policy.to")}</span>
       <AddressPill resolved={rule.resolved_dest} raw={rule.dest_ip || ""} />
-
-      <span
-        class="text-gray-500 text-xs uppercase tracking-wider font-semibold shrink-0"
-        >{$t("policy.on")}</span
-      >
-      <span
-        class="px-2 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-300 text-xs"
-      >
-        {portDisplay}
-      </span>
+      <span class="label">{$t("policy.on")}</span>
+      <span class="port-badge">{portDisplay}</span>
     </div>
 
-    <!-- Sparkline -->
-    <div
-      class="w-24 h-6 opacity-50 group-hover:opacity-100 transition-opacity flex-shrink-0"
-    >
-      {#if rule.stats?.sparkline_data}
-        <Sparkline
-          data={rule.stats.sparkline_data}
-          color={rule.action === "drop" ? "#EF4444" : "#10B981"}
-        />
+    <!-- The Pulse: Sparkline + Heat Indicator -->
+    <div class="pulse-container">
+      <div class="sparkline-container">
+        {#if rule.stats?.sparkline_data}
+          <Sparkline
+            data={rule.stats.sparkline_data}
+            color={rule.action === "drop"
+              ? "var(--color-destructive)"
+              : "var(--color-success)"}
+          />
+        {/if}
+      </div>
+      {#if rule.stats?.packets_per_sec && rule.stats.packets_per_sec > 0}
+        <div class="heat-indicator" title="{formatPps(rule.stats.packets_per_sec)}">
+          <div 
+            class="heat-bar" 
+            style="width: {getHeatLevel(rule.stats) * 100}%; background: {getHeatColor(getHeatLevel(rule.stats))};"
+          ></div>
+        </div>
+        <span class="rate-label">{formatPps(rule.stats.packets_per_sec)}</span>
       {/if}
     </div>
 
     <!-- Action Badge -->
-    <div
-      class="px-2.5 py-1 rounded text-xs font-bold uppercase tracking-wide border flex-shrink-0 {actionColors.bg} {actionColors.text} {actionColors.border}"
-    >
+    <div class="action-badge {actionStyle}">
       {rule.action}
     </div>
 
     <!-- Expand Indicator -->
-    <div
-      class="text-gray-500 transition-transform {expanded ? 'rotate-180' : ''}"
-    >
-      <svg
-        class="w-4 h-4"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-      >
-        <path d="M6 9l6 6 6-6" />
-      </svg>
+    <div class="expand-indicator" class:expanded>
+      <Icon name="expand_more" size="sm" />
     </div>
   </div>
 
   <!-- Expanded Details -->
   {#if expanded}
-    <div transition:slide class="bg-gray-950/50 border-t border-gray-800 p-4">
-      <div class="grid grid-cols-3 gap-6">
+    <div transition:slide class="expanded-panel">
+      <div class="details-grid">
         <!-- Left: Details -->
-        <div class="col-span-2 space-y-4">
+        <div class="details-left">
           <!-- Description -->
-          <div>
-            <div class="block text-xs text-gray-500 uppercase mb-1">
-              {$t("policy.description")}
-            </div>
-            <div class="text-sm text-gray-300">
-              {rule.description || rule.name || $t("policy.no_description")}
-            </div>
+          <div class="detail-group">
+            <span class="detail-label">{$t("policy.description")}</span>
+            <span class="detail-value"
+              >{rule.description ||
+                rule.name ||
+                $t("policy.no_description")}</span
+            >
           </div>
 
           <!-- Stats -->
           {#if rule.stats}
-            <div class="flex gap-6">
-              <div>
-                <div class="block text-xs text-gray-500 uppercase mb-1">
-                  {$t("policy.packets")}
-                </div>
-                <div class="text-sm text-gray-300 font-mono">
-                  {rule.stats.packets?.toLocaleString() || 0}
-                </div>
+            <div class="stats-row">
+              <div class="detail-group">
+                <span class="detail-label">{$t("policy.packets")}</span>
+                <span class="detail-value mono"
+                  >{rule.stats.packets?.toLocaleString() || 0}</span
+                >
               </div>
-              <div>
-                <div class="block text-xs text-gray-500 uppercase mb-1">
-                  {$t("policy.bytes")}
-                </div>
-                <div class="text-sm text-gray-300 font-mono">
-                  {formatBytes(rule.stats.bytes || 0)}
-                </div>
+              <div class="detail-group">
+                <span class="detail-label">{$t("policy.bytes")}</span>
+                <span class="detail-value mono"
+                  >{formatBytes(rule.stats.bytes || 0)}</span
+                >
               </div>
             </div>
           {/if}
 
-          <!-- NFT Syntax (Power User) -->
+          <!-- NFT Syntax -->
           {#if rule.nft_syntax}
-            <div>
-              <div class="block text-xs text-gray-500 uppercase mb-1">
-                {$t("policy.generated_rule")}
-              </div>
-              <code
-                class="block text-xs text-green-400 bg-gray-900 p-2 rounded font-mono overflow-x-auto"
-              >
-                {rule.nft_syntax}
-              </code>
+            <div class="detail-group">
+              <span class="detail-label">{$t("policy.generated_rule")}</span>
+              <code class="nft-code">{rule.nft_syntax}</code>
             </div>
           {/if}
         </div>
 
         <!-- Right: Actions -->
-        <div class="border-l border-gray-800 pl-6 flex flex-col gap-2">
-          <button
-            class="flex items-center gap-2 text-sm text-gray-400 hover:text-white transition-colors text-left"
-            on:click={() => onDuplicate?.(rule)}
-          >
-            <svg
-              class="w-4 h-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <rect x="9" y="9" width="13" height="13" rx="2" />
-              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
-            </svg>
+        <div class="details-right">
+          <button class="action-btn primary" onclick={() => onEdit?.(rule)}>
+            <Icon name="edit" size="sm" />
+            Edit Rule
+          </button>
+          <button class="action-btn" onclick={() => onDuplicate?.(rule)}>
+            <Icon name="content_copy" size="sm" />
             {$t("policy.duplicate_rule")}
           </button>
-
           <button
-            class="flex items-center gap-2 text-sm text-red-400 hover:text-red-300 transition-colors text-left mt-auto"
-            on:click={() => rule.id && onDelete?.(rule.id)}
+            class="action-btn destructive"
+            onclick={() => rule.id && onDelete?.(rule.id)}
           >
-            <svg
-              class="w-4 h-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path
-                d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"
-              />
-            </svg>
+            <Icon name="delete" size="sm" />
             {$t("policy.delete_rule")}
           </button>
         </div>
@@ -290,3 +256,287 @@
     </div>
   {/if}
 </div>
+
+<style>
+  .rule-row-container {
+    border-bottom: 1px solid var(--dashboard-border);
+    background: var(--dashboard-card);
+    transition: background var(--transition-fast);
+  }
+
+  .rule-row-container:hover {
+    background: var(--dashboard-input);
+  }
+
+  .rule-row-container.selected {
+    background: var(--color-primary);
+  }
+
+  .rule-row-container.disabled {
+    opacity: 0.5;
+  }
+
+  .rule-row-main {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    cursor: pointer;
+    min-height: 48px;
+  }
+
+  /* Toggle Switch */
+  .toggle-switch {
+    position: relative;
+    width: 32px;
+    height: 16px;
+    border-radius: var(--radius-full);
+    background: var(--dashboard-input);
+    border: none;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background var(--transition-fast);
+  }
+
+  .toggle-switch.enabled {
+    background: var(--color-success);
+  }
+
+  .toggle-knob {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    background: white;
+    border-radius: var(--radius-full);
+    top: 2px;
+    left: 2px;
+    transition: transform var(--transition-fast);
+  }
+
+  .toggle-switch.enabled .toggle-knob {
+    transform: translateX(16px);
+  }
+
+  /* Rule Sentence */
+  .rule-sentence {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    font-size: var(--text-sm);
+  }
+
+  .label {
+    color: var(--dashboard-text-muted);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    flex-shrink: 0;
+  }
+
+  .port-badge {
+    padding: var(--space-1) var(--space-2);
+    background: var(--dashboard-input);
+    border: 1px solid var(--dashboard-border);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    color: var(--dashboard-text);
+  }
+
+  /* The Pulse: Sparkline + Heat Indicator */
+  .pulse-container {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-shrink: 0;
+  }
+
+  .sparkline-container {
+    width: 64px;
+    height: 24px;
+    opacity: 0.6;
+  }
+
+  .rule-row-main:hover .sparkline-container {
+    opacity: 1;
+  }
+
+  .heat-indicator {
+    width: 40px;
+    height: 6px;
+    background: var(--dashboard-input);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .heat-bar {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease, background 0.3s ease;
+  }
+
+  .rate-label {
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    color: var(--dashboard-text-muted);
+    min-width: 60px;
+    text-align: right;
+  }
+
+  .rule-row-main:hover .rate-label {
+    color: var(--dashboard-text);
+  }
+
+  /* Action Badge */
+  .action-badge {
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    flex-shrink: 0;
+  }
+
+  .action-accept {
+    background: rgba(34, 197, 94, 0.15);
+    color: var(--color-success);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+  }
+
+  .action-drop {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--color-destructive);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+  }
+
+  .action-reject {
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--color-warning);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+  }
+
+  .action-default {
+    background: var(--dashboard-input);
+    color: var(--dashboard-text-muted);
+    border: 1px solid var(--dashboard-border);
+  }
+
+  /* Expand Indicator */
+  .expand-indicator {
+    color: var(--dashboard-text-muted);
+    transition: transform var(--transition-fast);
+  }
+
+  .expand-indicator.expanded {
+    transform: rotate(180deg);
+  }
+
+  /* Expanded Panel */
+  .expanded-panel {
+    background: var(--dashboard-canvas);
+    border-top: 1px solid var(--dashboard-border);
+    padding: var(--space-4);
+  }
+
+  .details-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: var(--space-6);
+  }
+
+  .details-left {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .details-right {
+    border-left: 1px solid var(--dashboard-border);
+    padding-left: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .detail-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .detail-label {
+    font-size: var(--text-xs);
+    color: var(--dashboard-text-muted);
+    text-transform: uppercase;
+    font-weight: 500;
+  }
+
+  .detail-value {
+    font-size: var(--text-sm);
+    color: var(--dashboard-text);
+  }
+
+  .detail-value.mono {
+    font-family: var(--font-mono);
+  }
+
+  .stats-row {
+    display: flex;
+    gap: var(--space-6);
+  }
+
+  .nft-code {
+    display: block;
+    padding: var(--space-2);
+    background: var(--dashboard-card);
+    border: 1px solid var(--dashboard-border);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--color-success);
+    overflow-x: auto;
+  }
+
+  /* Action Buttons */
+  .action-btn {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: none;
+    border: 1px solid var(--dashboard-border);
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+    color: var(--dashboard-text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .action-btn:hover {
+    background: var(--dashboard-input);
+    color: var(--dashboard-text);
+    border-color: var(--dashboard-text-muted);
+  }
+
+  .action-btn.destructive {
+    color: var(--color-destructive);
+  }
+
+  .action-btn.destructive:hover {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: var(--color-destructive);
+  }
+
+  .action-btn.primary {
+    background: var(--color-primary);
+    color: var(--color-primaryForeground);
+    border-color: var(--color-primary);
+  }
+
+  .action-btn.primary:hover {
+    filter: brightness(1.1);
+  }
+</style>

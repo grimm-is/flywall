@@ -78,7 +78,7 @@ func RunCheck(configFile string, verbose bool) error {
 			if err != nil {
 				Printer.Printf("Error generating firewall rules: %v\n", err)
 			} else {
-				Printer.Println(script)
+				fmt.Println(script)
 			}
 		} else {
 			Printer.Printf("Error initializing firewall manager: %v\n", err)

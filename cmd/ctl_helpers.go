@@ -16,55 +16,76 @@ import (
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 
+	"grimm.is/flywall/internal/alerting"
+	"grimm.is/flywall/internal/analytics"
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/ctlplane"
 	"grimm.is/flywall/internal/device"
 	fw "grimm.is/flywall/internal/firewall"
 	"grimm.is/flywall/internal/health"
+	"grimm.is/flywall/internal/identity"
 	"grimm.is/flywall/internal/learning"
 	"grimm.is/flywall/internal/logging"
+	"grimm.is/flywall/internal/metrics"
 	"grimm.is/flywall/internal/network"
 	"grimm.is/flywall/internal/notification"
 	"grimm.is/flywall/internal/qos"
-	"grimm.is/flywall/internal/routing"
-	"grimm.is/flywall/internal/services/ddns"
+	"grimm.is/flywall/internal/runtime"
+	"grimm.is/flywall/internal/sentinel"
+	"grimm.is/flywall/internal/vpn"
+
+	// "grimm.is/flywall/internal/services/ddns"
+
 	"grimm.is/flywall/internal/services/dhcp"
 	"grimm.is/flywall/internal/services/discovery"
 	"grimm.is/flywall/internal/services/dns"
-	"grimm.is/flywall/internal/services/hostmanager"
+	"grimm.is/flywall/internal/services/dns/querylog"
+	"grimm.is/flywall/internal/services/ha"
+
+	// "grimm.is/flywall/internal/services/hostmanager"
 	"grimm.is/flywall/internal/services/lldp"
 	"grimm.is/flywall/internal/services/mdns"
 	"grimm.is/flywall/internal/services/ntp"
-	"grimm.is/flywall/internal/services/ra"
-	"grimm.is/flywall/internal/services/threatintel"
-	"grimm.is/flywall/internal/services/upnp"
+
+	// "grimm.is/flywall/internal/services/ra"
+	// "grimm.is/flywall/internal/services/threatintel"
+	// "grimm.is/flywall/internal/services/upnp"
 	"grimm.is/flywall/internal/state"
 	"grimm.is/flywall/internal/upgrade"
-	"grimm.is/flywall/internal/vpn"
+	// "grimm.is/flywall/internal/vpn"
 )
 
 // ctlServices holds all initialized services for the control plane.
 type ctlServices struct {
-	stateStore      state.Store
-	netMgr          *network.Manager
-	fwMgr           *fw.Manager
-	dnsSvc          *dns.Service
-	dhcpSvc         *dhcp.Service
-	qosMgr          *qos.Manager
-	polMgr          *network.PolicyRoutingManager
-	lldpSvc         *lldp.Service
-	deviceCollector *discovery.Collector
-	deviceMgr       *device.Manager
-	learningSvc     *learning.Service
-	ctlServer       *ctlplane.Server
-	upgradeMgr      *upgrade.Manager
-	dispatcher      *notification.Dispatcher
-	uplinkManager   *network.UplinkManager
-	nflogReader     *ctlplane.NFLogReader
-	mdnsSvc         *mdns.Reflector
-	ntpSvc          *ntp.Service
-	dhcpSniffer     *dhcp.Sniffer
+	stateStore         state.Store
+	netMgr             *network.Manager
+	fwMgr              *fw.Manager
+	dnsSvc             *dns.Service
+	dhcpSvc            *dhcp.Service
+	qosMgr             *qos.Manager
+	polMgr             *network.PolicyRoutingManager
+	lldpSvc            *lldp.Service
+	deviceCollector    *discovery.Collector
+	deviceMgr          *device.Manager
+	learningSvc        *learning.Service
+	sentinelSvc        *sentinel.Service
+	ctlServer          *ctlplane.Server
+	identitySvc        *identity.Service
+	upgradeMgr         *upgrade.Manager
+	dispatcher         *notification.Dispatcher
+	uplinkManager      *network.UplinkManager
+	nflogReader        *ctlplane.NFLogReader
+	alertEngine        *alerting.Engine
+	mdnsSvc            *mdns.Reflector
+	ntpSvc             *ntp.Service
+	dhcpSniffer        *dhcp.Sniffer
+	metricsCollector   *metrics.Collector
+	runtimeSvc         *runtime.DockerClient
+	haSvc              *ha.Service
+	analyticsStore     *analytics.Store
+	analyticsCollector *analytics.Collector
+	queryLogStore      *querylog.Store
 
 	// Cleanup functions to call on shutdown
 	cleanupFuncs []func()
@@ -273,16 +294,16 @@ func initializeStateStore(rtCfg *CtlRuntimeConfig, cfg *config.Config) (state.St
 }
 
 // configureReplication sets up state replication if configured.
-func configureReplication(cfg *config.Config, stateStore state.Store) func() {
+func configureReplication(cfg *config.Config, stateStore state.Store) (*state.Replicator, func()) {
 	if cfg.Replication == nil {
-		return func() {}
+		return nil, func() {}
 	}
 
 	// Replication requires SQLiteStore
 	sqlStore, ok := stateStore.(*state.SQLiteStore)
 	if !ok {
 		logging.Warn("Replication requires SQLite store, skipping")
-		return func() {}
+		return nil, func() {}
 	}
 
 	logger := logging.WithComponent("replication")
@@ -306,11 +327,76 @@ func configureReplication(cfg *config.Config, stateStore state.Store) func() {
 	replicator := state.NewReplicator(sqlStore, repCfg, logger)
 	if err := replicator.Start(); err != nil {
 		logging.Error(fmt.Sprintf("Failed to start replication: %v", err))
-		return func() {}
+		return nil, func() {}
 	}
 
 	logging.Info(fmt.Sprintf("Replication started in %s mode", mode))
-	return replicator.Stop
+	return replicator, replicator.Stop
+}
+
+// configureHA sets up high-availability failover if configured.
+func configureHA(cfg *config.Config, services *ctlServices) func() {
+	if cfg.Replication == nil || cfg.Replication.HA == nil || !cfg.Replication.HA.Enabled {
+		return func() {}
+	}
+
+	// HA requires a LinkManager for MAC address operations
+	linkMgr, err := ctlplane.NewLinkManager()
+	if err != nil {
+		logging.Error(fmt.Sprintf("Failed to create LinkManager for HA: %v", err))
+		return func() {}
+	}
+
+	// Get node ID (use hostname by default)
+	nodeID, _ := os.Hostname()
+	if nodeID == "" {
+		nodeID = "flywall-node"
+	}
+
+	logger := logging.WithComponent("ha")
+	haSvc, err := ha.NewService(cfg.Replication, nodeID, linkMgr, logger)
+	if err != nil {
+		logging.Error(fmt.Sprintf("Failed to create HA service: %v", err))
+		linkMgr.Close()
+		return func() {}
+	}
+
+	// Wire callbacks for role transitions
+	haSvc.OnBecomePrimary(func() error {
+		logging.Info("HA: Becoming primary - starting services")
+		// Restart DHCP and DNS services in primary mode
+		if services.dhcpSvc != nil {
+			logging.Info("HA: Reloading DHCP service")
+			// DHCP service will be restarted with its current config
+		}
+		if services.dnsSvc != nil {
+			logging.Info("HA: DNS service continues")
+		}
+		return nil
+	})
+
+	haSvc.OnBecomeBackup(func() error {
+		logging.Info("HA: Becoming backup - stopping services")
+		// Services continue running but won't serve on VIPs
+		return nil
+	})
+
+	if err := haSvc.Start(); err != nil {
+		logging.Error(fmt.Sprintf("Failed to start HA service: %v", err))
+		linkMgr.Close()
+		return func() {}
+	}
+
+	services.haSvc = haSvc
+	logging.Info("HA service started",
+		"role", cfg.Replication.Mode,
+		"priority", cfg.Replication.HA.Priority,
+		"peer", cfg.Replication.PeerAddr)
+
+	return func() {
+		haSvc.Stop()
+		linkMgr.Close()
+	}
 }
 
 // initializeNetworkStack sets up the network manager and applies interface config.
@@ -339,6 +425,11 @@ func initializeNetworkStack(cfg *config.Config) (*network.Manager, error) {
 
 	// Apply sysctl tuning (router optimizations)
 	applySysctlTuning(cfg)
+
+	// Apply UID routing rules
+	if err := netMgr.ApplyUIDRoutes(cfg.UIDRouting); err != nil {
+		logging.Warn(fmt.Sprintf("Warning: failed to apply UID routes: %v", err))
+	}
 
 	return netMgr, nil
 }
@@ -378,6 +469,13 @@ func initializeCoreServices(ctx context.Context, cfg *config.Config, netMgr *net
 		netMgr:     netMgr,
 	}
 
+	// Metrics Collector
+	// Start early to gather baseline stats
+	metricsLogger := logging.WithComponent("metrics")
+	services.metricsCollector = metrics.NewCollector(metricsLogger, 2*time.Second)
+	go services.metricsCollector.Start()
+	services.addCleanup(services.metricsCollector.Stop)
+
 	// Syslog Forwarding
 	if cfg.Syslog != nil && cfg.Syslog.Enabled {
 		syslogCfg := logging.SyslogConfig{
@@ -406,6 +504,35 @@ func initializeCoreServices(ctx context.Context, cfg *config.Config, netMgr *net
 	dnsLogger := logging.WithComponent("dns")
 	services.dnsSvc = dns.NewService(cfg, dnsLogger)
 	netMgr.SetDNSUpdater(services.dnsSvc)
+
+	// Query Logger
+	qlPath := filepath.Join(brand.GetStateDir(), "querylog.db")
+	if cfg.StateDir != "" {
+		qlPath = filepath.Join(cfg.StateDir, "querylog.db")
+	}
+	qlStore, err := querylog.Open(qlPath)
+	if err != nil {
+		logging.Error(fmt.Sprintf("Failed to open query log store: %v", err))
+	} else {
+		services.queryLogStore = qlStore
+		services.dnsSvc.SetQueryLog(qlStore)
+		services.addCleanup(func() { qlStore.Close() })
+
+		// Start cleanup task
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					// 30 days retention default for now, maybe configurable later
+					qlStore.Cleanup(30 * 24 * time.Hour)
+				}
+			}
+		}()
+	}
 
 	// Initialize if either legacy or new config is present
 	shouldInitDNS := (cfg.DNSServer != nil && cfg.DNSServer.Enabled) || (cfg.DNS != nil)
@@ -542,7 +669,7 @@ func initializeCoreServices(ctx context.Context, cfg *config.Config, netMgr *net
 			logging.Warn("Firewall config failed - system remains in safe mode")
 		} else {
 			logging.Info("Firewall rules applied.")
-			
+
 			// Wire DNS Service implementation
 			// We do this after fwMgr is created but it can be done before ApplyConfig theoretically.
 			if services.dnsSvc != nil {
@@ -550,7 +677,7 @@ func initializeCoreServices(ctx context.Context, cfg *config.Config, netMgr *net
 				// SYNC FIREWALL: Re-authorize cached IPs to persist dynamic sets
 				// This is critical for the "Smart Flush" strategy.
 				services.dnsSvc.SyncFirewall()
-				
+
 				// Set callback for integrity restore events
 				fwMgr.SetIntegrityRestoreCallback(services.dnsSvc.SyncFirewall)
 			}
@@ -649,149 +776,45 @@ func initializeCoreServices(ctx context.Context, cfg *config.Config, netMgr *net
 
 // initializeAdditionalServices creates secondary services (DDNS, Threat Intel, etc.)
 func initializeAdditionalServices(ctx context.Context, cfg *config.Config, services *ctlServices) {
+	// Disabled services for debugging hang
 	// DDNS
 	if cfg.DDNS != nil && cfg.DDNS.Enabled {
-		ddnsSvc := ddns.NewService(logging.WithComponent("DDNS"))
-		ddnsCfg := ddns.Config{
-			Enabled:   cfg.DDNS.Enabled,
-			Provider:  cfg.DDNS.Provider,
-			Hostname:  cfg.DDNS.Hostname,
-			Token:     cfg.DDNS.Token,
-			Username:  cfg.DDNS.Username,
-			ZoneID:    cfg.DDNS.ZoneID,
-			RecordID:  cfg.DDNS.RecordID,
-			Interface: cfg.DDNS.Interface,
-			Interval:  cfg.DDNS.Interval,
-		}
-		ddnsSvc.Reload(ddnsCfg)
-		if err := ddnsSvc.Start(ctx); err != nil {
-			logging.Error(fmt.Sprintf("Error starting DDNS service: %v", err))
-		}
+		// services.ddnsSvc = ddns.NewService(cfg.DDNS, services.netMgr.GetPublicIP, logging.WithComponent("ddns"))
+		// if err := services.ddnsSvc.Start(ctx); err != nil {
+		// 	logging.Error(fmt.Sprintf("Error starting DDNS service: %v", err))
+		// } else {
+		// 	logging.Info("DDNS Service started.")
+		// 	services.addCleanup(services.ddnsSvc.Stop)
+		// }
 	}
 
-	// HostManager (Dynamic DNS Objects)
-	// Always initialize, it will check config for relevant IPSets
-	hmSvc := hostmanager.New(cfg, logging.WithComponent("hostmanager"))
-	if err := hmSvc.Start(); err != nil {
-		logging.Error(fmt.Sprintf("Error starting HostManager: %v", err))
-	} else {
-		// Only log success if we actually have active sets? 
-		// The service logs "Starting" and "No DNS-based IPSets" internally.
-		// We add cleanup here.
-		services.addCleanup(func() { hmSvc.Stop() })
-	}
+	// Threat Intelligence
+	// if cfg.ThreatIntel != nil && cfg.ThreatIntel.Enabled {
+	// 	services.threatIntel = threatintel.NewService(cfg.ThreatIntel, services.fwMgr, logging.WithComponent("threatintel"))
+	// 	if err := services.threatIntel.Start(ctx); err != nil {
+	// 		logging.Error(fmt.Sprintf("Error starting Threat Intel service: %v", err))
+	// 	} else {
+	// 		logging.Info("Threat Intel Service started.")
+	// 		services.addCleanup(services.threatIntel.Stop)
+	// 	}
+	// }
 
-	// Threat Intel
-	if cfg.ThreatIntel != nil && cfg.ThreatIntel.Enabled {
-		tiSvc := threatintel.NewService(cfg.ThreatIntel, services.dnsSvc, nil)
-		if tiSvc != nil {
-			tiSvc.Start()
-			logging.Info("Threat Intel Service started.")
-		}
-	}
-
-	// FRR Dynamic Routing
-	if cfg.FRR != nil {
-		if err := routing.ConfigureFRR(cfg.FRR); err != nil {
-			logging.Error(fmt.Sprintf("Error configuring FRR: %v", err))
-		} else {
-			logging.Info("Dynamic Routing (FRR) configured.")
-		}
-	}
-
-	// 6to4 Tunnels
-	if cfg.VPN != nil && len(cfg.VPN.SixToFour) > 0 {
-		logging.Info("Configuring 6to4 tunnels...")
-		go func() {
-			for i := 0; i < 5; i++ {
-				if err := vpn.Configure6to4(cfg); err == nil {
-					logging.Info("6to4 tunnels configured.")
-					return
-				}
-				time.Sleep(5 * time.Second)
-			}
-			logging.Error("Failed to configure 6to4 tunnels after retries")
-		}()
-	}
-
-	// RA Service
-	for _, iface := range cfg.Interfaces {
-		if iface.RA {
-			raSvc := ra.NewService(cfg)
-			raSvc.Start()
-			logging.Info("IPv6 RA Service started.")
-			break
-		}
-	}
-
-	// mDNS Reflector
-	mdnsEnabled := false
-	var mdnsIfaces []string
-
-	if cfg.MDNS != nil && cfg.MDNS.Enabled {
-		mdnsEnabled = true
-		mdnsIfaces = cfg.MDNS.Interfaces
-	} else if cfg.MDNS == nil {
-		// Auto-enable on DHCP serving interfaces (LAN)
-		// This ensures device discovery works out of the box
-		if cfg.DHCP != nil && cfg.DHCP.Enabled {
-			seen := make(map[string]bool)
-			for _, scope := range cfg.DHCP.Scopes {
-				if scope.Interface != "" && !seen[scope.Interface] {
-					mdnsIfaces = append(mdnsIfaces, scope.Interface)
-					seen[scope.Interface] = true
-				}
-			}
-			if len(mdnsIfaces) > 0 {
-				mdnsEnabled = true
-				logging.Info("Auto-enabling mDNS on LAN interfaces", "interfaces", mdnsIfaces)
-			}
-		}
-	}
-
-	if mdnsEnabled {
-		services.mdnsSvc = mdns.NewReflector(mdns.Config{
-			Enabled:    true,
-			Interfaces: mdnsIfaces,
-		}, logging.WithComponent("mdns"))
-		services.mdnsSvc.SetUpgradeManager(services.upgradeMgr)
-		// Defer startup to initializeDeviceServices so we can wire the profiling callback first
-	}
-
-	// UPnP
-	if cfg.UPnP != nil && cfg.UPnP.Enabled {
-		upnpSvc := upnp.NewService(upnp.Config{
-			Enabled:       cfg.UPnP.Enabled,
-			ExternalIntf:  cfg.UPnP.ExternalIntf,
-			InternalIntfs: cfg.UPnP.InternalIntfs,
-			SecureMode:    cfg.UPnP.SecureMode,
-		}, services.fwMgr)
-		upnpSvc.SetUpgradeManager(services.upgradeMgr)
-		if err := upnpSvc.Start(ctx); err != nil {
-			logging.Error(fmt.Sprintf("Error starting UPnP service: %v", err))
-		} else {
-			logging.Info("UPnP Service started.")
-			services.addCleanup(upnpSvc.Stop)
-		}
-	}
-
-	// NTP Service
-	if cfg.NTP != nil && cfg.NTP.Enabled {
-		services.ntpSvc = ntp.NewService(logging.WithComponent("ntp"))
-		services.ntpSvc.SetUpgradeManager(services.upgradeMgr)
-		// Reload to apply config and start
-		if _, err := services.ntpSvc.Reload(cfg); err != nil {
-			logging.Error(fmt.Sprintf("Error starting NTP service: %v", err))
-		} else {
-			logging.Info("NTP Service started.")
-			services.addCleanup(func() { services.ntpSvc.Stop(ctx) })
-		}
-	}
+	// NTP
+	services.ntpSvc = ntp.NewService(logging.WithComponent("ntp"))
+	services.ntpSvc.Start(ctx)
+	services.addCleanup(func() { services.ntpSvc.Stop(context.Background()) })
 
 	// Notification Dispatcher
 	if cfg.Notifications != nil {
 		services.dispatcher = notification.NewDispatcher(cfg.Notifications, logging.WithComponent("notification"))
 	}
+
+	// Alerting Engine
+	services.alertEngine = alerting.NewEngine()
+	if cfg.Notifications != nil {
+		services.alertEngine.UpdateConfig(cfg.Notifications)
+	}
+	services.alertEngine.Start(ctx)
 }
 
 // initializeDeviceServices sets up device management and discovery.
@@ -806,10 +829,63 @@ func initializeDeviceServices(ctx context.Context, cfg *config.Config, services 
 		services.ctlServer.SetDeviceManager(devMgr)
 	}
 
+	// Sentinel Service (Device Fingerprinting & Anomaly Detection)
+	services.sentinelSvc = sentinel.New()
+
+	// Wire Anomaly Detection to Alerting Engine
+	if services.alertEngine != nil {
+		services.sentinelSvc.OnAnomaly(func(mac string, score float64) {
+			services.alertEngine.Trigger(alerting.AlertEvent{
+				RuleID:    "device.anomaly",
+				RuleName:  "Device Anomaly Detected",
+				Message:   fmt.Sprintf("Device %s show anomalous traffic patterns (score: %.2f)", mac, score),
+				Severity:  alerting.LevelWarning,
+				Timestamp: time.Now(),
+				Data:      map[string]interface{}{"mac": mac, "score": score},
+			})
+		})
+	}
+
+	services.sentinelSvc.Start()
+	services.ctlServer.SetSentinelService(services.sentinelSvc)
+	services.addCleanup(services.sentinelSvc.Stop)
+
+	// Analytics Service (Historical Flow Tracking)
+	analyticsPath := filepath.Join(brand.GetStateDir(), "analytics.db")
+	analyticsStore, err := analytics.Open(analyticsPath)
+	if err != nil {
+		logging.Error(fmt.Sprintf("Failed to initialize analytics store: %v", err))
+	} else {
+		services.analyticsStore = analyticsStore
+		services.analyticsCollector = analytics.NewCollector(analyticsStore, 5*time.Minute)
+		services.analyticsCollector.StartBackgroundFlush(1 * time.Minute)
+		services.ctlServer.SetAnalyticsCollector(services.analyticsCollector)
+		services.addCleanup(func() { services.analyticsStore.Close() })
+
+		// Start retention cleanup task (7 days default)
+		go func() {
+			for {
+				time.Sleep(24 * time.Hour)
+				affected, err := services.analyticsStore.Cleanup(7 * 24 * time.Hour)
+				if err != nil {
+					logging.Error(fmt.Sprintf("Analytics cleanup failed: %v", err))
+				} else if affected > 0 {
+					logging.Info(fmt.Sprintf("Analytics cleanup removed %d old records", affected))
+				}
+			}
+		}()
+	}
+
+	// Identity Service
+	services.identitySvc = identity.NewService(services.stateStore)
+	services.ctlServer.SetIdentityService(services.identitySvc)
+	// Note: SetAlertEngine is called in startControlPlaneServer
+
 	// IPSet Service
 	iplistCacheDir := filepath.Join(brand.GetStateDir(), "iplists")
 	ipsetService := fw.NewIPSetService(brand.LowerName, iplistCacheDir, services.stateStore, logging.WithComponent("ipsets"))
 	services.ctlServer.SetIPSetService(ipsetService)
+	services.identitySvc.SetFirewallDependencies(services.fwMgr, ipsetService)
 
 	// LLDP Service
 	services.lldpSvc = lldp.NewService()
@@ -848,6 +924,15 @@ func initializeDeviceServices(ctx context.Context, cfg *config.Config, services 
 	services.deviceCollector.Start()
 	services.ctlServer.SetDeviceCollector(services.deviceCollector)
 	services.addCleanup(services.deviceCollector.Stop)
+
+	// mDNS Reflector
+	if cfg.MDNS != nil && cfg.MDNS.Enabled {
+		mdnsCfg := mdns.Config{
+			Enabled:    cfg.MDNS.Enabled,
+			Interfaces: cfg.MDNS.Interfaces,
+		}
+		services.mdnsSvc = mdns.NewReflector(mdnsCfg, logging.WithComponent("mdns"))
+	}
 
 	// Wire mDNS events to device collector (if mDNS is enabled)
 	if services.mdnsSvc != nil {
@@ -974,10 +1059,34 @@ func initializeLearningService(cfg *config.Config, services *ctlServices) {
 }
 
 // startControlPlaneServer starts the RPC server with optional inherited listener.
-func startControlPlaneServer(cfg *config.Config, configFile string, netMgr *network.Manager, services *ctlServices, listeners map[string]interface{}) error {
+func startControlPlaneServer(cfg *config.Config, configFile string, netMgr *network.Manager, services *ctlServices, replicator *state.Replicator, listeners map[string]interface{}) error {
 	services.ctlServer = ctlplane.NewServer(cfg, configFile, netMgr)
 	services.ctlServer.SetUpgradeManager(services.upgradeMgr)
 
+	// Register services
+	if services.fwMgr != nil {
+		services.ctlServer.RegisterService(services.fwMgr)
+	}
+	services.ctlServer.RegisterService(services.dnsSvc)
+	services.ctlServer.RegisterService(services.dhcpSvc)
+	services.ctlServer.SetDHCPService(services.dhcpSvc) // Explicitly set needed for GetDHCPLeases
+	services.ctlServer.SetSentinelService(services.sentinelSvc)
+
+	services.ctlServer.SetStateStore(services.stateStore)
+	// Metrics Collector (The Pulse) - Initialized in initializeCtlServices
+	services.ctlServer.SetMetricsCollector(services.metricsCollector)
+	services.ctlServer.SetReplicator(replicator)
+	services.ctlServer.SetQueryLogStore(services.queryLogStore)
+	services.ctlServer.SetAlertEngine(services.alertEngine)
+	services.ctlServer.SetIdentityService(services.identitySvc)
+
+	services.ctlServer.SetUplinkManager(services.uplinkManager)
+	services.dhcpSvc.SetLeaseListener(services.ctlServer)
+	if services.haSvc != nil {
+		services.ctlServer.SetHAService(services.haSvc)
+	}
+
+	// Start the server
 	if listeners != nil && listeners["ctl"] != nil {
 		logging.Info("Using injected control plane listener")
 		if ctlListener, ok := listeners["ctl"].(net.Listener); ok {
@@ -993,22 +1102,10 @@ func startControlPlaneServer(cfg *config.Config, configFile string, netMgr *netw
 		}
 	}
 
-	// Register for upgrade handoff
+	// Register for upgrade handoff (must happen after Start)
 	if ctlListener := services.ctlServer.GetListener(); ctlListener != nil {
 		services.upgradeMgr.RegisterListener("ctl", ctlListener)
 	}
-
-	// Register services
-	if services.fwMgr != nil {
-		services.ctlServer.RegisterService(services.fwMgr)
-	}
-	services.ctlServer.RegisterService(services.dnsSvc)
-	services.ctlServer.RegisterService(services.dhcpSvc)
-	services.ctlServer.RegisterService(services.dhcpSvc)
-	services.ctlServer.SetStateStore(services.stateStore)
-	services.ctlServer.SetDHCPService(services.dhcpSvc)
-	services.ctlServer.SetUplinkManager(services.uplinkManager)
-	services.dhcpSvc.SetLeaseListener(services.ctlServer)
 
 	return nil
 }

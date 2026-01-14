@@ -50,7 +50,7 @@ func TestFireHOLParityGeneration(t *testing.T) {
 	}
 
 	// 2. Verify Mark Rules in Mangle Table
-	sb, err = BuildMangleTableScript(cfg)
+	sb, err = BuildMangleTableScript(cfg, "flywall_test")
 	if err != nil {
 		t.Fatalf("BuildMangleTableScript failed: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestFireHOLParityGeneration(t *testing.T) {
 	}
 
 	// 3. Verify SNAT in NAT Table
-	sb, err = BuildNATTableScript(cfg)
+	sb, err = BuildNATTableScript(cfg, "flywall_test")
 	if err != nil {
 		t.Fatalf("BuildNATTableScript failed: %v", err)
 	}

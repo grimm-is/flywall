@@ -3,8 +3,9 @@
 # Usage:
 #   make              - Show help
 #   make build        - Build everything (UI + Go binary)
-#   make test         - Run unit tests
+#   make test         - Run all unit tests
 #   make test-int     - Run integration tests (requires VM)
+#   make test-ui      - Run UI E2E tests (requires mock backend)
 #   make demo         - Run mock demo (no VM, macOS compatible)
 #   make demo-vm      - Run live VM demo with virtual network
 #   make clean        - Clean build artifacts
@@ -14,7 +15,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help all build server client ui install clean \
-        test test-unit test-int integration \
+        test test-unit test-int test-ui \
         demo demo-web demo-vm \
         vm-setup vm-start vm-stop \
         lint fmt check dev
@@ -81,7 +82,8 @@ help:
 	@echo "  make test-int          Run integration tests in VM"
 	@echo "  make test-int FILTER=dns  Run only tests matching 'dns'"
 	@echo "  make test-int TESTS=\"t/20-dhcp/*.sh\"  Run specific test paths"
-	@echo "  make test-all          Run unit + integration tests"
+	@echo "  make test-all          Run unit + integration + UI tests"
+	@echo "  make test-ui           Run Playwright E2E tests for UI"
 	@echo ""
 	@echo "$(YELLOW)Demo Commands:$(NC)"
 	@echo "  make demo          Run TUI demo (mock data, macOS compatible)"
@@ -314,9 +316,7 @@ test-int: vm-ensure $(BINARY_TARGET) build-tests brand-env build-toolbox
 	@mkdir -p build/test-artifacts
 	@cp $(BINARY_TARGET) build/test-artifacts/flywall-v1
 	@cp $(BINARY_TARGET) build/test-artifacts/flywall-v2
-	@echo "$(BLUE)Calculating optimal parallelism...$(NC)"
-	@JOBS=$$(./scripts/build/calc-jobs.sh); \
-	 echo "$(BLUE)Running integration tests via parallel orca (JOBS=$$JOBS)...$(NC)"; \
+	@echo "$(BLUE)Running integration tests via parallel orca...$(NC)"; \
 	 ARGS="$(ARGS)"; \
 	 if [ -n "$(FILTER)" ]; then ARGS="$$ARGS -filter $(FILTER)"; fi; \
 	 if [ -n "$(TESTS)" ]; then \
@@ -324,7 +324,7 @@ test-int: vm-ensure $(BINARY_TARGET) build-tests brand-env build-toolbox
 	 else \
 	     ARGS="$$ARGS integration_tests/linux"; \
 	 fi; \
-	 ./build/toolbox orca test -j $$JOBS $$ARGS
+	 ./build/toolbox orca test $$ARGS
 
 # specific linux target for clarity
 test-int-linux:
@@ -349,9 +349,15 @@ pool-clean:
 
 test-orca: test-int
 
+test-ui:
+	@echo "$(BLUE)Running UI E2E tests...$(NC)"
+	@./scripts/run-ui-tests.sh
 
+# Compatibility aliases
+ui-e2e: test-ui
+test-e2e-ui: test-ui
 
-test-all: test-unit test-int
+test-all: test-unit test-int test-ui
 	@echo "$(GREEN)✓ All tests passed$(NC)"
 
 # ==============================================================================

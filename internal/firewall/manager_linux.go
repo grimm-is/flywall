@@ -112,10 +112,10 @@ func (m *Manager) ApplyConfig(cfg *Config) error {
 					m.logger.Debug("Injecting scheduled rule", "name", ruleName, "policy", pol.Name)
 
 					// Inject rule at end of policy.
-				// Design choice: Scheduled rules are appended after static rules.
-				// For priority ordering, use the policy's rule order instead.
-				schedRule.Rule.Comment = fmt.Sprintf("[Schedule: %s] %s", ruleName, schedRule.Rule.Comment)
-				pol.Rules = append(pol.Rules, schedRule.Rule)
+					// Design choice: Scheduled rules are appended after static rules.
+					// For priority ordering, use the policy's rule order instead.
+					schedRule.Rule.Comment = fmt.Sprintf("[Schedule: %s] %s", ruleName, schedRule.Rule.Comment)
+					pol.Rules = append(pol.Rules, schedRule.Rule)
 				}
 			}
 		}
@@ -470,13 +470,13 @@ func (m *Manager) GenerateRules(cfg *Config) (string, error) {
 	}
 
 	// 2. Build NAT table script (if needed)
-	natScript, err := BuildNATTableScript(cfg)
+	natScript, err := BuildNATTableScript(cfg, "nat")
 	if err != nil {
 		return "", fmt.Errorf("failed to build NAT table script: %w", err)
 	}
 
 	// 3. Build Mangle table script (Management Routing)
-	mangleScript, err := BuildMangleTableScript(cfg)
+	mangleScript, err := BuildMangleTableScript(cfg, brand.LowerName)
 	if err != nil {
 		return "", fmt.Errorf("failed to build mangle table script: %w", err)
 	}
@@ -489,17 +489,20 @@ func (m *Manager) GenerateRules(cfg *Config) (string, error) {
 	// Granular flushes are now handled by the script builders (chains, static sets).
 	// combinedScript.WriteString("flush ruleset\n")
 
-	// Add filter table
+	// Add filter table (inet)
 	combinedScript.WriteString(filterScript.Build())
+	combinedScript.WriteString("\n")
 
 	// Add NAT table if present
 	if natScript != nil {
 		combinedScript.WriteString(natScript.Build())
+		combinedScript.WriteString("\n")
 	}
 
 	// Add Mangle table if present
 	if mangleScript != nil {
 		combinedScript.WriteString(mangleScript.Build())
+		combinedScript.WriteString("\n")
 	}
 
 	return combinedScript.String(), nil
@@ -602,7 +605,7 @@ func (m *Manager) AuthorizeIP(ip net.IP, ttl time.Duration) error {
 	// We need a transient IPSetManager instance or use the one from applyIPSets?
 	// Manager usually creates IPSetManager on demand.
 	ipsetMgr := NewIPSetManager(brand.LowerName)
-	
+
 	// Prepare element with "timeout" option
 	// NativeIPSetManager.AddElements supports "element" strings.
 	// For timeouts, the syntax is "1.2.3.4 timeout 300".

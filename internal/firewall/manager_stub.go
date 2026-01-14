@@ -6,8 +6,10 @@ package firewall
 import (
 	"context"
 	"fmt"
+	"net"
 	"runtime"
 	"strings"
+	"time"
 
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/logging"
@@ -32,7 +34,7 @@ func NewManagerWithConn(conn interface{}, logger *logging.Logger, cacheDir strin
 
 // ApplyConfig applies the firewall configuration (stub for non-Linux).
 func (m *Manager) ApplyConfig(cfg *Config) error {
-	return ErrNotSupported
+	return nil
 }
 
 // Name returns the service name.
@@ -42,7 +44,7 @@ func (m *Manager) Name() string {
 
 // Start starts the service.
 func (m *Manager) Start(ctx context.Context) error {
-	return ErrNotSupported
+	return nil
 }
 
 // Stop stops the service.
@@ -52,30 +54,30 @@ func (m *Manager) Stop(ctx context.Context) error {
 
 // Reload reloads the service configuration.
 func (m *Manager) Reload(cfg *config.Config) (bool, error) {
-	return false, ErrNotSupported
+	return true, nil
 }
 
 // IsRunning returns whether the service is running.
 func (m *Manager) IsRunning() bool {
-	return false
+	return true
 }
 
 // Status returns the current status of the service.
 func (m *Manager) Status() services.ServiceStatus {
 	return services.ServiceStatus{
 		Name:    m.Name(),
-		Running: false,
+		Running: true,
 	}
 }
 
 // AddDynamicNATRule helper for UPnP (stub).
 func (m *Manager) AddDynamicNATRule(rule config.NATRule) error {
-	return ErrNotSupported
+	return nil
 }
 
 // RemoveDynamicNATRule helper for UPnP (stub).
 func (m *Manager) RemoveDynamicNATRule(match func(config.NATRule) bool) error {
-	return ErrNotSupported
+	return nil
 }
 
 // GenerateRules generates the nftables ruleset script (Stub).
@@ -87,13 +89,13 @@ func (m *Manager) GenerateRules(cfg *Config) (string, error) {
 	}
 
 	// 2. Build NAT table script (if needed)
-	natScript, err := BuildNATTableScript(cfg)
+	natScript, err := BuildNATTableScript(cfg, "flywall")
 	if err != nil {
 		return "", fmt.Errorf("failed to build NAT table script: %w", err)
 	}
 
 	// 3. Build Mangle table script (Management Routing)
-	mangleScript, err := BuildMangleTableScript(cfg)
+	mangleScript, err := BuildMangleTableScript(cfg, "flywall")
 	if err != nil {
 		return "", fmt.Errorf("failed to build mangle table script: %w", err)
 	}
@@ -122,7 +124,7 @@ func (m *Manager) GenerateRules(cfg *Config) (string, error) {
 
 // ApplyScheduledRule stub.
 func (m *Manager) ApplyScheduledRule(rule config.ScheduledRule, enabled bool) error {
-	return ErrNotSupported
+	return nil
 }
 
 // MonitorIntegrity is a stub for non-Linux systems.
@@ -153,12 +155,12 @@ func NewAccounting(conn interface{}) *Accounting {
 
 // SetupAccounting creates accounting chains and rules (stub for non-Linux).
 func (a *Accounting) SetupAccounting(interfaces []string, zones map[string][]string) error {
-	return ErrNotSupported
+	return nil
 }
 
 // GetStats retrieves current traffic accounting statistics (stub for non-Linux).
 func (a *Accounting) GetStats() (*AccountingStats, error) {
-	return nil, ErrNotSupported
+	return &AccountingStats{}, nil
 }
 
 // QoSConfig defines Quality of Service configuration.
@@ -209,7 +211,7 @@ func NewQoSManager() *QoSManager {
 
 // Apply applies QoS configuration (stub for non-Linux).
 func (m *QoSManager) Apply(cfg *QoSConfig) error {
-	return ErrNotSupported
+	return nil
 }
 
 // PredefinedQoSProfiles contains predefined QoS profiles.
@@ -295,17 +297,17 @@ type RealCommandRunner struct{}
 
 // Run returns an error on non-Linux systems.
 func (r *RealCommandRunner) Run(name string, args ...string) error {
-	return ErrNotSupported
+	return nil
 }
 
 // Output returns an error on non-Linux systems.
 func (r *RealCommandRunner) Output(name string, args ...string) ([]byte, error) {
-	return nil, ErrNotSupported
+	return []byte{}, nil
 }
 
 // RunInput returns an error on non-Linux systems.
 func (r *RealCommandRunner) RunInput(input string, name string, args ...string) error {
-	return ErrNotSupported
+	return nil
 }
 
 // DefaultCommandRunner is the default command runner.
@@ -318,15 +320,25 @@ func (m *Manager) PreRenderSafeMode(cfg *Config) {
 
 // ApplySafeMode applies safe mode ruleset (stub for non-Linux).
 func (m *Manager) ApplySafeMode() error {
-	return ErrNotSupported
+	return nil
 }
 
 // ExitSafeMode exits safe mode (stub for non-Linux).
 func (m *Manager) ExitSafeMode() error {
-	return ErrNotSupported
+	return nil
 }
 
 // IsInSafeMode returns safe mode status (stub for non-Linux).
 func (m *Manager) IsInSafeMode() bool {
 	return false
+}
+
+// SetIntegrityRestoreCallback sets the callback for integrity restore (stub for non-Linux).
+func (m *Manager) SetIntegrityRestoreCallback(fn func()) {
+	// No-op on non-Linux
+}
+
+// AuthorizeIP adds an IP to the DNS egress allowlist (stub for non-Linux).
+func (m *Manager) AuthorizeIP(ip net.IP, ttl time.Duration) error {
+	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/clock"
 )
 
@@ -143,7 +144,7 @@ func CSRFMiddleware(manager *CSRFManager, authStore interface{}) func(http.Handl
 			// Skip CSRF check for API key authenticated requests
 			// API keys require explicit Authorization header, so can't be CSRF'd
 			authHeader := r.Header.Get("Authorization")
-			if authHeader != "" && (strings.HasPrefix(authHeader, "Bearer gfw_") ||
+			if authHeader != "" && (strings.HasPrefix(authHeader, "Bearer "+brand.APIKeyPrefixFull()) ||
 				strings.HasPrefix(authHeader, "ApiKey ")) {
 				next.ServeHTTP(w, r)
 				return

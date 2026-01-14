@@ -100,17 +100,9 @@ func RunShow(configFile string, summary bool, remoteURL, apiKey string) error {
 		return fmt.Errorf("failed to generate ruleset: %w", err)
 	}
 
-	// Normalize
-	normalizedRules, err := NormalizeRuleset(generatedRules)
-	if err != nil {
-		// Fallback: use raw generated rules
-		// Likely unstructured (atomic)
-		Printer.Println(generatedRules)
-		return nil
-	}
-
-	// Strip noise from normalized rules (handles/counters are created by kernel even in temp ns)
-	Printer.Printf("%s", StripNoise(normalizedRules))
+	// We used to normalize via a temp netns, but that strips comments/quotes
+	// and is flaky in some environments. For now, print raw generated rules.
+	fmt.Print(generatedRules)
 	return nil
 }
 

@@ -166,6 +166,15 @@ type WireGuardConfig struct {
 
 	// Firewall Mark (fwmark) for routing
 	FWMark int `hcl:"fwmark,optional" json:"fwmark,omitempty"`
+
+	// Routing Table (default: auto)
+	// If set to "off" or "auto", behaves effectively like standard WG.
+	// If set to a table ID/name, routes are added to that table.
+	Table string `hcl:"table,optional" json:"table,omitempty"`
+
+	// Hooks
+	PostUp   []string `hcl:"post_up,optional" json:"post_up,omitempty"`
+	PostDown []string `hcl:"post_down,optional" json:"post_down,omitempty"`
 }
 
 // MarshalJSON masks the private key in API responses.
@@ -453,6 +462,17 @@ type AnomalyConfig struct {
 type NotificationsConfig struct {
 	Enabled  bool                  `hcl:"enabled,optional" json:"enabled"`
 	Channels []NotificationChannel `hcl:"channel,block" json:"channels"`
+	Rules    []AlertRule           `hcl:"rule,block" json:"rules"`
+}
+
+// AlertRule defines when an alert should be triggered.
+type AlertRule struct {
+	Name      string   `hcl:"name,label" json:"name"`
+	Enabled   bool     `hcl:"enabled,optional" json:"enabled"`
+	Condition string   `hcl:"condition" json:"condition"`
+	Severity  string   `hcl:"severity,optional" json:"severity"` // info, warning, critical
+	Channels  []string `hcl:"channels,optional" json:"channels"`
+	Cooldown  string   `hcl:"cooldown,optional" json:"cooldown"` // e.g. "1h"
 }
 
 // NotificationChannel defines a notification destination.

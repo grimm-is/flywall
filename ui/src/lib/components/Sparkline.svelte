@@ -61,10 +61,9 @@
             y1={height / 2}
             x2={width}
             y2={height / 2}
-            stroke="currentColor"
+            stroke="var(--dashboard-text-muted, #374151)"
             stroke-width="1"
             stroke-dasharray="2,4"
-            class="text-gray-700"
         />
     {/if}
 </svg>

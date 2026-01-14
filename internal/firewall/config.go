@@ -24,6 +24,8 @@ type Config struct {
 	RuleLearning      *config.RuleLearningConfig // For inline mode nfqueue support
 	NTP               *config.NTPConfig
 	UPnP              *config.UPnPConfig
+	System            *config.SystemConfig
+	Replication       *config.ReplicationConfig
 }
 
 // FromGlobalConfig extracts the firewall configuration from the global config.
@@ -56,5 +58,7 @@ func FromGlobalConfig(g *config.Config) *Config {
 		RuleLearning:      g.RuleLearning,
 		NTP:               g.NTP,
 		UPnP:              g.UPnP,
+		System:            g.System,
+		Replication:       g.Replication,
 	}
 }

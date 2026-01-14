@@ -59,12 +59,16 @@ package ctlplane
 import (
 	"time"
 
+	"grimm.is/flywall/internal/alerting"
+	"grimm.is/flywall/internal/analytics"
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
-	"grimm.is/flywall/internal/device"
 	"grimm.is/flywall/internal/firewall"
+	"grimm.is/flywall/internal/identity"
 	"grimm.is/flywall/internal/learning"
 	"grimm.is/flywall/internal/learning/flowdb"
+	"grimm.is/flywall/internal/metrics"
+	"grimm.is/flywall/internal/services/dns/querylog"
 	"grimm.is/flywall/internal/services/scanner"
 )
 
@@ -337,6 +341,7 @@ type UpdateInterfaceArgs struct {
 	IPv4        []string        `json:"ipv4"`        // IPv4 addresses (nil = no change)
 	DHCP        *bool           `json:"dhcp"`        // Use DHCP (nil = no change)
 	MTU         *int            `json:"mtu"`         // MTU (nil = no change)
+	Disabled    *bool           `json:"disabled"`    // Disabled state (nil = no change)
 }
 
 // SafeApplyInterfaceArgs is the request for SafeApplyInterface
@@ -661,6 +666,7 @@ type LogEntry struct {
 	Level     string            `json:"level"` // debug, info, warn, error
 	Message   string            `json:"message"`
 	Facility  string            `json:"facility,omitempty"`
+	Class     string            `json:"class,omitempty"`
 	Extra     map[string]string `json:"extra,omitempty"`
 }
 
@@ -789,6 +795,39 @@ type CheckIPSetEntryArgs struct {
 type CheckIPSetEntryReply struct {
 	Exists bool   `json:"exists"`
 	Error  string `json:"error,omitempty"`
+}
+
+// --- DNS Query Logging ---
+
+// GetDNSQueryHistoryArgs is the request for GetDNSQueryHistory
+type GetDNSQueryHistoryArgs struct {
+	Limit  int    `json:"limit"`
+	Offset int    `json:"offset"`
+	Search string `json:"search,omitempty"`
+}
+
+// GetDNSQueryHistoryReply is the response for GetDNSQueryHistory
+type GetDNSQueryHistoryReply struct {
+	Entries []querylog.Entry `json:"entries"`
+	Error   string           `json:"error,omitempty"`
+}
+
+// GetDNSStatsArgs is the request for GetDNSStats
+type GetDNSStatsArgs struct {
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"`
+}
+
+// GetDNSStatsReply is the response for GetDNSStats
+type GetDNSStatsReply struct {
+	Stats *querylog.Stats `json:"stats"`
+	Error string          `json:"error,omitempty"`
+}
+
+// GetPolicyStatsReply is the response for GetPolicyStats
+type GetPolicyStatsReply struct {
+	Stats map[string]*metrics.PolicyStats `json:"stats"`
+	Error string                          `json:"error,omitempty"`
 }
 
 // --- System Operations ---
@@ -937,6 +976,17 @@ type ToggleUplinkArgs struct {
 type ToggleUplinkReply struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
+}
+
+// TestUplinkArgs is the request for TestUplink
+type TestUplinkArgs struct {
+	GroupName  string `json:"group_name"`
+	UplinkName string `json:"uplink_name"`
+}
+
+// TestUplinkReply is the response for TestUplink
+type TestUplinkReply struct {
+	UplinkStatus UplinkStatus `json:"uplink_status"`
 }
 
 // --- Flow Management ---
@@ -1089,39 +1139,7 @@ type PingReply struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// --- Device Identity Management ---
-
-// UpdateDeviceIdentityArgs is the request for UpdateDeviceIdentity
-type UpdateDeviceIdentityArgs struct {
-	ID    string   `json:"id"`
-	Alias *string  `json:"alias"`
-	Owner *string  `json:"owner"`
-	Type  *string  `json:"type"`
-	Tags  []string `json:"tags"`
-}
-
-// UpdateDeviceIdentityReply is the response for UpdateDeviceIdentity
-type UpdateDeviceIdentityReply struct {
-	Identity *device.DeviceIdentity `json:"identity,omitempty"`
-	Error    string                 `json:"error,omitempty"`
-}
-
-// LinkMACArgs is the request for LinkMAC
-type LinkMACArgs struct {
-	MAC        string `json:"mac"`
-	IdentityID string `json:"identity_id"`
-}
-
-// UnlinkMACArgs is the request for UnlinkMAC
-type UnlinkMACArgs struct {
-	MAC string `json:"mac"`
-}
-
-// ListDevicesReply is the response for ListDevices (optional for management UI)
-type ListDevicesReply struct {
-	Devices []device.DeviceIdentity `json:"devices"`
-	Error   string                  `json:"error,omitempty"`
-}
+// (Device Identity types moved to end of file)
 
 // --- Network Device Discovery ---
 
@@ -1154,6 +1172,10 @@ type NetworkDevice struct {
 	// Classification
 	DeviceType  string `json:"device_type,omitempty"`
 	DeviceModel string `json:"device_model,omitempty"`
+
+	// Anomaly Detection
+	AnomalyScore float64 `json:"anomaly_score"`
+	IsAnomalous  bool    `json:"is_anomalous"`
 }
 
 // GetNetworkDevicesReply is the response for GetNetworkDevices
@@ -1176,4 +1198,143 @@ type GetConfigDiffReply struct {
 // SafeModeStatusReply is the response for IsInSafeMode
 type SafeModeStatusReply struct {
 	InSafeMode bool `json:"in_safe_mode"`
+}
+
+// --- Replication & HA ---
+
+// ReplicationStatus represents the current state of replication and HA
+type ReplicationStatus struct {
+	Mode         string    `json:"mode"` // "primary" or "replica"
+	HAEnabled    bool      `json:"ha_enabled"`
+	HARole       string    `json:"ha_role"` // "master" or "backup"
+	Connected    bool      `json:"connected"`
+	PeerAddress  string    `json:"peer_address"`
+	SyncState    string    `json:"sync_state"` // "synced", "syncing", "error", "idle"
+	LastSyncTime time.Time `json:"last_sync_time"`
+	Version      int64     `json:"version"`
+	Error        string    `json:"error,omitempty"`
+}
+
+// GetReplicationStatusReply is the response for GetReplicationStatus
+type GetReplicationStatusReply struct {
+	Status ReplicationStatus `json:"status"`
+	Error  string            `json:"error,omitempty"`
+}
+
+// --- Analytics ---
+
+type GetAnalyticsBandwidthArgs struct {
+	SrcMAC string    `json:"src_mac"`
+	From   time.Time `json:"from"`
+	To     time.Time `json:"to"`
+}
+
+type BandwidthPoint struct {
+	Time  time.Time `json:"time"`
+	Bytes int64     `json:"bytes"`
+}
+
+type GetAnalyticsBandwidthReply struct {
+	Points []BandwidthPoint `json:"points"`
+	Error  string           `json:"error,omitempty"`
+}
+
+type GetAnalyticsTopTalkersArgs struct {
+	From  time.Time `json:"from"`
+	To    time.Time `json:"to"`
+	Limit int       `json:"limit"`
+}
+
+type GetAnalyticsTopTalkersReply struct {
+	Summaries []analytics.Summary `json:"summaries"`
+	Error     string              `json:"error,omitempty"`
+}
+
+type GetAnalyticsFlowsArgs struct {
+	SrcMAC string    `json:"src_mac"`
+	From   time.Time `json:"from"`
+	To     time.Time `json:"to"`
+	Limit  int       `json:"limit"`
+	Offset int       `json:"offset"`
+}
+
+type GetAnalyticsFlowsReply struct {
+	Summaries []analytics.Summary `json:"summaries"`
+	Error     string              `json:"error,omitempty"`
+}
+
+// --- Alerting ---
+
+type GetAlertHistoryArgs struct {
+	Limit int `json:"limit"`
+}
+
+type GetAlertHistoryReply struct {
+	Events []alerting.AlertEvent `json:"events"`
+	Error  string                `json:"error,omitempty"`
+}
+
+type GetAlertRulesArgs struct{}
+
+type GetAlertRulesReply struct {
+	Rules []alerting.AlertRule `json:"rules"`
+	Error string               `json:"error,omitempty"`
+}
+
+type UpdateAlertRuleArgs struct {
+	Rule alerting.AlertRule `json:"rule"`
+}
+
+type UpdateAlertRuleReply struct {
+	Error string `json:"error,omitempty"`
+}
+
+// --- Device Identity & Grouping ---
+
+// UpdateDeviceIdentityArgs is the request for UpdateDeviceIdentity
+type UpdateDeviceIdentityArgs struct {
+	MAC       string   `json:"mac"`        // Primary MAC to identify/create
+	Alias     *string  `json:"alias"`      // Update alias
+	Owner     *string  `json:"owner"`      // Update owner
+	GroupID   *string  `json:"group_id"`   // Update group
+	Tags      []string `json:"tags"`       // Update tags
+	LinkMAC   *string  `json:"link_mac"`   // Add this MAC to identity
+	UnlinkMAC *string  `json:"unlink_mac"` // Remove this MAC
+}
+
+// UpdateDeviceIdentityReply is the response for UpdateDeviceIdentity
+type UpdateDeviceIdentityReply struct {
+	Identity *identity.DeviceIdentity `json:"identity"`
+	Error    string                   `json:"error,omitempty"`
+}
+
+// GetDeviceGroupsArgs is the request for GetDeviceGroups
+type GetDeviceGroupsArgs struct{}
+
+// GetDeviceGroupsReply is the response for GetDeviceGroups
+type GetDeviceGroupsReply struct {
+	Groups []identity.DeviceGroup `json:"groups"`
+	Error  string                 `json:"error,omitempty"`
+}
+
+// UpdateDeviceGroupArgs is the request for UpdateDeviceGroup
+type UpdateDeviceGroupArgs struct {
+	Group identity.DeviceGroup `json:"group"`
+}
+
+// UpdateDeviceGroupReply is the response for UpdateDeviceGroup
+type UpdateDeviceGroupReply struct {
+	Group identity.DeviceGroup `json:"group"`
+	Error string               `json:"error,omitempty"`
+}
+
+// DeleteDeviceGroupArgs is the request for DeleteDeviceGroup
+type DeleteDeviceGroupArgs struct {
+	ID string `json:"id"`
+}
+
+// DeleteDeviceGroupReply
+type DeleteDeviceGroupReply struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
 }

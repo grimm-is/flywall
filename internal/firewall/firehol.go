@@ -14,8 +14,17 @@ import (
 	"strings"
 	"time"
 
+	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/clock"
 	"grimm.is/flywall/internal/logging"
+)
+
+const (
+	// DefaultCacheTTL is the default cache duration for IP lists.
+	// Most threat intelligence feeds update daily, but high-priority lists
+	// like firehol_level1 may update hourly. Configure per-IPSet via
+	// RefreshHours in config to override this default.
+	DefaultCacheTTL = 24 * time.Hour
 )
 
 // FireHOLManager handles downloading and managing FireHOL IP lists.
@@ -195,7 +204,10 @@ func (m *FireHOLManager) DownloadFromURL(url string) ([]string, error) {
 		reader = gzReader
 	}
 
-	// Limit reader to 10MB to prevent memory exhaustion (DoS)
+	// Limit reader to 10MB to prevent memory exhaustion (DoS).
+	// Note: We buffer to memory for caching. ParseIPList uses streaming
+	// internally (bufio.Scanner), but we need the raw bytes to save to disk.
+	// For a 10MB list, this uses ~10MB RAM per concurrent download.
 	limitReader := io.LimitReader(reader, 10*1024*1024)
 
 	// Read into memory (up to limit) so we can parse AND cache it
@@ -228,7 +240,7 @@ func (m *FireHOLManager) generateCacheKey(url string) string {
 // saveToCache saves downloaded data to cache with metadata.
 func (m *FireHOLManager) saveToCache(cacheKey string, data []byte, etag string) error {
 	if m.cacheDir == "" {
-		m.cacheDir = "/var/cache/firewall/iplists"
+		m.cacheDir = filepath.Join(brand.GetCacheDir(), "iplists")
 	}
 
 	// Create cache directory
@@ -266,7 +278,7 @@ func (m *FireHOLManager) saveToCache(cacheKey string, data []byte, etag string) 
 // loadFromCache loads data from cache if valid.
 func (m *FireHOLManager) loadFromCache(cacheKey string) ([]string, error) {
 	if m.cacheDir == "" {
-		m.cacheDir = "/var/cache/firewall/iplists"
+		m.cacheDir = filepath.Join(brand.GetCacheDir(), "iplists")
 	}
 
 	dataPath := filepath.Join(m.cacheDir, cacheKey+".txt")
@@ -298,7 +310,7 @@ func (m *FireHOLManager) loadFromCache(cacheKey string) ([]string, error) {
 	}
 
 	cacheAge := time.Since(time.Unix(int64(cachedAt), 0))
-	if cacheAge > 24*time.Hour {
+	if cacheAge > DefaultCacheTTL {
 		return nil, fmt.Errorf("cache expired")
 	}
 
@@ -375,7 +387,7 @@ func (m *FireHOLManager) GetCacheInfo() (map[string]interface{}, error) {
 // CacheList downloads and caches a list locally.
 func (m *FireHOLManager) CacheList(listName string) (string, error) {
 	if m.cacheDir == "" {
-		m.cacheDir = "/var/cache/firewall/iplists"
+		m.cacheDir = filepath.Join(brand.GetCacheDir(), "iplists")
 	}
 
 	// Create cache directory
@@ -401,7 +413,7 @@ func (m *FireHOLManager) CacheList(listName string) (string, error) {
 // LoadCachedList loads a list from the local cache.
 func (m *FireHOLManager) LoadCachedList(listName string) ([]string, time.Time, error) {
 	if m.cacheDir == "" {
-		m.cacheDir = "/var/cache/firewall/iplists"
+		m.cacheDir = filepath.Join(brand.GetCacheDir(), "iplists")
 	}
 
 	cachePath := filepath.Join(m.cacheDir, listName+".txt")

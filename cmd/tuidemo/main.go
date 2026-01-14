@@ -1,16 +1,18 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"time"
 
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
+	"grimm.is/flywall/internal/i18n"
 	"grimm.is/flywall/internal/tui"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+var Printer = i18n.NewCLIPrinter()
 
 // MockBackend implements tui.Backend for testing
 type MockBackend struct{}

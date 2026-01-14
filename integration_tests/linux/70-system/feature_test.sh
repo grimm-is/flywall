@@ -51,8 +51,8 @@ plan 8
 diag "Starting Feature Tests..."
 
 # Create dummy SPA asset
-mkdir -p dist
-echo "<html><title>Flywall Dashboard</title></html>" > dist/index.html
+UI_DIR=$(mktemp -d)
+echo "<html><title>Flywall Dashboard</title></html>" > "$UI_DIR/index.html"
 
 # 1. Start Application
 diag "Starting flywall in daemon mode..."
@@ -66,7 +66,7 @@ FIREWALL_CONFIG="$MOUNT_PATH/tests/test-vm.hcl"
 start_ctl "$FIREWALL_CONFIG"
 
 # Start API Server
-export FLYWALL_UI_DIST="./dist"
+export FLYWALL_UI_DIST="$UI_DIR"
 export FLYWALL_NO_SANDBOX=1
 start_api -listen :8080
 
@@ -114,8 +114,17 @@ http_get http://localhost:8080/api/config | grep "ip_forwarding" >/dev/null 2>&1
 ok $? "API /api/config returns config JSON"
 
 # 7. Check SPA Serving
-http_get http://localhost:8080/ | grep -i "flywall\|firewall\|dashboard" >/dev/null 2>&1
-ok $? "API serves SPA index.html"
+curl_out=$(http_get http://localhost:8080/)
+echo "$curl_out" | grep -i "flywall\|firewall\|dashboard" >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    ok 0 "API serves SPA index.html"
+else
+    diag "SPA contents:"
+    ls -lR "$UI_DIR"
+    diag "API Response for /:"
+    echo "$curl_out"
+    ok 1 "API serves SPA index.html"
+fi
 
 # 8. Check Prometheus Metrics
 http_get http://localhost:8080/metrics | grep "# HELP" >/dev/null 2>&1

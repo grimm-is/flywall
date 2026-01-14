@@ -20,6 +20,15 @@ case "${TIME_DILATION:-}" in
     ''|*[!0-9.]*) TIME_DILATION=1 ;;
 esac
 
+# Conditional Shell Tracing
+if [ -n "${TEST_DEBUG:-}" ]; then
+    set -x
+    # We use stderr for debug messages to avoid polluting TAP output
+    echo "# Debug Tracing Enabled (TEST_DEBUG=$TEST_DEBUG)" >&2
+else
+    set +x
+fi
+
 # Scale a timeout value (seconds) by TIME_DILATION
 # Usage: local timeout=$(scale_timeout 5)
 # Scale a timeout value (seconds) by TIME_DILATION
@@ -360,6 +369,9 @@ export CTL_SOCKET
 export FLYWALL_STATE_DIR="${FLYWALL_STATE_DIR:-$STATE_DIR}"
 export FLYWALL_LOG_DIR="${FLYWALL_LOG_DIR:-$LOG_DIR}"
 export FLYWALL_RUN_DIR="${FLYWALL_RUN_DIR:-$RUN_DIR}"
+export CTL_BIN="${FLYWALL_BIN:-$APP_BIN}"
+    echo "DEBUG: Using CTL_BIN: $CTL_BIN"
+    ls -l "$CTL_BIN"
 export FLYWALL_CTL_SOCKET="${FLYWALL_CTL_SOCKET:-$CTL_SOCKET}"
 
 # Parse kernel parameters
@@ -389,6 +401,19 @@ track_pid() {
 # Note: The agent also performs cleanup after TAP_END, but we still need
 # aggressive cleanup here because tests may call this before exiting.
 cleanup_processes() {
+    # If any test failed, dump logs if available
+    if [ "${failed_count:-0}" -gt 0 ]; then
+        echo "# =================== FAILURE LOGS ==================="  >&2
+        for log in /tmp/*_ctl.log /tmp/*_api.log; do
+            if [ -f "$log" ]; then
+                echo "# --- LOG: $log ---" >&2
+                cat "$log" >&2
+                echo "# ----------------------------------------------" >&2
+            fi
+        done
+        echo "# =================================================="  >&2
+    fi
+
     for pid in $BACKGROUND_PIDS; do
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null
@@ -497,43 +522,70 @@ list_services() {
 # Common Test Functions (TAP)
 # ============================================================================
 test_count=0
-failed_count=0
 
-plan() {
-    echo "1..$1"
+# ============================================================================
+# TAP-14 Utility Library
+# ============================================================================
+# Source the common TAP14 library if available (in VM or locally)
+# Locations:
+# 1. /mnt/flywall/internal/toolbox/harness/tap14.sh (VM mount)
+# 2. $PROJECT_ROOT/internal/toolbox/harness/tap14.sh (Host local)
+# 3. ../internal/toolbox/harness/tap14.sh (Relative to common.sh)
+
+if [ -f "$MOUNT_PATH/internal/toolbox/harness/tap14.sh" ]; then
+    . "$MOUNT_PATH/internal/toolbox/harness/tap14.sh"
+elif [ -f "$PROJECT_ROOT/internal/toolbox/harness/tap14.sh" ]; then
+    . "$PROJECT_ROOT/internal/toolbox/harness/tap14.sh"
+elif [ -f "$(dirname "$0")/../../internal/toolbox/harness/tap14.sh" ]; then
+    . "$(dirname "$0")/../../internal/toolbox/harness/tap14.sh"
+else
+    # Fallback if library missing (should happen rarely, but safe default)
+    echo "# WARNING: tap14.sh library not found, using minimal fallback" >&2
+    
+    test_count=0
+    failed_count=0
+    
+    tap_version_14() { echo "TAP version 14"; }
+    plan() { echo "1..$1"; }
+    diag() { echo "# $1"; }
+    ok() {
+        test_count=$((test_count + 1))
+        if [ "$1" -eq 0 ]; then echo "ok $test_count - $2"; else echo "not ok $test_count - $2"; failed_count=$((failed_count + 1)); fi
+    }
+    skip() { test_count=$((test_count + 1)); echo "ok $test_count - # SKIP $1"; }
+    pass() { test_count=$((test_count + 1)); echo "ok $test_count - $1"; }
+    fail() { test_count=$((test_count + 1)); echo "not ok $test_count - $1"; failed_count=$((failed_count + 1)); }
+    bail() { echo "Bail out! $1"; exit 1; }
+fi
+
+
+# ============================================================================
+# Legacy Compatibility & Helpers
+# ============================================================================
+
+# Compatibility aliases for legacy subtest functions
+# New tap14.sh handles indentation automatically via 'ok'
+subtest_ok() {
+    ok "$@"
 }
 
-ok() {
-    test_count=$((test_count + 1))
-    _status=$1
-    shift
-    _desc="$1"
-    shift
-
-    if [ "$_status" -eq 0 ]; then
-        echo "ok $test_count - $_desc"
-    else
-        echo "not ok $test_count - $_desc"
-        failed_count=$((failed_count + 1))
-        if [ "$#" -gt 0 ]; then
-            yaml_diag "$@"
-        fi
-    fi
+subtest_plan() {
+    plan "$@"
 }
 
-diag() {
-    echo "# $1"
+subtest_skip() {
+    skip "$@"
 }
 
-skip() {
-    test_count=$((test_count + 1))
-    echo "ok $test_count - # SKIP $1"
+subtest_diag() {
+    diag "$@"
 }
 
-pass() {
-    test_count=$((test_count + 1))
-    echo "ok $test_count - $1"
-}
+# Note: subtest_start and subtest_end are provided by tap14.sh
+
+# ============================================================================
+# Environment Helpers
+# ============================================================================
 
 # Helper to require root
 require_root() {
@@ -577,34 +629,6 @@ mktemp_compatible() {
     echo "/tmp/test_${$}_$(date +%s)_${random}_$suffix"
 }
 
-# ============================================================================
-# Fail-Fast Helpers
-# ============================================================================
-
-# Helper to output TAP-14 header
-tap_version_14() {
-    echo "TAP version 14"
-}
-
-# Helper to output YAML diagnostics
-# Usage: yaml_diag "key" "value" "key2" "value2" ...
-yaml_diag() {
-    echo "  ---"
-    while [ "$#" -gt 0 ]; do
-        key="$1"
-        shift
-        val="$1"
-        shift
-        # Simple quoting for one-liners, block for multi-line
-        if echo "$val" | grep -q "\n"; then
-            echo "  $key: |"
-            echo "$val" | sed 's/^/    /'
-        else
-            echo "  $key: \"$val\""
-        fi
-    done
-    echo "  ..."
-}
 
 # Immediately fail the test with a message and optional diagnostics
 # Usage: fail "message" ["key" "val"...]
@@ -880,6 +904,20 @@ login_api() {
         grep -o '"token":"[^"]*"' | cut -d'"' -f4
 }
 
+# Alias for backward compatibility with tests that use wait_for_api
+# Usage: wait_for_api <url> [timeout_sec]
+wait_for_api() {
+    local url="$1"
+    local timeout="${2:-10}"
+    
+    # Extract port from URL (e.g., http://127.0.0.1:8080 -> 8080)
+    local port=$(echo "$url" | sed -E 's/.*:([0-9]+).*/\1/')
+    if [ -z "$port" ] || [ "$port" = "$url" ]; then
+        port=8080
+    fi
+    
+    wait_for_api_ready "$port" "$timeout"
+}
 
 # ============================================================================
 # HTTP Helpers

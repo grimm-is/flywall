@@ -11,8 +11,9 @@ mkdir -p "$OUT_DIR"
 
 echo "Building test binaries for ${GOOS}/${GOARCH} into ${OUT_DIR}..."
 
-# Find all internal packages
-PKGS=$(go list ./internal/...)
+# Find all internal packages, excluding those with cgo/pcap dependencies
+# scanner: depends on gopacket which transitively pulls pcap (requires cgo)
+PKGS=$(go list ./internal/... | grep -v '/scanner$')
 
 # Function to build a single package
 build_pkg() {

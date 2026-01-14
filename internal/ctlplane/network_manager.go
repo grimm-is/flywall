@@ -9,6 +9,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+	"runtime"
 )
 
 // NetworkManager handles network interface configuration.
@@ -377,6 +378,9 @@ func (nm *NetworkManager) UpdateInterface(args *UpdateInterfaceArgs) error {
 			if args.MTU != nil {
 				newIface.MTU = *args.MTU
 			}
+			if args.Disabled != nil {
+				newIface.Disabled = *args.Disabled
+			}
 			nm.config.Interfaces = append(nm.config.Interfaces, newIface)
 		} else {
 			// Update existing interface
@@ -395,7 +399,12 @@ func (nm *NetworkManager) UpdateInterface(args *UpdateInterfaceArgs) error {
 			if args.MTU != nil {
 				nm.config.Interfaces[ifaceIdx].MTU = *args.MTU
 			}
+			if args.Disabled != nil {
+				nm.config.Interfaces[ifaceIdx].Disabled = *args.Disabled
+                auditLog("UpdateInterface", fmt.Sprintf("Updated config Disabled=%v for %s", *args.Disabled, args.Name))
+			}
 		}
+        auditLog("UpdateInterface", fmt.Sprintf("Current Interface Config: %+v", nm.config.Interfaces[ifaceIdx]))
 
 		// Apply the changes to the system
 		if err := nm.applyInterfaceConfig(args.Name); err != nil {
@@ -607,6 +616,12 @@ func (nm *NetworkManager) applyInterfaceConfig(ifaceName string) error {
 
 	link, err := netlink.LinkByName(ifaceName)
 	if err != nil {
+		// On macOS (Darwin), we allow updating config even if interface is missing
+		// This supports running the UI and HCL generation tests locally
+		if runtime.GOOS == "darwin" {
+			log.Printf("[NM] Skipping system apply for %s (darwin: interface not found)", ifaceName)
+			return nil
+		}
 		return err
 	}
 

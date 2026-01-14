@@ -481,6 +481,7 @@ func (m *Manager) setupPolicyRouting(link netlink.Link, ifaceCfg config.Interfac
 
 // ApplyUIDRoutes applies UID-based routing rules.
 func (m *Manager) ApplyUIDRoutes(routes []config.UIDRouting) error {
+	log.Printf("[network] Applying UID routes (count=%d)", len(routes))
 	// 1. List existing UID rules (priority range 15000-15999)
 	existingRules, err := m.nl.RuleList(unix.AF_INET)
 	if err != nil {

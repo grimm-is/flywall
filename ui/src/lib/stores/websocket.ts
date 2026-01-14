@@ -104,6 +104,22 @@ export function connectWebSocket(topics: string[] = ['status', 'logs', 'stats', 
                             window.dispatchEvent(new CustomEvent('ws-leases', { detail: msg.data }));
                         }
                         break;
+                    case 'flows':
+                        if (typeof window !== 'undefined') {
+                            window.dispatchEvent(new CustomEvent('ws-flows', { detail: msg.data }));
+                        }
+                        break;
+                    case 'stats:rules':
+                        // Dispatch event for rule stats (The Pulse)
+                        if (typeof window !== 'undefined') {
+                            window.dispatchEvent(new CustomEvent('ws-stats-rules', { detail: msg.data }));
+                        }
+                        break;
+                    case 'runtime:containers':
+                        if (typeof window !== 'undefined') {
+                            window.dispatchEvent(new CustomEvent('ws-runtime-containers', { detail: msg.data }));
+                        }
+                        break;
                 }
             }
         } catch (e) {

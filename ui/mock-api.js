@@ -285,6 +285,66 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Rules endpoints for PolicyEditor
+    if (path === '/api/rules' || path === '/api/rules/') {
+      // Return policies with stats
+      const policiesWithStats = mockConfig.policies.map((policy, i) => ({
+        ...policy,
+        id: `policy_${i}`,
+        rules: policy.rules?.map((rule, j) => ({
+          ...rule,
+          id: `${policy.from}-${policy.to}-${j}`,
+          policy_from: policy.from,
+          policy_to: policy.to,
+          stats: {
+            packets: Math.floor(Math.random() * 100000),
+            bytes: Math.floor(Math.random() * 50000000),
+            sparkline_data: Array.from({ length: 20 }, () => Math.floor(Math.random() * 100)),
+          },
+          resolved_src: rule.src_ip ? { display_name: rule.src_ip, type: 'ip', count: 1 } : { display_name: 'Any', type: 'any', count: 0 },
+          resolved_dest: rule.dest_ip ? { display_name: rule.dest_ip, type: 'ip', count: 1 } : { display_name: 'Any', type: 'any', count: 0 },
+          nft_syntax: `counter accept comment "${rule.name || 'rule'}"`,
+        })) || [],
+      }));
+      sendJSON(res, policiesWithStats);
+      return;
+    }
+
+    if (path === '/api/rules/flat') {
+      // Flatten all rules from all policies
+      const flatRules = [];
+      mockConfig.policies.forEach((policy, i) => {
+        policy.rules?.forEach((rule, j) => {
+          flatRules.push({
+            ...rule,
+            id: `${policy.from}-${policy.to}-${j}`,
+            policy_from: policy.from,
+            policy_to: policy.to,
+            group: policy.from === 'WAN' ? 'inbound' : 'outbound',
+            stats: {
+              packets: Math.floor(Math.random() * 100000),
+              bytes: Math.floor(Math.random() * 50000000),
+              sparkline_data: Array.from({ length: 20 }, () => Math.floor(Math.random() * 100)),
+            },
+            resolved_src: rule.src_ip ? { display_name: rule.src_ip, type: 'ip', count: 1 } : { display_name: 'Any', type: 'any', count: 0 },
+            resolved_dest: rule.dest_ip ? { display_name: rule.dest_ip, type: 'ip', count: 1 } : { display_name: 'Any', type: 'any', count: 0 },
+            nft_syntax: `counter ${rule.action || 'accept'} comment "${rule.name || 'rule:allow_internet'}"`,
+          });
+        });
+      });
+      sendJSON(res, flatRules);
+      return;
+    }
+
+    if (path === '/api/rules/groups') {
+      // Return group info
+      sendJSON(res, [
+        { name: 'inbound', count: 2 },
+        { name: 'outbound', count: 2 },
+      ]);
+      return;
+    }
+
     if (path === '/api/config/nat') {
       if (req.method === 'GET') {
         sendJSON(res, mockConfig.nat);

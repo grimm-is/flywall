@@ -163,7 +163,16 @@
         "upstream_forwarders": "Upstream Forwarders",
         "zone_name": "Zone Name",
         "zone_name_placeholder": "e.g., lan / internal-*",
-        "zone_serving": "Zone Serving"
+        "zone_serving": "Zone Serving",
+        "blocklists": "Blocklists",
+        "blocklist_url": "Blocklist URL",
+        "blocklist_format": "Format",
+        "refresh_hours": "Refresh (hours)",
+        "local_hosts": "Local DNS Records",
+        "host_ip": "IP Address",
+        "hostnames": "Hostnames",
+        "hostnames_hint": "Comma-separated list of hostnames mapped to this IP",
+        "listening_on_generic": "Listening on"
     },
     "firewall": {
         "accept": "Accept",
@@ -262,11 +271,14 @@
     },
     "item": {
         "backup": "Backup",
+        "blocklist": "Blocklist",
         "bond": "Bond",
+        "config": "Configuration",
         "device": "Device",
         "devices": "Devices",
         "forwarder": "Forwarder",
         "forwarding": "IP Forwarding",
+        "host": "Host Entry",
         "interface": "Interface",
         "ipset": "IPSet",
         "log": "Log",
@@ -349,6 +361,7 @@
         "scanner": "Scanner",
         "settings": "Settings",
         "vpn": "VPN",
+        "qos": "QoS",
         "zones": "Zones"
     },
     "network": {

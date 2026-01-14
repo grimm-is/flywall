@@ -457,7 +457,7 @@ func runServerProcess(
 	}
 
 	// Setup and enter chroot (only if root and sandbox enabled)
-	if syscall.Geteuid() == 0 && sandboxEnabled {
+	if runtime.GOOS == "linux" && syscall.Geteuid() == 0 && sandboxEnabled {
 		jailPath := "/run/" + brand.LowerName + "-api-jail"
 		if err := setupChroot(jailPath); err != nil {
 			return fmt.Errorf("failed to setup chroot: %w", err)
@@ -480,9 +480,17 @@ func runServerProcess(
 	}
 
 	// Initialize auth store
+	authPath := filepath.Join(authDir, "auth.json")
+	logging.Info(fmt.Sprintf("Initializing auth store from %s", authPath))
 	authStore, err := auth.NewStore("")
 	if err != nil {
-		logging.Warn(fmt.Sprintf("Warning: auth not available: %v", err))
+		logging.Error(fmt.Sprintf("Failed to initialize auth store: %v (path: %s)", err, authPath))
+		// Check if the file exists to help debug
+		if _, statErr := os.Stat(authPath); statErr == nil {
+			logging.Error("auth.json exists but failed to load - this may cause setup screen to appear incorrectly")
+		}
+	} else if authStore != nil {
+		logging.Info(fmt.Sprintf("Auth store loaded, HasUsers: %v", authStore.HasUsers()))
 	}
 
 	// Initialize API server
@@ -695,7 +703,7 @@ func setupTLS(rtCfg *APIRuntimeConfig, cfg *config.Config, isolated bool) (certF
 			logging.Error(fmt.Sprintf("failed to ensure TLS certificates: %v", err))
 			os.Exit(1)
 		}
-		logging.Info(fmt.Sprintf("TLS enabled via tls_listen, using auto-generated certificates"))
+		logging.Info("TLS enabled via tls_listen, using auto-generated certificates")
 		return
 	}
 

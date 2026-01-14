@@ -61,6 +61,8 @@ export const config = writable<any>(null);
 export const status = writable<any>(null);
 export const leases = writable<any[]>([]);
 export const logs = writable<any[]>([]);
+export const identities = writable<any[]>([]);
+export const groups = writable<any[]>([]);
 // Topology Types
 export interface TopologyNode {
     id: string; // IP or MAC or ID
@@ -471,14 +473,18 @@ export const api = {
     async loadDashboard() {
         loading.set(true);
         try {
-            const [statusData, configData, leasesData] = await Promise.all([
+            const [statusData, configData, leasesData, identitiesData, groupsData] = await Promise.all([
                 apiRequest('/status'),
                 apiRequest('/config'),
                 apiRequest('/leases'),
+                apiRequest('/identities'),
+                apiRequest('/groups'),
             ]);
             status.set(statusData);
             config.set(normalizeConfig(configData));
             leases.set(leasesData || []);
+            identities.set(identitiesData || []);
+            groups.set(groupsData || []);
         } catch (e) {
             console.error('Failed to load dashboard', e);
         } finally {
@@ -511,6 +517,22 @@ export const api = {
         const result = await apiRequest('/config/apply', { method: 'POST' });
         hasPendingChanges.set(false);
         await this.reloadConfig();
+        return result;
+    },
+
+    async safeApplyConfig(pingTargets: string[] = [], timeout = 5) {
+        const result = await apiRequest('/config/safe-apply', {
+            method: 'POST',
+            body: JSON.stringify({
+                ping_targets: pingTargets,
+                ping_timeout_seconds: timeout
+            })
+        });
+
+        if (result.success) {
+            hasPendingChanges.set(false);
+            await this.reloadConfig();
+        }
         return result;
     },
 
@@ -556,6 +578,22 @@ export const api = {
         return result;
     },
 
+    async deleteVlan(name: string) {
+        const result = await apiRequest(`/vlans?name=${encodeURIComponent(name)}`, {
+            method: 'DELETE',
+        });
+        await this.reloadConfig();
+        return result;
+    },
+
+    async deleteBond(name: string) {
+        const result = await apiRequest(`/bonds?name=${encodeURIComponent(name)}`, {
+            method: 'DELETE',
+        });
+        await this.reloadConfig();
+        return result;
+    },
+
     // ========================================
     // Config Updates
     // ========================================
@@ -582,6 +620,15 @@ export const api = {
         const result = await apiRequest('/config/zones', {
             method: 'POST',
             body: JSON.stringify(zones),
+        });
+        await this.reloadConfig();
+        return result;
+    },
+
+    async updateSettings(settings: any) {
+        const result = await apiRequest('/config/settings', {
+            method: 'POST',
+            body: JSON.stringify(settings),
         });
         await this.reloadConfig();
         return result;
@@ -621,6 +668,34 @@ export const api = {
         });
         await this.reloadConfig();
         return result;
+    },
+
+    async importVPNConfig(input: File | string) {
+        if (input instanceof File) {
+            const auth = get(authStatus);
+            const formData = new FormData();
+            formData.append('file', input);
+
+            const response = await fetch(`${API_BASE}/vpn/import`, {
+                method: 'POST',
+                headers: {
+                    ...(auth?.csrf_token ? { 'X-CSRF-Token': auth.csrf_token } : {}),
+                },
+                body: formData
+            });
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(text || `HTTP ${response.status}`);
+            }
+            return response.json();
+        } else {
+            // String content
+            return apiRequest('/vpn/import', {
+                method: 'POST',
+                body: JSON.stringify({ config: input })
+            });
+        }
     },
 
     async updateMarkRules(rules: any) {
@@ -675,11 +750,189 @@ export const api = {
         return apiRequest('/system/safe-mode', { method: 'DELETE' });
     },
 
-    async updateSettings(settings: any) {
-        return apiRequest('/config/settings', {
+
+
+    async getSystemStats() {
+        return apiRequest('/system/stats');
+    },
+
+    async getSystemRoutes() {
+        return apiRequest('/system/routes');
+    },
+
+    async getTraffic() {
+        return apiRequest('/traffic');
+    },
+
+    // ========================================
+    // Flows (Learning Firewall)
+    // ========================================
+
+    async getFlows(state?: string, limit = 50, offset = 0) {
+        const params = new URLSearchParams();
+        if (state) params.set('state', state);
+        params.set('limit', String(limit));
+        params.set('offset', String(offset));
+        return apiRequest(`/flows?${params}`);
+    },
+
+    async approveFlow(id: number) {
+        return apiRequest('/flows/approve', {
             method: 'POST',
-            body: JSON.stringify(settings),
+            body: JSON.stringify({ id }),
         });
+    },
+
+    async denyFlow(id: number) {
+        return apiRequest('/flows/deny', {
+            method: 'POST',
+            body: JSON.stringify({ id }),
+        });
+    },
+
+    async deleteFlow(id: number) {
+        return apiRequest(`/flows?id=${id}`, { method: 'DELETE' });
+    },
+
+    // ========================================
+    // Scheduler
+    // ========================================
+
+    async getSchedulerStatus() {
+        return apiRequest('/scheduler/status');
+    },
+
+    async runSchedulerTask(taskName: string) {
+        return apiRequest('/scheduler/run', {
+            method: 'POST',
+            body: JSON.stringify({ task: taskName }),
+        });
+    },
+
+    // ========================================
+    // Audit Log
+    // ========================================
+
+    async getAuditLog(limit = 100, offset = 0) {
+        return apiRequest(`/audit?limit=${limit}&offset=${offset}`);
+    },
+
+    // ========================================
+    // Uplinks (Multi-WAN)
+    // ========================================
+
+    async getUplinkGroups() {
+        return apiRequest('/uplinks/groups');
+    },
+
+    async switchUplink(groupName: string, uplinkName: string) {
+        return apiRequest('/uplinks/switch', {
+            method: 'POST',
+            body: JSON.stringify({ group_name: groupName, uplink_name: uplinkName }),
+        });
+    },
+
+    async toggleUplink(groupName: string, uplinkName: string, enabled: boolean) {
+        return apiRequest('/uplinks/toggle', {
+            method: 'POST',
+            body: JSON.stringify({ group_name: groupName, uplink_name: uplinkName, enabled }),
+        });
+    },
+
+    async testUplink(groupName: string, uplinkName: string) {
+        return apiRequest('/uplinks/test', {
+            method: 'POST',
+            body: JSON.stringify({ group_name: groupName, uplink_name: uplinkName }),
+        });
+    },
+
+    // ========================================
+    // Identity & Groups
+    // ========================================
+
+    async getIdentities() {
+        const data = await apiRequest('/identities');
+        identities.set(data);
+        return data;
+    },
+
+    async getGroups() {
+        const data = await apiRequest('/groups');
+        groups.set(data);
+        return data;
+    },
+
+    async updateIdentity(identity: any) {
+        const result = await apiRequest('/identities', {
+            method: 'POST',
+            body: JSON.stringify(identity),
+        });
+        await this.getIdentities();
+        return result;
+    },
+
+    async linkMAC(mac: string, targetId: string) {
+        const result = await apiRequest('/identities/link', {
+            method: 'POST',
+            body: JSON.stringify({ mac, target_id: targetId }),
+        });
+        await this.getIdentities();
+        return result;
+    },
+
+    async unlinkMAC(mac: string) {
+        const result = await apiRequest('/identities/unlink', {
+            method: 'POST',
+            body: JSON.stringify({ mac }),
+        });
+        await this.getIdentities();
+        return result;
+    },
+
+    async createGroup(group: any) {
+        const result = await apiRequest('/groups', {
+            method: 'POST',
+            body: JSON.stringify(group),
+        });
+        await this.getGroups();
+        return result;
+    },
+
+    async updateGroup(group: any) {
+        // Create serves as update too
+        return this.createGroup(group);
+    },
+
+    async deleteGroup(id: string) {
+        const result = await apiRequest(`/groups/${id}`, {
+            method: 'DELETE',
+        });
+        await this.getGroups();
+        return result;
+    },
+
+
+    // ========================================
+    // QoS (Quality of Service)
+    // ========================================
+
+    async getQoSPolicies() {
+        return apiRequest('/config/qos');
+    },
+
+    async updateQoSPolicies(policies: any[]) {
+        return apiRequest('/config/qos', {
+            method: 'POST',
+            body: JSON.stringify({ qos_policies: policies }),
+        });
+    },
+
+    // ========================================
+    // WireGuard
+    // ========================================
+
+    async generateWireGuardKey(): Promise<{ private_key: string; public_key: string }> {
+        return apiRequest('/wireguard/generate-key', { method: 'POST' });
     },
 
     // ========================================
@@ -776,6 +1029,117 @@ export const api = {
     async getTopology() {
         return apiRequest('/topology');
     },
+
+    // ========================================
+    // Debug Tools
+    // ========================================
+
+    async simulatePacket(params: {
+        src_ip: string;
+        dst_ip: string;
+        dst_port?: number;
+        protocol?: string;
+        src_zone?: string;
+        dst_zone?: string;
+    }) {
+        return apiRequest('/debug/simulate-packet', {
+            method: 'POST',
+            body: JSON.stringify(params),
+        });
+    },
+
+    async startCapture(params: {
+        interface: string;
+        filter: string;
+        duration?: number;
+        count?: number;
+    }) {
+        return apiRequest('/debug/capture', {
+            method: 'POST',
+            body: JSON.stringify(params),
+        });
+    },
+
+    async stopCapture() {
+        return apiRequest('/debug/capture', { method: 'DELETE' });
+    },
+
+    async getCaptureStatus() {
+        return apiRequest('/debug/capture/status');
+    },
+
+    async getLogs(params: { source?: string; level?: string; search?: string; limit?: number }) {
+        const query = new URLSearchParams();
+        if (params.source) query.set('source', params.source);
+        if (params.level) query.set('level', params.level);
+        if (params.search) query.set('search', params.search);
+        if (params.limit) query.set('limit', params.limit.toString());
+        return apiRequest(`/logs?${query.toString()}`);
+    },
+
+    async getAnalyticsBandwidth(params: { mac?: string; from?: number; to?: number }) {
+        const query = new URLSearchParams();
+        if (params.mac) query.set('mac', params.mac);
+        if (params.from) query.set('from', params.from.toString());
+        if (params.to) query.set('to', params.to.toString());
+        return apiRequest(`/analytics/bandwidth?${query.toString()}`);
+    },
+
+    async getAnalyticsTopTalkers(params: { from?: number; to?: number; limit?: number }) {
+        const query = new URLSearchParams();
+        if (params.from) query.set('from', params.from.toString());
+        if (params.to) query.set('to', params.to.toString());
+        if (params.limit) query.set('limit', params.limit.toString());
+        return apiRequest(`/analytics/top-talkers?${query.toString()}`);
+    },
+
+    async getAnalyticsFlows(params: { mac?: string; from?: number; to?: number; limit?: number; offset?: number }) {
+        const query = new URLSearchParams();
+        if (params.mac) query.set('mac', params.mac);
+        if (params.from) query.set('from', params.from.toString());
+        if (params.to) query.set('to', params.to.toString());
+        if (params.limit) query.set('limit', params.limit.toString());
+        if (params.offset) query.set('offset', params.offset.toString());
+        return apiRequest(`/analytics/flows?${query.toString()}`);
+    },
+
+    async getAlertHistory(limit?: number) {
+        const query = new URLSearchParams();
+        if (limit) query.set('limit', limit.toString());
+        return apiRequest(`/alerts/history?${query.toString()}`);
+    },
+
+    // ========================================
+    // DNS
+    // ========================================
+
+    async getDNSQueryHistory(limit = 100, offset = 0, search = '') {
+        const query = new URLSearchParams();
+        query.set('limit', limit.toString());
+        query.set('offset', offset.toString());
+        if (search) query.set('search', search);
+
+        return apiRequest(`/dns/queries?${query.toString()}`);
+    },
+
+    async getDNSStats(from?: Date, to?: Date) {
+        const query = new URLSearchParams();
+        if (from) query.set('from', from.toISOString());
+        if (to) query.set('to', to.toISOString());
+
+        return apiRequest(`/dns/stats?${query.toString()}`);
+    },
+
+    async getAlertRules() {
+        return apiRequest('/alerts/rules');
+    },
+
+    async updateAlertRule(rule: any) {
+        return apiRequest('/alerts/rules', {
+            method: 'POST',
+            body: JSON.stringify(rule)
+        });
+    },
 };
 
 // ============================================================================
@@ -784,6 +1148,7 @@ export const api = {
 
 export const mainNav = [
     { id: 'dashboard', label: 'Dashboard', icon: 'Activity' },
+    { id: 'analytics', label: 'Analytics', icon: 'LineChart' },
     { id: 'network', label: 'Network', icon: 'Share2' },
     { id: 'console', label: 'Console', icon: 'Settings' },
 ];
@@ -807,6 +1172,7 @@ export const consoleModules = [
 
     // System
     { id: 'logs', label: 'Logs', category: 'System', icon: 'ScrollText' },
+    { id: 'alerts', label: 'Alerts', category: 'System', icon: 'Bell' },
     { id: 'scanner', label: 'Scanner', category: 'System', icon: 'Search' },
     { id: 'users', label: 'Users', category: 'System', icon: 'Users' },
     { id: 'settings', label: 'Settings', category: 'System', icon: 'Slider' },

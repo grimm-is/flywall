@@ -16,7 +16,7 @@ if ! command -v sqlite3 >/dev/null 2>&1; then
     exit 0
 fi
 
-CONFIG_FILE=$(mktemp /tmp/dhcp-lifecycle-config.hcl.XXXXXX)
+CONFIG_FILE=$(mktemp_compatible "dhcp-lifecycle.hcl")
 
 # Use very short lease time for testing (15 seconds)
 cat > "$CONFIG_FILE" << 'EOF'
@@ -124,10 +124,11 @@ fi
 
 # Test 3: Wait for lease to expire
 diag "=== Test 3: Wait for lease expiration (Polling) ==="
-# Poll for lease removal/expiration (max 25s)
+# Poll for lease removal/expiration (max 40s)
 LEASE_GONE=0
-for i in $(seq 1 250); do
+for i in $(seq 1 400); do
     LEASE_COUNT_CHECK=$(sqlite3 "$STATE_DIR/state.db" "SELECT COUNT(*) FROM entries WHERE bucket = 'dhcp_leases' AND value LIKE '%\"ip\":\"$LEASE1_IP\"%'" 2>/dev/null || echo "0")
+    echo "DEBUG: Loop $i Count $LEASE_COUNT_CHECK" >> /tmp/dhcp_debug.log
     if [ "$LEASE_COUNT_CHECK" -eq 0 ]; then
         LEASE_GONE=1
         break
@@ -139,6 +140,8 @@ if [ "$LEASE_GONE" -eq 1 ]; then
     ok 0 "Expired lease removed from database"
 else
     ok 1 "Lease not removed after timeout"
+    echo "# DEBUG: Catting Control Plane Log:"
+    cat "$CTL_LOG"
 fi
 ip addr del 192.168.1.1/24 dev lo 2>/dev/null || true
 dilated_sleep 1

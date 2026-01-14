@@ -1,27 +1,32 @@
 <script lang="ts">
     /**
      * AddressPill - Smart badge for displaying resolved addresses with popovers
-     * Handles alias resolution display: device names, IPSets, zones, etc.
+     * Dashboard-native styling using CSS variables
      */
-    export let resolved: {
+    interface ResolvedAddress {
         display_name: string;
         type: string;
         description?: string;
         count: number;
         is_truncated?: boolean;
         preview?: string[];
-    } | null = null;
+    }
 
-    export let raw: string = "";
-    export let size: "sm" | "md" = "sm";
+    interface Props {
+        resolved?: ResolvedAddress | null;
+        raw?: string;
+        size?: "sm" | "md";
+    }
 
-    let showTooltip = false;
+    let { resolved = null, raw = "", size = "sm" }: Props = $props();
+
+    let showTooltip = $state(false);
     let tooltipTimeout: ReturnType<typeof setTimeout> | null = null;
 
     function handleMouseEnter() {
         tooltipTimeout = setTimeout(() => {
             showTooltip = true;
-        }, 300); // Delay to avoid flickering
+        }, 300);
     }
 
     function handleMouseLeave() {
@@ -32,75 +37,45 @@
         showTooltip = false;
     }
 
-    // Color and style based on type
-    const typeStyles: Record<string, string> = {
-        device_named: "text-blue-400 bg-blue-900/40 border-blue-700",
-        device_auto: "text-cyan-400 bg-cyan-900/40 border-cyan-700",
-        device_vendor: "text-gray-400 bg-gray-800/60 border-gray-600",
-        alias: "text-purple-400 bg-purple-900/40 border-purple-700",
-        ipset: "text-purple-400 bg-purple-900/40 border-purple-700",
-        zone: "text-amber-400 bg-amber-900/40 border-amber-700",
-        cidr: "text-green-400 bg-green-900/40 border-green-700",
-        service: "text-pink-400 bg-pink-900/40 border-pink-700",
-        port: "text-pink-400 bg-pink-900/40 border-pink-700",
-        host: "text-gray-300 bg-gray-800/60 border-gray-600",
-        ip: "text-gray-300 bg-gray-800/60 border-gray-600",
-        any: "text-gray-500 bg-gray-900/40 border-gray-700 italic",
-        raw: "text-gray-300 bg-gray-800/60 border-gray-600",
-    };
-
-    $: displayName = resolved?.display_name || raw || "Any";
-    $: pillType = resolved?.type || "raw";
-    $: pillStyle = typeStyles[pillType] || typeStyles.raw;
-    $: sizeClass = size === "sm" ? "text-xs px-2 py-0.5" : "text-sm px-3 py-1";
+    let displayName = $derived(resolved?.display_name || raw || "Any");
+    let pillType = $derived(resolved?.type || "raw");
 </script>
 
 <div
-    class="relative inline-block"
-    on:mouseenter={handleMouseEnter}
-    on:mouseleave={handleMouseLeave}
+    class="pill-container"
+    onmouseenter={handleMouseEnter}
+    onmouseleave={handleMouseLeave}
     role="button"
     tabindex="0"
 >
     <!-- Pill Badge -->
-    <div
-        class="rounded border cursor-help transition-all hover:brightness-110 {pillStyle} {sizeClass}"
-    >
-        <span class="font-medium">{displayName}</span>
+    <div class="pill {pillType} {size}">
+        <span class="pill-name">{displayName}</span>
         {#if resolved && resolved.count > 1}
-            <span class="ml-1 opacity-60">({resolved.count})</span>
+            <span class="pill-count">({resolved.count})</span>
         {/if}
     </div>
 
     <!-- Tooltip Popover -->
     {#if showTooltip && resolved && resolved.type !== "any"}
-        <div
-            class="absolute z-50 bottom-full left-0 mb-2 w-64 bg-gray-800 border border-gray-700 shadow-xl rounded-lg p-3 text-xs pointer-events-none"
-            role="tooltip"
-        >
-            <div class="font-bold text-white mb-1">{resolved.display_name}</div>
-            <div class="text-gray-400 mb-2 flex items-center gap-2">
-                <span
-                    class="px-1.5 py-0.5 rounded bg-gray-700 text-gray-300 uppercase text-[10px] tracking-wide"
+        <div class="tooltip" role="tooltip">
+            <div class="tooltip-title">{resolved.display_name}</div>
+            <div class="tooltip-meta">
+                <span class="tooltip-type"
+                    >{resolved.type.replace("_", " ")}</span
                 >
-                    {resolved.type.replace("_", " ")}
-                </span>
                 {#if resolved.description}
-                    <span class="truncate">{resolved.description}</span>
+                    <span class="tooltip-desc">{resolved.description}</span>
                 {/if}
             </div>
 
             {#if resolved.preview && resolved.preview.length > 0}
-                <div class="space-y-1 max-h-32 overflow-y-auto">
+                <div class="tooltip-preview">
                     {#each resolved.preview as item}
-                        <div
-                            class="font-mono text-gray-300 bg-gray-900/60 px-1.5 py-0.5 rounded text-[11px]"
-                        >
-                            {item}
-                        </div>
+                        <div class="preview-item">{item}</div>
                     {/each}
                     {#if resolved.is_truncated}
-                        <div class="text-gray-500 italic">
+                        <div class="preview-more">
                             ...and {resolved.count -
                                 (resolved.preview?.length || 0)} more
                         </div>
@@ -110,3 +85,166 @@
         </div>
     {/if}
 </div>
+
+<style>
+    .pill-container {
+        position: relative;
+        display: inline-block;
+    }
+
+    .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-1);
+        border-radius: var(--radius-sm);
+        border: 1px solid;
+        cursor: help;
+        transition: filter var(--transition-fast);
+    }
+
+    .pill:hover {
+        filter: brightness(1.1);
+    }
+
+    /* Sizes */
+    .pill.sm {
+        font-size: var(--text-xs);
+        padding: 2px var(--space-2);
+    }
+
+    .pill.md {
+        font-size: var(--text-sm);
+        padding: var(--space-1) var(--space-3);
+    }
+
+    .pill-name {
+        font-weight: 500;
+    }
+
+    .pill-count {
+        opacity: 0.6;
+    }
+
+    /* Type-based colors using CSS variables */
+    .pill.device_named {
+        color: var(--color-primary);
+        background: rgba(59, 130, 246, 0.15);
+        border-color: rgba(59, 130, 246, 0.4);
+    }
+
+    .pill.device_auto {
+        color: #06b6d4;
+        background: rgba(6, 182, 212, 0.15);
+        border-color: rgba(6, 182, 212, 0.4);
+    }
+
+    .pill.device_vendor,
+    .pill.host,
+    .pill.ip,
+    .pill.raw {
+        color: var(--dashboard-text);
+        background: var(--dashboard-input);
+        border-color: var(--dashboard-border);
+    }
+
+    .pill.alias,
+    .pill.ipset {
+        color: #a855f7;
+        background: rgba(168, 85, 247, 0.15);
+        border-color: rgba(168, 85, 247, 0.4);
+    }
+
+    .pill.zone {
+        color: var(--color-warning);
+        background: rgba(245, 158, 11, 0.15);
+        border-color: rgba(245, 158, 11, 0.4);
+    }
+
+    .pill.cidr {
+        color: var(--color-success);
+        background: rgba(34, 197, 94, 0.15);
+        border-color: rgba(34, 197, 94, 0.4);
+    }
+
+    .pill.service,
+    .pill.port {
+        color: #ec4899;
+        background: rgba(236, 72, 153, 0.15);
+        border-color: rgba(236, 72, 153, 0.4);
+    }
+
+    .pill.any {
+        color: var(--dashboard-text-muted);
+        background: var(--dashboard-canvas);
+        border-color: var(--dashboard-border);
+        font-style: italic;
+    }
+
+    /* Tooltip */
+    .tooltip {
+        position: absolute;
+        z-index: var(--z-dropdown);
+        bottom: 100%;
+        left: 0;
+        margin-bottom: var(--space-2);
+        width: 16rem;
+        background: var(--dashboard-card);
+        border: 1px solid var(--dashboard-border);
+        border-radius: var(--radius-lg);
+        padding: var(--space-3);
+        box-shadow: var(--shadow-lg);
+        font-size: var(--text-xs);
+        pointer-events: none;
+    }
+
+    .tooltip-title {
+        font-weight: 700;
+        color: var(--dashboard-text);
+        margin-bottom: var(--space-1);
+    }
+
+    .tooltip-meta {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        color: var(--dashboard-text-muted);
+        margin-bottom: var(--space-2);
+    }
+
+    .tooltip-type {
+        padding: 2px var(--space-1);
+        background: var(--dashboard-input);
+        border-radius: var(--radius-sm);
+        text-transform: uppercase;
+        font-size: 10px;
+        letter-spacing: 0.05em;
+    }
+
+    .tooltip-desc {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .tooltip-preview {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-1);
+        max-height: 8rem;
+        overflow-y: auto;
+    }
+
+    .preview-item {
+        font-family: var(--font-mono);
+        padding: 2px var(--space-1);
+        background: var(--dashboard-canvas);
+        border-radius: var(--radius-sm);
+        font-size: 11px;
+        color: var(--dashboard-text);
+    }
+
+    .preview-more {
+        color: var(--dashboard-text-muted);
+        font-style: italic;
+    }
+</style>

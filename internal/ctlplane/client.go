@@ -5,14 +5,19 @@ import (
 	"fmt"
 	"net/rpc"
 	"strings"
+	"time"
 
 	"sync"
 
+	"grimm.is/flywall/internal/alerting"
+	"grimm.is/flywall/internal/analytics"
 	"grimm.is/flywall/internal/config"
-	"grimm.is/flywall/internal/device"
 	"grimm.is/flywall/internal/firewall"
+	"grimm.is/flywall/internal/identity"
 	"grimm.is/flywall/internal/learning"
 	"grimm.is/flywall/internal/learning/flowdb"
+	"grimm.is/flywall/internal/metrics"
+	"grimm.is/flywall/internal/services/dns/querylog"
 	"grimm.is/flywall/internal/services/scanner"
 )
 
@@ -124,6 +129,15 @@ func (c *Client) GetStatus() (*Status, error) {
 		return nil, err
 	}
 	return &reply.Status, nil
+}
+
+// GetReplicationStatus returns the current replication status
+func (c *Client) GetReplicationStatus() (*GetReplicationStatusReply, error) {
+	var reply GetReplicationStatusReply
+	if err := c.call("Server.GetReplicationStatus", &Empty{}, &reply); err != nil {
+		return nil, err
+	}
+	return &reply, nil
 }
 
 // GetConfig returns the current configuration
@@ -577,6 +591,48 @@ func (c *Client) GetSystemStats() (*SystemStats, error) {
 	return &reply.Stats, nil
 }
 
+// GetPolicyStats returns firewall rule statistics
+func (c *Client) GetPolicyStats() (map[string]*metrics.PolicyStats, error) {
+	var reply GetPolicyStatsReply
+	if err := c.call("Server.GetPolicyStats", &Empty{}, &reply); err != nil {
+		return nil, err
+	}
+	return reply.Stats, nil
+}
+
+// GetDNSQueryHistory returns recent DNS query logs
+func (c *Client) GetDNSQueryHistory(limit, offset int, search string) ([]querylog.Entry, error) {
+	args := GetDNSQueryHistoryArgs{
+		Limit:  limit,
+		Offset: offset,
+		Search: search,
+	}
+	resp := GetDNSQueryHistoryReply{}
+	if err := c.call("Server.GetDNSQueryHistory", &args, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+	return resp.Entries, nil
+}
+
+// GetDNSStats returns aggregated DNS statistics
+func (c *Client) GetDNSStats(from, to time.Time) (*querylog.Stats, error) {
+	args := GetDNSStatsArgs{
+		From: from,
+		To:   to,
+	}
+	resp := GetDNSStatsReply{}
+	if err := c.call("Server.GetDNSStats", &args, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
+	return resp.Stats, nil
+}
+
 // GetRoutes returns the current kernel routing table
 func (c *Client) GetRoutes() ([]Route, error) {
 	var reply GetRoutesReply
@@ -729,6 +785,20 @@ func (c *Client) ToggleUplink(groupName, uplinkName string, enabled bool) error 
 	return nil
 }
 
+// TestUplink triggers a manual connectivity test for an uplink
+func (c *Client) TestUplink(groupName, uplinkName string) (*UplinkStatus, error) {
+	args := &TestUplinkArgs{
+		GroupName:  groupName,
+		UplinkName: uplinkName,
+	}
+	var reply TestUplinkReply
+	err := c.call("Server.TestUplink", args, &reply)
+	if err != nil {
+		return nil, err
+	}
+	return &reply.UplinkStatus, nil
+}
+
 // --- Flow Management ---
 
 // GetFlows returns flows matching criteria
@@ -789,6 +859,44 @@ func (c *Client) DeleteFlow(id int64) error {
 		return fmt.Errorf("%s", reply.Error)
 	}
 	return nil
+}
+
+// --- Analytics ---
+
+// GetAnalyticsBandwidth returns bandwidth usage time series
+func (c *Client) GetAnalyticsBandwidth(args *GetAnalyticsBandwidthArgs) ([]BandwidthPoint, error) {
+	var reply GetAnalyticsBandwidthReply
+	if err := c.call("Server.GetAnalyticsBandwidth", args, &reply); err != nil {
+		return nil, err
+	}
+	if reply.Error != "" {
+		return nil, errors.New(reply.Error)
+	}
+	return reply.Points, nil
+}
+
+// GetAnalyticsTopTalkers returns top devices by traffic volume
+func (c *Client) GetAnalyticsTopTalkers(args *GetAnalyticsTopTalkersArgs) ([]analytics.Summary, error) {
+	var reply GetAnalyticsTopTalkersReply
+	if err := c.call("Server.GetAnalyticsTopTalkers", args, &reply); err != nil {
+		return nil, err
+	}
+	if reply.Error != "" {
+		return nil, errors.New(reply.Error)
+	}
+	return reply.Summaries, nil
+}
+
+// GetAnalyticsFlows returns historical flow details
+func (c *Client) GetAnalyticsFlows(args *GetAnalyticsFlowsArgs) ([]analytics.Summary, error) {
+	var reply GetAnalyticsFlowsReply
+	if err := c.call("Server.GetAnalyticsFlows", args, &reply); err != nil {
+		return nil, err
+	}
+	if reply.Error != "" {
+		return nil, errors.New(reply.Error)
+	}
+	return reply.Summaries, nil
 }
 
 // --- Network Scanner ---
@@ -866,7 +974,7 @@ func (c *Client) WakeOnLAN(mac, iface string) error {
 // --- Device Identity Management ---
 
 // UpdateDeviceIdentity updates a device identity
-func (c *Client) UpdateDeviceIdentity(args *UpdateDeviceIdentityArgs) (*device.DeviceIdentity, error) {
+func (c *Client) UpdateDeviceIdentity(args *UpdateDeviceIdentityArgs) (*identity.DeviceIdentity, error) {
 	var reply UpdateDeviceIdentityReply
 	if err := c.call("Server.UpdateDeviceIdentity", args, &reply); err != nil {
 		return nil, err
@@ -877,22 +985,40 @@ func (c *Client) UpdateDeviceIdentity(args *UpdateDeviceIdentityArgs) (*device.D
 	return reply.Identity, nil
 }
 
-// LinkMAC links a MAC address to a device identity
-func (c *Client) LinkMAC(mac, identityID string) error {
-	args := &LinkMACArgs{MAC: mac, IdentityID: identityID}
-	var reply Empty
-	if err := c.call("Server.LinkMAC", args, &reply); err != nil {
+// GetDeviceGroups returns all device groups
+func (c *Client) GetDeviceGroups() ([]identity.DeviceGroup, error) {
+	var reply GetDeviceGroupsReply
+	if err := c.call("Server.GetDeviceGroups", &GetDeviceGroupsArgs{}, &reply); err != nil {
+		return nil, err
+	}
+	if reply.Error != "" {
+		return nil, errors.New(reply.Error)
+	}
+	return reply.Groups, nil
+}
+
+// UpdateDeviceGroup updates or creates a device group
+func (c *Client) UpdateDeviceGroup(group identity.DeviceGroup) error {
+	args := &UpdateDeviceGroupArgs{Group: group}
+	var reply UpdateDeviceGroupReply
+	if err := c.call("Server.UpdateDeviceGroup", args, &reply); err != nil {
 		return err
+	}
+	if reply.Error != "" {
+		return errors.New(reply.Error)
 	}
 	return nil
 }
 
-// UnlinkMAC removes a MAC address link
-func (c *Client) UnlinkMAC(mac string) error {
-	args := &UnlinkMACArgs{MAC: mac}
-	var reply Empty
-	if err := c.call("Server.UnlinkMAC", args, &reply); err != nil {
+// DeleteDeviceGroup deletes a device group
+func (c *Client) DeleteDeviceGroup(id string) error {
+	args := &DeleteDeviceGroupArgs{ID: id}
+	var reply DeleteDeviceGroupReply
+	if err := c.call("Server.DeleteDeviceGroup", args, &reply); err != nil {
 		return err
+	}
+	if reply.Error != "" {
+		return errors.New(reply.Error)
 	}
 	return nil
 }
@@ -931,4 +1057,47 @@ func (c *Client) EnterSafeMode() error {
 // ExitSafeMode deactivates safe mode and restores normal operation.
 func (c *Client) ExitSafeMode() error {
 	return c.call("Server.ExitSafeMode", &Empty{}, &Empty{})
+}
+
+// --- Alerting ---
+
+// GetAlertHistory returns historical alert events
+func (c *Client) GetAlertHistory(limit int) ([]alerting.AlertEvent, error) {
+	args := &GetAlertHistoryArgs{Limit: limit}
+	var reply GetAlertHistoryReply
+	err := c.call("Server.GetAlertHistory", args, &reply)
+	if err != nil {
+		return nil, err
+	}
+	if reply.Error != "" {
+		return nil, fmt.Errorf("%s", reply.Error)
+	}
+	return reply.Events, nil
+}
+
+// GetAlertRules returns currently configured alert rules
+func (c *Client) GetAlertRules() ([]alerting.AlertRule, error) {
+	var reply GetAlertRulesReply
+	err := c.call("Server.GetAlertRules", &GetAlertRulesArgs{}, &reply)
+	if err != nil {
+		return nil, err
+	}
+	if reply.Error != "" {
+		return nil, fmt.Errorf("%s", reply.Error)
+	}
+	return reply.Rules, nil
+}
+
+// UpdateAlertRule updates or creates an alert rule
+func (c *Client) UpdateAlertRule(rule alerting.AlertRule) error {
+	args := &UpdateAlertRuleArgs{Rule: rule}
+	var reply UpdateAlertRuleReply
+	err := c.call("Server.UpdateAlertRule", args, &reply)
+	if err != nil {
+		return err
+	}
+	if reply.Error != "" {
+		return fmt.Errorf("%s", reply.Error)
+	}
+	return nil
 }

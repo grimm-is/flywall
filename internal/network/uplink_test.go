@@ -128,8 +128,15 @@ func TestUplinkGroup_SwitchTo(t *testing.T) {
 
 	u2 := &Uplink{Name: "u2", Mark: 0x200, Tier: 1}
 
-	// Expect nft command for updateNewConnectionMark
-	// "nft add rule inet firewall mark_prerouting ip saddr ... comment ..."
+	// Expect delete of old mark rule (0x100)
+	mockExec.On("RunCommand", "nft", "delete", "rule", "inet", "flywall", "mark_prerouting",
+		"ip", "saddr", "192.168.1.0/24",
+		"ct", "state", "new",
+		"meta", "mark", "set", "0x100",
+		"ct", "mark", "set", "meta", "mark",
+		"comment", "\"uplink_switch-group_192.168.1.0_24\"").Return("", nil).Once()
+
+	// Expect add of new mark rule (0x200)
 	mockExec.On("RunCommand", "nft", "add", "rule", "inet", "flywall", "mark_prerouting",
 		"ip", "saddr", "192.168.1.0/24",
 		"ct", "state", "new",

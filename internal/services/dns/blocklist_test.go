@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestBlocklistDownload_HostsFormat tests downloading and parsing hosts-file format
@@ -109,6 +110,11 @@ func TestBlocklistDownload_FallbackToCache(t *testing.T) {
 	tempDir := t.TempDir()
 	cachePath := filepath.Join(tempDir, "blocklist_cache")
 	url := "http://definitely-not-a-real-server.invalid/blocklist.txt"
+
+	// Override timeout for this test to fail fast
+	origTimeout := DefaultBlocklistTimeout
+	DefaultBlocklistTimeout = 100 * time.Millisecond
+	defer func() { DefaultBlocklistTimeout = origTimeout }()
 
 	// Pre-populate cache
 	domains := []string{"cached1.com", "cached2.com"}

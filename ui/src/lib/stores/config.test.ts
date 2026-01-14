@@ -8,7 +8,7 @@ import { get } from 'svelte/store';
 
 // Mock fetch
 const mockFetch = vi.fn();
-(global as any).fetch = mockFetch;
+(globalThis as any).fetch = mockFetch;
 
 import { config, api } from '$lib/stores/app';
 

@@ -52,8 +52,10 @@
   onMount(async () => {
     try {
       const res = await api.getInterfaces();
+      // Handle both array response and object with .interfaces property
+      const rawData = Array.isArray(res) ? res : res.interfaces || [];
       // Normalize API response (snake_case) to Component model (PascalCase)
-      interfaceStatus = (res.interfaces || []).map((s: any) => ({
+      interfaceStatus = rawData.map((s: any) => ({
         ...s,
         Name: s.name,
         State: s.state,
@@ -68,9 +70,13 @@
   const zones = $derived($config?.zones || []);
   const rawInterfaces = $derived($config?.interfaces || []);
 
-  // Merge static config with runtime status
-  const interfaces = $derived(
-    rawInterfaces.map((iface: any) => {
+  // Merge static config with runtime status, OR use runtime status directly if no config
+  const interfaces = $derived.by(() => {
+    if (rawInterfaces.length === 0) {
+      // No config interfaces - show runtime status directly (simulator mode)
+      return interfaceStatus;
+    }
+    return rawInterfaces.map((iface: any) => {
       const status = interfaceStatus.find((s) => s.Name === iface.Name);
       return {
         ...iface,
@@ -78,8 +84,8 @@
         IPv4: status?.IPv4Addrs?.length ? status.IPv4Addrs : iface.IPv4,
         State: status?.State || iface.State,
       };
-    }),
-  );
+    });
+  });
 
   // All hardware interfaces for bond creation (with availability status)
   const hardwareInterfaces = $derived(
@@ -178,8 +184,8 @@
           : undefined,
         dhcp: editDhcp,
         mtu: editMtu ? parseInt(editMtu) : undefined,
-        // Note: gateway and disabled are not supported by UpdateInterfaceArgs
-        // They require separate API endpoints or config updates
+        disabled: !!editDisabled,
+        // Note: gateway requires separate API endpoints or config updates
       });
       showEditModal = false;
       // Refresh status
@@ -206,13 +212,14 @@
     loading = true;
     try {
       await api.createVlan({
-        parent: vlanParent,
+        parent_interface: vlanParent,
         vlan_id: parseInt(vlanId),
         zone: vlanZone,
-        ipv4: vlanIp || undefined,
+        ipv4: vlanIp ? [vlanIp] : [],
       });
       showVlanModal = false;
-    } catch (e) {
+    } catch (e: any) {
+      alert(`Failed to create VLAN: ${e.message || e}`);
       console.error("Failed to create VLAN:", e);
     } finally {
       loading = false;
@@ -244,11 +251,49 @@
         name: bondName,
         zone: bondZone,
         mode: bondMode,
-        members: bondMembers,
+        interfaces: bondMembers,
       });
       showBondModal = false;
-    } catch (e) {
+    } catch (e: any) {
+      alert(`Failed to create Bond: ${e.message || e}`);
       console.error("Failed to create Bond:", e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function deleteInterface(iface: any) {
+    const type = getInterfaceType(iface);
+    const name = iface.Name;
+
+    if (
+      !confirm(`Delete ${type} interface "${name}"? This cannot be undone.`)
+    ) {
+      return;
+    }
+
+    loading = true;
+    try {
+      if (type === "vlan") {
+        await api.deleteVlan(name);
+      } else if (type === "bond") {
+        await api.deleteBond(name);
+      } else {
+        alert("Only VLAN and Bond interfaces can be deleted.");
+        return;
+      }
+      // Refresh interface status
+      const res = await api.getInterfaces();
+      interfaceStatus = (res.interfaces || []).map((s: any) => ({
+        ...s,
+        Name: s.name,
+        State: s.state,
+        IPv4Addrs: s.ipv4_addrs,
+        IPv6Addrs: s.ipv6_addrs,
+      }));
+    } catch (e: any) {
+      alert(`Failed to delete interface: ${e.message || e}`);
+      console.error("Failed to delete interface:", e);
     } finally {
       loading = false;
     }
@@ -302,12 +347,23 @@
                 size="sm"
               />
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onclick={() => openEditInterface(iface)}
-              ><Icon name="edit" size="sm" /></Button
-            >
+            <div class="iface-actions">
+              <Button
+                variant="ghost"
+                size="sm"
+                onclick={() => openEditInterface(iface)}
+                title="Edit interface"><Icon name="edit" size="sm" /></Button
+              >
+              {#if getInterfaceType(iface) === "vlan" || getInterfaceType(iface) === "bond"}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onclick={() => deleteInterface(iface)}
+                  title="Delete interface"
+                  ><Icon name="trash" size="sm" /></Button
+                >
+              {/if}
+            </div>
           </div>
 
           {#if iface.Description}
@@ -641,6 +697,11 @@
     font-weight: 600;
     font-size: var(--text-lg);
     color: var(--color-foreground);
+  }
+
+  .iface-actions {
+    display: flex;
+    gap: var(--space-1);
   }
 
   .iface-description {

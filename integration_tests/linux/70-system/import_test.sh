@@ -113,7 +113,7 @@ start_ctl "$TEST_CONFIG"
 # API server is spawned by control plane when api.enabled = true
 # Just wait for it to be ready
 diag "Waiting for API server..."
-if ! wait_for_port "${API_PORT}" 30; then
+if ! wait_for_api_ready "${API_PORT}" 60; then
     diag "API server failed to start. CTL Log:"
     [ -f "$CTL_LOG" ] && cat "$CTL_LOG"
     fail "API server failed to start"
@@ -129,15 +129,15 @@ UPLOAD_RESP=$(curl -v -s --connect-timeout 5 --max-time 20 -H "X-API-Key: dummy"
 # Check for success
 if echo "$UPLOAD_RESP" | grep -q "CURL_ERROR"; then
     echo "Curl failed with: $UPLOAD_RESP"
-    diag "API Log:"
-    cat "$API_LOG"
+    diag "API Log (CTL Log):"
+    cat "$CTL_LOG"
     fail "Upload failed (connection error)"
 fi
 
 if echo "$UPLOAD_RESP" | grep -q "error"; then
     echo "$UPLOAD_RESP"
-    diag "API Log:"
-    cat "$API_LOG"
+    diag "API Log (CTL Log):"
+    cat "$CTL_LOG"
     fail "Upload failed (API error)"
 fi
 

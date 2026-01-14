@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock fetch
 const mockFetch = vi.fn();
-(global as any).fetch = mockFetch;
+(globalThis as any).fetch = mockFetch;
 
 import { api, config } from '$lib/stores/app';
 

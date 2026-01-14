@@ -18,9 +18,12 @@
     onchange,
   }: Props = $props();
 
-  function handleChange(e: Event) {
-    const target = e.target as HTMLInputElement;
-    checked = target.checked;
+  function handleToggle(e: Event) {
+    if (disabled) return;
+    e.preventDefault();
+    const oldVal = checked;
+    checked = !checked;
+    console.log(`[TOGGLE] handleToggle: ${label} ${oldVal} -> ${checked}`);
     onchange?.(checked);
   }
 </script>
@@ -29,10 +32,24 @@
   {#if label}
     <span class="toggle-label">{label}</span>
   {/if}
-  <label class="toggle-switch">
-    <input type="checkbox" {checked} {disabled} onchange={handleChange} />
+  <button
+    type="button"
+    class="toggle-switch"
+    role="switch"
+    aria-checked={checked}
+    aria-label={label}
+    {disabled}
+    onclick={handleToggle}
+  >
+    <input
+      type="checkbox"
+      {checked}
+      {disabled}
+      tabindex="-1"
+      style="display: none"
+    />
     <span class="toggle-slider"></span>
-  </label>
+  </button>
 </div>
 
 <style>
@@ -60,12 +77,17 @@
     width: 44px;
     height: 24px;
     flex-shrink: 0;
+    border: none;
+    background: none;
+    padding: 0;
+    cursor: pointer;
+    outline: none;
   }
 
-  .toggle-switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
+  .toggle-switch:focus-visible .toggle-slider {
+    box-shadow:
+      0 0 0 2px var(--color-background),
+      0 0 0 4px var(--color-primary);
   }
 
   .toggle-slider {
@@ -93,11 +115,11 @@
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
   }
 
-  .toggle-switch input:checked + .toggle-slider {
+  .toggle-switch[aria-checked="true"] .toggle-slider {
     background-color: var(--color-success, #16a34a);
   }
 
-  .toggle-switch input:checked + .toggle-slider:before {
+  .toggle-switch[aria-checked="true"] .toggle-slider:before {
     transform: translateX(20px);
   }
 

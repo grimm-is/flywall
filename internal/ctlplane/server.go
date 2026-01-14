@@ -20,17 +20,24 @@ import (
 	"syscall"
 	"time"
 
+	"grimm.is/flywall/internal/alerting"
+	"grimm.is/flywall/internal/analytics"
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/device"
 	"grimm.is/flywall/internal/firewall"
+	"grimm.is/flywall/internal/identity"
 	"grimm.is/flywall/internal/learning"
 	"grimm.is/flywall/internal/logging"
+	"grimm.is/flywall/internal/metrics"
 	"grimm.is/flywall/internal/network"
 	"grimm.is/flywall/internal/scheduler"
+	"grimm.is/flywall/internal/sentinel"
 	"grimm.is/flywall/internal/services"
 	"grimm.is/flywall/internal/services/dhcp"
 	"grimm.is/flywall/internal/services/discovery"
+	"grimm.is/flywall/internal/services/dns/querylog"
+	"grimm.is/flywall/internal/services/ha"
 	"grimm.is/flywall/internal/services/lldp"
 	"grimm.is/flywall/internal/services/scanner"
 	"grimm.is/flywall/internal/state"
@@ -58,7 +65,9 @@ type Server struct {
 	networkSafeApply    *NetworkSafeApplyManager
 	systemManager       *SystemManager
 	serviceOrchestrator ServiceManager
-	firewallManager     *firewall.Manager // Injected firewall manager
+	metricsCollector    *metrics.Collector // Injected metrics collector
+	sentinelService     *sentinel.Service  // Injected sentinel service
+	firewallManager     *firewall.Manager  // Injected firewall manager
 	ipsetService        *firewall.IPSetService
 	learningService     *learning.Service
 	dhcpService         *dhcp.Service
@@ -69,7 +78,13 @@ type Server struct {
 	deviceManager       *device.Manager
 	scannerService      *scanner.Scanner
 	deviceCollector     *discovery.Collector
+	replicator          *state.Replicator      // Injected replicator
 	netLib              network.NetworkManager // Injected network library
+	analyticsCollector  *analytics.Collector   // Injected analytics collector
+	alertEngine         *alerting.Engine
+	queryLogStore       *querylog.Store
+	identityService     *identity.Service
+	haService           *ha.Service
 
 	// Notification hub for broadcasting to all consumers
 	notifyHub *NotificationHub
@@ -136,6 +151,16 @@ func NewServer(cfg *config.Config, configFile string, netLib network.NetworkMana
 		scannerService:      scanner.New(logging.WithComponent("scanner"), scanner.Config{Timeout: 5 * time.Second, Concurrency: 50}),
 		notifyHub:           NewNotificationHub(100),
 		scheduler:           scheduler.New(logging.WithComponent("scheduler")),
+	}
+
+	// Load HCL config for round-trip editing if file exists
+	if configFile != "" {
+		if hclCfg, err := config.LoadConfigFile(configFile); err == nil {
+			s.hclConfig = hclCfg
+			log.Printf("[CTL] HCL persistence initialized for %s", configFile)
+		} else {
+			log.Printf("[CTL] Warning: could not initialize HCL persistence: %v", err)
+		}
 	}
 
 	// Start nflog reader (runs in background)
@@ -298,6 +323,33 @@ func (s *Server) startAsyncLearning(svc *learning.Service) {
 			}
 
 			s.learningService.IngestPacket(pkt)
+
+			// Feed anomaly detection and classification
+			if s.sentinelService != nil && pkt.SrcMAC != "" {
+				class := s.sentinelService.IngestPacket(sentinel.PacketMetadata{
+					SrcMAC:     pkt.SrcMAC,
+					SrcIP:      pkt.SrcIP,
+					DstIP:      pkt.DstIP,
+					DstPort:    pkt.DstPort,
+					Protocol:   pkt.Protocol,
+					PayloadLen: entry.PayloadLen,
+				})
+
+				// Record for historical analytics
+				if s.analyticsCollector != nil {
+					s.analyticsCollector.IngestPacket(analytics.Summary{
+						BucketTime: time.Now(),
+						SrcMAC:     pkt.SrcMAC,
+						SrcIP:      pkt.SrcIP,
+						DstIP:      pkt.DstIP,
+						DstPort:    pkt.DstPort,
+						Protocol:   pkt.Protocol,
+						Bytes:      int64(entry.PayloadLen),
+						Packets:    1,
+						Class:      class,
+					})
+				}
+			}
 		}
 	}
 
@@ -348,8 +400,35 @@ func (s *Server) SetDeviceCollector(collector *discovery.Collector) {
 	s.deviceCollector = collector
 }
 
+// SetMetricsCollector injects the metrics collector
+func (s *Server) SetMetricsCollector(collector *metrics.Collector) {
+	s.metricsCollector = collector
+}
+
+// SetSentinelService injects the sentinel service
+func (s *Server) SetSentinelService(svc *sentinel.Service) {
+	s.sentinelService = svc
+}
+
+// SetAnalyticsCollector injects the analytics collector
+func (s *Server) SetAnalyticsCollector(collector *analytics.Collector) {
+	s.analyticsCollector = collector
+}
+
+func (s *Server) SetAlertEngine(e *alerting.Engine) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.alertEngine = e
+}
+
+func (s *Server) SetQueryLogStore(store *querylog.Store) {
+	s.queryLogStore = store
+}
+
 // GetNotifications returns notifications since a given ID (RPC method)
 func (s *Server) GetNotifications(args *GetNotificationsArgs, reply *GetNotificationsReply) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.notifyHub == nil {
 		reply.Notifications = []Notification{}
 		return nil
@@ -811,6 +890,12 @@ func (s *Server) GetNetworkDevices(args *Empty, reply *GetNetworkDevicesReply) e
 			DeviceType:      dev.DeviceType,
 			DeviceModel:     dev.DeviceModel,
 		}
+
+		if s.sentinelService != nil {
+			anomaly := s.sentinelService.GetAnomalyStatus(dev.MAC)
+			reply.Devices[i].AnomalyScore = anomaly.Score
+			reply.Devices[i].IsAnomalous = anomaly.IsAnomalous
+		}
 	}
 
 	// Sort devices for consistent UI
@@ -836,77 +921,242 @@ func (s *Server) GetNetworkDevices(args *Empty, reply *GetNetworkDevicesReply) e
 	return nil
 }
 
+// --- Analytics ---
+
+// GetAnalyticsBandwidth returns bandwidth usage time series
+func (s *Server) GetAnalyticsBandwidth(args *GetAnalyticsBandwidthArgs, reply *GetAnalyticsBandwidthReply) error {
+	if s.analyticsCollector == nil {
+		return errors.New("analytics collector not initialized")
+	}
+
+	points, err := s.analyticsCollector.Store().GetBandwidthUsage(args.SrcMAC, args.From, args.To)
+	if err != nil {
+		reply.Error = err.Error()
+		return nil
+	}
+
+	reply.Points = make([]BandwidthPoint, len(points))
+	for i, p := range points {
+		reply.Points[i] = BandwidthPoint{Time: p.Time, Bytes: p.Bytes}
+	}
+	return nil
+}
+
+// GetAnalyticsTopTalkers returns top devices by traffic volume
+func (s *Server) GetAnalyticsTopTalkers(args *GetAnalyticsTopTalkersArgs, reply *GetAnalyticsTopTalkersReply) error {
+	if s.analyticsCollector == nil {
+		return errors.New("analytics collector not initialized")
+	}
+
+	summaries, err := s.analyticsCollector.Store().GetTopTalkers(args.From, args.To, args.Limit)
+	if err != nil {
+		reply.Error = err.Error()
+		return nil
+	}
+
+	reply.Summaries = summaries
+	return nil
+}
+
+// GetAnalyticsFlows returns historical flow details
+func (s *Server) GetAnalyticsFlows(args *GetAnalyticsFlowsArgs, reply *GetAnalyticsFlowsReply) error {
+	if s.analyticsCollector == nil {
+		return errors.New("analytics collector not initialized")
+	}
+
+	summaries, err := s.analyticsCollector.Store().GetHistoricalFlows(args.SrcMAC, args.From, args.To, args.Limit, args.Offset)
+	if err != nil {
+		reply.Error = err.Error()
+		return nil
+	}
+
+	reply.Summaries = summaries
+	return nil
+}
+
+// --- Alerting ---
+
+func (s *Server) GetAlertHistory(args *GetAlertHistoryArgs, reply *GetAlertHistoryReply) error {
+	s.mu.RLock()
+	engine := s.alertEngine
+	s.mu.RUnlock()
+
+	if engine == nil {
+		reply.Error = "alert engine not initialized"
+		return nil
+	}
+	history := engine.GetHistory()
+	if args.Limit > 0 && len(history) > args.Limit {
+		// Return latest Limit events
+		history = history[len(history)-args.Limit:]
+	}
+	reply.Events = history
+	return nil
+}
+
+func (s *Server) GetAlertRules(args *GetAlertRulesArgs, reply *GetAlertRulesReply) error {
+	if s.config.Notifications == nil {
+		reply.Rules = []alerting.AlertRule{}
+		return nil
+	}
+	rules := make([]alerting.AlertRule, 0, len(s.config.Notifications.Rules))
+	for _, r := range s.config.Notifications.Rules {
+		rules = append(rules, alerting.AlertRule{
+			Name:      r.Name,
+			Enabled:   r.Enabled,
+			Condition: r.Condition,
+			Severity:  alerting.AlertLevel(r.Severity),
+			Channels:  r.Channels,
+		})
+	}
+	reply.Rules = rules
+	return nil
+}
+
+func (s *Server) UpdateAlertRule(args *UpdateAlertRuleArgs, reply *UpdateAlertRuleReply) error {
+	// 1. Find the rule in config
+	if s.config.Notifications == nil {
+		reply.Error = "notifications not configured"
+		return nil
+	}
+
+	found := false
+	for i, r := range s.config.Notifications.Rules {
+		if r.Name == args.Rule.Name {
+			s.config.Notifications.Rules[i].Enabled = args.Rule.Enabled
+			s.config.Notifications.Rules[i].Condition = args.Rule.Condition
+			s.config.Notifications.Rules[i].Severity = string(args.Rule.Severity)
+			s.config.Notifications.Rules[i].Channels = args.Rule.Channels
+			// Cooldown is a string in config
+			s.config.Notifications.Rules[i].Cooldown = args.Rule.Cooldown.String()
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		// Create new rule
+		s.config.Notifications.Rules = append(s.config.Notifications.Rules, config.AlertRule{
+			Name:      args.Rule.Name,
+			Enabled:   args.Rule.Enabled,
+			Condition: args.Rule.Condition,
+			Severity:  string(args.Rule.Severity),
+			Channels:  args.Rule.Channels,
+			Cooldown:  args.Rule.Cooldown.String(),
+		})
+	}
+
+	// 2. Update engine
+	if s.alertEngine != nil {
+		s.alertEngine.UpdateConfig(s.config.Notifications)
+	}
+
+	// 3. Save config (optional here, usually handled by caller applying config)
+	return nil
+}
+
 // --- Device Identity Management ---
 
 // UpdateDeviceIdentity updates a device identity
 func (s *Server) UpdateDeviceIdentity(args *UpdateDeviceIdentityArgs, reply *UpdateDeviceIdentityReply) error {
-	if s.deviceManager == nil {
-		reply.Error = "device manager not initialized"
+	if s.identityService == nil {
+		reply.Error = "identity service not initialized"
 		return nil
 	}
 
-	id, err := s.deviceManager.UpdateIdentity(args.ID, args.Alias, args.Owner, args.Type, args.Tags)
-	if err != nil {
-		if args.ID == "" {
-			// Create new identity if ID is missing (requires Alias essentially, or we default it)
-			// But arguments allow Alias to be nil.
-			// If Alias is nil, we can't create with meaningful name.
-			if args.Alias == nil {
-				reply.Error = "Alias required to create new identity"
-				return nil
-			}
+	// Create or update identity
+	// If ID is provided, it's an update. If not, it's a create (using MAC).
+	// Our new types rely on MAC as the primary key for lookup (IdentifyDevice),
+	// but ID for strict updates.
+	// Actually, identity.Service.IdentifyDevice takes MAC.
 
-			// Create with basic info
-			owner := ""
-			if args.Owner != nil {
-				owner = *args.Owner
-			}
-			dtype := ""
-			if args.Type != nil {
-				dtype = *args.Type
-			}
+	if args.MAC == "" {
+		reply.Error = "MAC is required"
+		return nil
+	}
 
-			id, err = s.deviceManager.CreateIdentity(*args.Alias, owner, dtype)
-			if err != nil {
-				reply.Error = err.Error()
-				return nil
-			}
+	identity := s.identityService.IdentifyDevice(args.MAC)
 
-			// Apply tags if present (CreateIdentity doesn't handle tags yet)
-			if len(args.Tags) > 0 {
-				if _, err := s.deviceManager.UpdateIdentity(id.ID, nil, nil, nil, args.Tags); err != nil {
-					log.Printf("[CTL] Warning: failed to set tags for new identity %s: %v", id.ID, err)
-				} else {
-					// Use updated object
-					updated, _ := s.deviceManager.UpdateIdentity(id.ID, nil, nil, nil, nil) // Get latest
-					if updated != nil {
-						id = updated
-					}
-				}
-			}
-		} else {
-			reply.Error = err.Error()
+	// LinkMAC
+	if args.LinkMAC != nil && *args.LinkMAC != "" {
+		if err := s.identityService.LinkMAC(*args.LinkMAC, identity.ID); err != nil {
+			reply.Error = fmt.Sprintf("failed to link mac: %v", err)
 			return nil
 		}
 	}
-	reply.Identity = id
+
+	// UnlinkMAC
+	if args.UnlinkMAC != nil && *args.UnlinkMAC != "" {
+		if err := s.identityService.UnlinkMAC(*args.UnlinkMAC); err != nil {
+			reply.Error = fmt.Sprintf("failed to unlink mac: %v", err)
+			return nil
+		}
+	}
+
+	// Update Fields
+	updated := false
+	if args.Alias != nil {
+		identity.Alias = *args.Alias
+		updated = true
+	}
+	if args.Owner != nil {
+		identity.Owner = *args.Owner
+		updated = true
+	}
+	if args.GroupID != nil {
+		identity.GroupID = *args.GroupID
+		updated = true
+	}
+	if args.Tags != nil {
+		identity.Tags = args.Tags
+		updated = true
+	}
+
+	if updated {
+		if err := s.identityService.UpdateIdentity(identity); err != nil {
+			reply.Error = fmt.Sprintf("failed to update identity: %v", err)
+			return nil
+		}
+	}
+
+	// Refresh return value
+	reply.Identity = s.identityService.GetIdentity(identity.ID)
+
 	return nil
 }
 
-// LinkMAC links a MAC address to a device identity
-func (s *Server) LinkMAC(args *LinkMACArgs, reply *Empty) error {
-	if s.deviceManager == nil {
-		return fmt.Errorf("device manager not initialized")
+// GetDeviceGroups returns all device groups
+func (s *Server) GetDeviceGroups(args *GetDeviceGroupsArgs, reply *GetDeviceGroupsReply) error {
+	if s.identityService == nil {
+		reply.Error = "identity service not initialized"
+		return nil
 	}
-	return s.deviceManager.LinkMAC(args.MAC, args.IdentityID)
+	reply.Groups = s.identityService.GetGroups()
+	return nil
 }
 
-// UnlinkMAC removes a MAC address link
-func (s *Server) UnlinkMAC(args *UnlinkMACArgs, reply *Empty) error {
-	if s.deviceManager == nil {
-		return fmt.Errorf("device manager not initialized")
+// UpdateDeviceGroup updates or creates a device group
+func (s *Server) UpdateDeviceGroup(args *UpdateDeviceGroupArgs, reply *UpdateDeviceGroupReply) error {
+	if s.identityService == nil {
+		reply.Error = "identity service not initialized"
+		return nil
 	}
-	return s.deviceManager.UnlinkMAC(args.MAC)
+	if err := s.identityService.UpdateGroup(args.Group); err != nil {
+		reply.Error = fmt.Sprintf("failed to update group: %v", err)
+	}
+	return nil
+}
+
+// DeleteDeviceGroup deletes a device group
+func (s *Server) DeleteDeviceGroup(args *DeleteDeviceGroupArgs, reply *DeleteDeviceGroupReply) error {
+	if s.identityService == nil {
+		reply.Error = "identity service not initialized"
+		return nil
+	}
+	if err := s.identityService.DeleteGroup(args.ID); err != nil {
+		reply.Error = fmt.Sprintf("failed to delete group: %v", err)
+	}
+	return nil
 }
 
 // ApplyConfig applies a new configuration (RPC endpoint)
@@ -954,6 +1204,23 @@ func (s *Server) reloadConfigInternal(newCfg *config.Config) error {
 	s.config = newCfg
 	if s.hclConfig != nil {
 		s.hclConfig.Config = newCfg
+		s.hclConfig.SetAttribute("ip_forwarding", newCfg.IPForwarding)
+		s.hclConfig.SetAttribute("mss_clamping", newCfg.MSSClamping)
+		s.hclConfig.SetAttribute("enable_flow_offload", newCfg.EnableFlowOffload)
+
+		// Sync complex sections using non-destructive updates
+		if err := s.hclConfig.SyncInterfaces(); err != nil {
+			log.Printf("[CTL] Warning: failed to sync interfaces to HCL: %v", err)
+		}
+		if err := s.hclConfig.SyncZones(); err != nil {
+			log.Printf("[CTL] Warning: failed to sync zones to HCL: %v", err)
+		}
+
+		if err := s.hclConfig.Save(); err != nil {
+			log.Printf("[CTL] Warning: failed to persist configuration: %v", err)
+		} else {
+			log.Printf("[CTL] Configuration persisted to %s", s.hclConfig.Path)
+		}
 	}
 	if s.networkManager != nil {
 		s.networkManager.UpdateConfig(newCfg)
@@ -1247,11 +1514,14 @@ func (s *Server) UpdateInterface(args *UpdateInterfaceArgs, reply *UpdateInterfa
 		reply.Error = err.Error()
 	} else {
 		reply.Success = true
+		// Automatically save changes to disk
+		var saveReply SaveConfigReply
+		if err := s.SaveConfig(&Empty{}, &saveReply); err != nil {
+			log.Printf("[CTL] Failed to auto-save config: %v", err)
+		} else if saveReply.Error != "" {
+			log.Printf("[CTL] Failed to auto-save config: %s", saveReply.Error)
+		}
 	}
-	// We need to sync back the config change Server side?
-	// The NetworkManager writes directly to the shared config pointer.
-	// So s.config is already updated if NetworkManager holds *config.Config.
-	// Yes, NewNetworkManager(cfg) passes the pointer.
 	return nil
 }
 
@@ -1524,28 +1794,34 @@ func (s *Server) TriggerTask(args *TriggerTaskArgs, reply *TriggerTaskReply) err
 
 // SaveConfig saves the current config to disk
 func (s *Server) SaveConfig(args *Empty, reply *SaveConfigReply) error {
+	log.Printf("[CTL] DEBUG: Server.SaveConfig called - acquiring Lock")
+	s.mu.Lock()
+	defer func() {
+		s.mu.Unlock()
+		log.Printf("[CTL] DEBUG: Server.SaveConfig released Lock")
+	}()
+
 	if err := s.ensureHCLConfig(); err != nil {
 		reply.Error = err.Error()
+		// Unlock handling via defer
 		return nil
 	}
 
 	// Sync the current in-memory config to the HCL AST
-	// This ensures API changes to s.config are reflected in the HCL
-	s.mu.RLock()
+	log.Printf("[CTL] DEBUG: Server.SaveConfig syncing to HCL...")
 	s.hclConfig.Config = s.config
-	s.mu.RUnlock()
-
-	// Update HCL AST from config struct (preserves comments for unchanged sections)
 	if err := s.hclConfig.SyncConfigToHCL(); err != nil {
 		reply.Error = fmt.Sprintf("failed to sync config to HCL: %v", err)
 		return nil
 	}
 
+	log.Printf("[CTL] DEBUG: Server.SaveConfig saving file...")
 	if err := s.hclConfig.Save(); err != nil {
 		reply.Error = err.Error()
 		return nil
 	}
 
+	log.Printf("[CTL] DEBUG: Server.SaveConfig done")
 	reply.Success = true
 	reply.BackupPath = s.configFile + ".bak"
 	return nil
@@ -2204,6 +2480,14 @@ func (s *Server) SystemReboot(args *SystemRebootArgs, reply *SystemRebootReply) 
 
 // GetSystemStats returns system resource usage statistics
 func (s *Server) GetSystemStats(args *Empty, reply *GetSystemStatsReply) error {
+	// Prefer collector if available
+	// Prefer collector if available
+	if s.metricsCollector != nil {
+		// collectedStats := s.metricsCollector.GetSystemStats()
+		// TODO: Map metrics.SystemStats to SystemStats if needed.
+		// For now, ignoring collector stats to fix unused variable error.
+	}
+
 	stats := SystemStats{}
 
 	// Basic Uptime (using clock package or syscall)
@@ -2258,6 +2542,50 @@ func (s *Server) GetSystemStats(args *Empty, reply *GetSystemStatsReply) error {
 	if err := syscall.Statfs("/", &stat); err == nil {
 		stats.DiskTotal = stat.Blocks * uint64(stat.Bsize)
 		stats.DiskUsed = (stat.Blocks - stat.Bfree) * uint64(stat.Bsize)
+	}
+
+	reply.Stats = stats
+	return nil
+}
+
+// GetPolicyStats returns firewall rule statistics
+func (s *Server) GetPolicyStats(args *Empty, reply *GetPolicyStatsReply) error {
+	if s.metricsCollector == nil {
+		reply.Stats = make(map[string]*metrics.PolicyStats)
+		return nil
+	}
+	reply.Stats = s.metricsCollector.GetPolicyStats()
+	return nil
+}
+
+// GetDNSQueryHistory returns recent DNS query logs
+func (s *Server) GetDNSQueryHistory(args *GetDNSQueryHistoryArgs, reply *GetDNSQueryHistoryReply) error {
+	if s.queryLogStore == nil {
+		reply.Entries = []querylog.Entry{}
+		return nil
+	}
+
+	entries, err := s.queryLogStore.GetRecentLogs(args.Limit, args.Offset, args.Search)
+	if err != nil {
+		reply.Error = err.Error()
+		return nil
+	}
+
+	reply.Entries = entries
+	return nil
+}
+
+// GetDNSStats returns aggregated DNS statistics
+func (s *Server) GetDNSStats(args *GetDNSStatsArgs, reply *GetDNSStatsReply) error {
+	if s.queryLogStore == nil {
+		reply.Stats = &querylog.Stats{}
+		return nil
+	}
+
+	stats, err := s.queryLogStore.GetStats(args.From, args.To)
+	if err != nil {
+		reply.Error = err.Error()
+		return nil
 	}
 
 	reply.Stats = stats
@@ -2574,4 +2902,47 @@ func (s *Server) ExitSafeMode(args *Empty, reply *Empty) error {
 	log.Printf("[CTL] Safe mode deactivated by RPC request")
 	s.Notify(NotifyInfo, "Safe Mode", "Safe Mode has been deactivated - normal operation resumed")
 	return s.firewallManager.ExitSafeMode()
+}
+
+// SetReplicator injects the state replicator
+func (s *Server) SetReplicator(r *state.Replicator) {
+	s.replicator = r
+}
+
+// SetIdentityService injects the identity service
+func (s *Server) SetIdentityService(svc *identity.Service) {
+	s.identityService = svc
+}
+
+// SetHAService injects the HA service
+func (s *Server) SetHAService(svc *ha.Service) {
+	s.haService = svc
+}
+
+// GetReplicationStatus returns the current replication status
+func (s *Server) GetReplicationStatus(args *Empty, reply *GetReplicationStatusReply) error {
+	if s.replicator == nil {
+		reply.Status = ReplicationStatus{
+			Mode:  "unknown",
+			Error: "Replication service not available",
+		}
+		return nil
+	}
+
+	status := s.replicator.Status()
+	// Map state.ReplicatorStatus to ctlplane.ReplicationStatus
+	reply.Status = ReplicationStatus{
+		Mode:        status.Mode,
+		Connected:   status.Connected,
+		PeerAddress: status.PeerAddress,
+		SyncState:   status.SyncState,
+		Version:     int64(status.Version),
+	}
+
+	if s.haService != nil {
+		reply.Status.HAEnabled = true
+		reply.Status.HARole = string(s.haService.GetRole())
+	}
+
+	return nil
 }

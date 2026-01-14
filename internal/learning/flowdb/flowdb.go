@@ -59,9 +59,13 @@ type Flow struct {
 	FirstSeen          time.Time `json:"first_seen"`
 	LastSeen           time.Time `json:"last_seen"`
 	Occurrences        int       `json:"occurrences"`
-	App                string    `json:"app,omitempty"`       // Identified Application (e.g. Netflix)
-	Vendor             string    `json:"vendor,omitempty"`    // Device Vendor (e.g. Apple)
-	DeviceID           string    `json:"device_id,omitempty"` // ID of the linked device identity (ephemeral)
+	App                string    `json:"app,omitempty"`        // Identified Application (e.g. Netflix)
+	Vendor             string    `json:"vendor,omitempty"`     // Device Vendor (e.g. Apple)
+	DeviceID           string    `json:"device_id,omitempty"`  // ID of the linked device identity (ephemeral)
+	JA3Hash            string    `json:"ja3_hash,omitempty"`   // JA3 TLS client fingerprint (MD5 hash)
+	JA3Raw             string    `json:"ja3_raw,omitempty"`    // Raw JA3 string before hashing
+	JA3SHash           string    `json:"ja3s_hash,omitempty"`  // JA3S TLS server fingerprint (MD5 hash)
+	JA3SRaw            string    `json:"ja3s_raw,omitempty"`   // Raw JA3S string before hashing
 }
 
 // DomainHint represents DNS context for a flow
@@ -227,6 +231,27 @@ func (fdb *DB) initSchema() error {
 	if _, err := fdb.db.Exec("ALTER TABLE learned_flows ADD COLUMN policy TEXT"); err != nil {
 		// Ignore
 	}
+	// Add JA3 (client) columns if missing
+	if _, err := fdb.db.Exec("ALTER TABLE learned_flows ADD COLUMN ja3_hash TEXT"); err != nil {
+		// Ignore
+	}
+	if _, err := fdb.db.Exec("ALTER TABLE learned_flows ADD COLUMN ja3_raw TEXT"); err != nil {
+		// Ignore
+	}
+	// Add JA3S (server) columns if missing
+	if _, err := fdb.db.Exec("ALTER TABLE learned_flows ADD COLUMN ja3s_hash TEXT"); err != nil {
+		// Ignore
+	}
+	if _, err := fdb.db.Exec("ALTER TABLE learned_flows ADD COLUMN ja3s_raw TEXT"); err != nil {
+		// Ignore
+	}
+	// Add indexes for JA3/JA3S hash lookups
+	if _, err := fdb.db.Exec("CREATE INDEX IF NOT EXISTS idx_flows_ja3 ON learned_flows(ja3_hash)"); err != nil {
+		// Ignore
+	}
+	if _, err := fdb.db.Exec("CREATE INDEX IF NOT EXISTS idx_flows_ja3s ON learned_flows(ja3s_hash)"); err != nil {
+		// Ignore
+	}
 
 	return nil
 }
@@ -246,8 +271,8 @@ func (fdb *DB) UpsertFlow(f *Flow) error {
 	query := `
 		INSERT INTO learned_flows
 			(src_mac, src_ip, src_hostname, proto, dst_port, dst_ip_sample,
-			 state, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 state, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy, ja3_hash, ja3_raw, ja3s_hash, ja3s_raw)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(src_mac, proto, dst_port) DO UPDATE SET
 			src_ip = excluded.src_ip,
 			src_hostname = COALESCE(excluded.src_hostname, src_hostname),
@@ -256,13 +281,17 @@ func (fdb *DB) UpsertFlow(f *Flow) error {
 			occurrences = occurrences + 1,
 			app = COALESCE(excluded.app, app),
 			vendor = COALESCE(excluded.vendor, vendor),
-			policy = COALESCE(excluded.policy, policy)
+			policy = COALESCE(excluded.policy, policy),
+			ja3_hash = COALESCE(excluded.ja3_hash, ja3_hash),
+			ja3_raw = COALESCE(excluded.ja3_raw, ja3_raw),
+			ja3s_hash = COALESCE(excluded.ja3s_hash, ja3s_hash),
+			ja3s_raw = COALESCE(excluded.ja3s_raw, ja3s_raw)
 		RETURNING id, first_seen, occurrences
 	`
 
 	err := fdb.db.QueryRow(query,
 		f.SrcMAC, f.SrcIP, f.SrcHostname, f.Protocol, f.DstPort, f.DstIPSample,
-		f.State, f.LearningModeActive, f.FirstSeen, f.LastSeen, f.Occurrences, f.App, f.Vendor, f.Policy,
+		f.State, f.LearningModeActive, f.FirstSeen, f.LastSeen, f.Occurrences, f.App, f.Vendor, f.Policy, f.JA3Hash, f.JA3Raw, f.JA3SHash, f.JA3SRaw,
 	).Scan(&f.ID, &f.FirstSeen, &f.Occurrences)
 
 	return err
@@ -272,20 +301,24 @@ func (fdb *DB) UpsertFlow(f *Flow) error {
 func (fdb *DB) GetFlow(id int64) (*Flow, error) {
 	query := `
 		SELECT id, src_mac, src_ip, src_hostname, proto, dst_port, dst_ip_sample,
-		       state, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy
+		       state, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy, ja3_hash, ja3_raw, ja3s_hash, ja3s_raw
 		FROM learned_flows WHERE id = ?
 	`
 
 	f := &Flow{}
-	var app, vendor, policy sql.NullString
+	var app, vendor, policy, ja3Hash, ja3Raw, ja3sHash, ja3sRaw sql.NullString
 	err := fdb.db.QueryRow(query, id).Scan(
 		&f.ID, &f.SrcMAC, &f.SrcIP, &f.SrcHostname, &f.Protocol, &f.DstPort,
 		&f.DstIPSample, &f.State, &f.LearningModeActive, &f.FirstSeen,
-		&f.LastSeen, &f.Occurrences, &app, &vendor, &policy,
+		&f.LastSeen, &f.Occurrences, &app, &vendor, &policy, &ja3Hash, &ja3Raw, &ja3sHash, &ja3sRaw,
 	)
 	f.App = app.String
 	f.Vendor = vendor.String
 	f.Policy = policy.String
+	f.JA3Hash = ja3Hash.String
+	f.JA3Raw = ja3Raw.String
+	f.JA3SHash = ja3sHash.String
+	f.JA3SRaw = ja3sRaw.String
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -296,20 +329,24 @@ func (fdb *DB) GetFlow(id int64) (*Flow, error) {
 func (fdb *DB) FindFlow(srcMAC, protocol string, dstPort int) (*Flow, error) {
 	query := `
 		SELECT id, src_mac, src_ip, src_hostname, proto, dst_port, dst_ip_sample,
-		       state, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy
+		       state, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy, ja3_hash, ja3_raw, ja3s_hash, ja3s_raw
 		FROM learned_flows WHERE src_mac = ? AND proto = ? AND dst_port = ?
 	`
 
 	f := &Flow{}
-	var app, vendor, policy sql.NullString
+	var app, vendor, policy, ja3Hash, ja3Raw, ja3sHash, ja3sRaw sql.NullString
 	err := fdb.db.QueryRow(query, srcMAC, protocol, dstPort).Scan(
 		&f.ID, &f.SrcMAC, &f.SrcIP, &f.SrcHostname, &f.Protocol, &f.DstPort,
 		&f.DstIPSample, &f.State, &f.LearningModeActive, &f.FirstSeen,
-		&f.LastSeen, &f.Occurrences, &app, &vendor, &policy,
+		&f.LastSeen, &f.Occurrences, &app, &vendor, &policy, &ja3Hash, &ja3Raw, &ja3sHash, &ja3sRaw,
 	)
 	f.App = app.String
 	f.Vendor = vendor.String
 	f.Policy = policy.String
+	f.JA3Hash = ja3Hash.String
+	f.JA3Raw = ja3Raw.String
+	f.JA3SHash = ja3sHash.String
+	f.JA3SRaw = ja3sRaw.String
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -329,7 +366,7 @@ type ListOptions struct {
 func (fdb *DB) ListFlows(opts ListOptions) ([]Flow, error) {
 	query := `
 		SELECT id, src_mac, src_ip, src_hostname, proto, dst_port, dst_ip_sample,
-		       state, scrutiny, scrutiny_until, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy
+		       state, scrutiny, scrutiny_until, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy, ja3_hash, ja3_raw, ja3s_hash, ja3s_raw
 		FROM learned_flows
 	`
 
@@ -383,11 +420,11 @@ func (fdb *DB) ListFlows(opts ListOptions) ([]Flow, error) {
 	for rows.Next() {
 		var f Flow
 		var scrutinyUntil sql.NullTime
-		var app, vendor, policy sql.NullString
+		var app, vendor, policy, ja3Hash, ja3Raw, ja3sHash, ja3sRaw sql.NullString
 		err := rows.Scan(
 			&f.ID, &f.SrcMAC, &f.SrcIP, &f.SrcHostname, &f.Protocol, &f.DstPort,
 			&f.DstIPSample, &f.State, &f.Scrutiny, &scrutinyUntil, &f.LearningModeActive,
-			&f.FirstSeen, &f.LastSeen, &f.Occurrences, &app, &vendor, &policy,
+			&f.FirstSeen, &f.LastSeen, &f.Occurrences, &app, &vendor, &policy, &ja3Hash, &ja3Raw, &ja3sHash, &ja3sRaw,
 		)
 		if err != nil {
 			return nil, err
@@ -398,6 +435,10 @@ func (fdb *DB) ListFlows(opts ListOptions) ([]Flow, error) {
 		f.App = app.String
 		f.Vendor = vendor.String
 		f.Policy = policy.String
+		f.JA3Hash = ja3Hash.String
+		f.JA3Raw = ja3Raw.String
+		f.JA3SHash = ja3sHash.String
+		f.JA3SRaw = ja3sRaw.String
 		flows = append(flows, f)
 	}
 
@@ -637,7 +678,7 @@ func (fdb *DB) SetScrutiny(id int64, enabled bool, reviewAfter time.Duration) er
 func (fdb *DB) GetScrutinyDue() ([]Flow, error) {
 	rows, err := fdb.db.Query(`
 		SELECT id, src_mac, src_ip, src_hostname, proto, dst_port, dst_ip_sample,
-		       state, scrutiny, scrutiny_until, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy
+		       state, scrutiny, scrutiny_until, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy, ja3_hash, ja3_raw, ja3s_hash, ja3s_raw
 		FROM learned_flows
 		WHERE scrutiny = 1 AND scrutiny_until IS NOT NULL AND scrutiny_until < ?
 		ORDER BY scrutiny_until ASC
@@ -651,11 +692,11 @@ func (fdb *DB) GetScrutinyDue() ([]Flow, error) {
 	for rows.Next() {
 		var f Flow
 		var scrutinyUntil sql.NullTime
-		var app, vendor, policy sql.NullString
+		var app, vendor, policy, ja3Hash, ja3Raw sql.NullString
 		err := rows.Scan(
 			&f.ID, &f.SrcMAC, &f.SrcIP, &f.SrcHostname, &f.Protocol, &f.DstPort,
 			&f.DstIPSample, &f.State, &f.Scrutiny, &scrutinyUntil, &f.LearningModeActive,
-			&f.FirstSeen, &f.LastSeen, &f.Occurrences, &app, &vendor, &policy,
+			&f.FirstSeen, &f.LastSeen, &f.Occurrences, &app, &vendor, &policy, &ja3Hash, &ja3Raw,
 		)
 		if err != nil {
 			return nil, err
@@ -665,6 +706,9 @@ func (fdb *DB) GetScrutinyDue() ([]Flow, error) {
 		}
 		f.App = app.String
 		f.Vendor = vendor.String
+		f.Policy = policy.String
+		f.JA3Hash = ja3Hash.String
+		f.JA3Raw = ja3Raw.String
 		flows = append(flows, f)
 	}
 	return flows, rows.Err()
@@ -798,10 +842,10 @@ func (fdb *DB) UpsertFlowWithID(f *Flow) error {
 	_, err := fdb.db.Exec(`
 		INSERT OR REPLACE INTO learned_flows
 			(id, src_mac, src_ip, src_hostname, proto, dst_port, dst_ip_sample,
-			 state, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 state, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy, ja3_hash, ja3_raw, ja3s_hash, ja3s_raw)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, f.ID, f.SrcMAC, f.SrcIP, f.SrcHostname, f.Protocol, f.DstPort, f.DstIPSample,
-		f.State, f.LearningModeActive, f.FirstSeen, f.LastSeen, f.Occurrences, f.App, f.Vendor, f.Policy)
+		f.State, f.LearningModeActive, f.FirstSeen, f.LastSeen, f.Occurrences, f.App, f.Vendor, f.Policy, f.JA3Hash, f.JA3Raw)
 	return err
 }
 
@@ -906,10 +950,10 @@ func (fdb *DB) ImportSnapshot(snap *Snapshot) error {
 		_, err := tx.Exec(`
 			INSERT OR REPLACE INTO learned_flows
 			(id, src_mac, src_ip, src_hostname, proto, dst_port, dst_ip_sample,
-			 state, learning_mode_active, first_seen, last_seen, occurrences, app, vendor)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 state, learning_mode_active, first_seen, last_seen, occurrences, app, vendor, policy, ja3_hash, ja3_raw, ja3s_hash, ja3s_raw)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, f.ID, f.SrcMAC, f.SrcIP, f.SrcHostname, f.Protocol, f.DstPort, f.DstIPSample,
-			f.State, f.LearningModeActive, f.FirstSeen, f.LastSeen, f.Occurrences, f.App, f.Vendor)
+			f.State, f.LearningModeActive, f.FirstSeen, f.LastSeen, f.Occurrences, f.App, f.Vendor, f.Policy, f.JA3Hash, f.JA3Raw)
 		if err != nil {
 			return fmt.Errorf("failed to import flow %d: %w", f.ID, err)
 		}
