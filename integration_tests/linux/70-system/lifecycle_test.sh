@@ -5,7 +5,7 @@ TEST_TIMEOUT=30
 
 plan 2
 
-CONFIG_FILE="/tmp/restart.hcl"
+CONFIG_FILE="/tmp/restart_$$.hcl"
 cat > "$CONFIG_FILE" <<EOF
 schema_version = "1.0"
 api {

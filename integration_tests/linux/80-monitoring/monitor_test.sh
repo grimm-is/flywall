@@ -20,7 +20,7 @@ schema_version = "1.0"
 
 api {
   enabled = false
-  listen = "127.0.0.1:8080"
+  listen = "127.0.0.1:$TEST_API_PORT"
 }
 EOF
 
@@ -45,7 +45,7 @@ fi
 diag "Fetching metrics (with retry)..."
 METRICS=""
 for i in $(seq 1 60); do
-    METRICS=$($HTTP_CMD http://127.0.0.1:8080/metrics)
+    METRICS=$($HTTP_CMD http://127.0.0.1:$TEST_API_PORT/metrics)
     if [ -n "$METRICS" ] && echo "$METRICS" | grep -q "# HELP"; then
         break
     fi

@@ -1,21 +1,23 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package engine
 
 import (
+	"log"
 	"net"
 	"strings"
-	"log"
 
 	"grimm.is/flywall/internal/config"
 )
 
 // Packet represents the metadata needed for rule matching
 type Packet struct {
-	SrcIP    string
-	DstIP    string
-	SrcPort  int
-	DstPort  int
-	Protocol string // "tcp", "udp", "icmp"
-	InInterface string
+	SrcIP        string
+	DstIP        string
+	SrcPort      int
+	DstPort      int
+	Protocol     string // "tcp", "udp", "icmp"
+	InInterface  string
 	OutInterface string
 }
 
@@ -57,7 +59,7 @@ func Match(rule config.PolicyRule, pkt Packet) bool {
 	if !MatchPort(rule.DestPort, rule.DestPorts, pkt.DstPort) {
 		return false
 	}
-	
+
 	// 6. Interfaces
 	if rule.InInterface != "" && rule.InInterface != pkt.InInterface {
 		return false

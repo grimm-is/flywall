@@ -384,7 +384,7 @@
         background: var(--color-background);
         border: 1px solid var(--color-border);
         border-radius: var(--radius-md);
-        margin-top: 4px;
+        margin-top: var(--space-1);
         max-height: 200px;
         overflow-y: auto;
         z-index: 50;
@@ -409,7 +409,7 @@
     .error-text {
         font-size: var(--text-xs);
         color: var(--color-destructive);
-        margin: 2px 0 0 0;
+        margin: var(--space-1) 0 0 0;
     }
 
     /* Remove number arrows for port input */

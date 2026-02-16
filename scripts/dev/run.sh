@@ -4,7 +4,8 @@ set -e
 # Development script: Build UI + Firewall, launch VM with UI accessible at http://localhost:8080
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT"
 
 # Colors
 GREEN='\033[0;32m'
@@ -51,9 +52,9 @@ echo -e "${GREEN}  ✓ Firewall binary built${NC}"
 # ==============================================================================
 echo -e "\n${YELLOW}[3/3] Checking VM image...${NC}"
 
-if [ ! -f "build/rootfs.ext4" ]; then
-    echo "  Building Alpine VM image (first time setup)..."
-    perl build_alpine.pl
+if [ ! -f "build/rootfs.qcow2" ]; then
+    echo "  Building Alpine VM image..."
+    ./../flywall.sh vm ensure
 else
     echo -e "${GREEN}  ✓ VM image exists${NC}"
 fi
@@ -78,4 +79,4 @@ echo ""
 CONFIG_FILE="${1:-firewall.hcl}"
 
 # Pass dev_mode=true as kernel parameter to trigger interactive mode
-./../vm/dev.sh "$(pwd)" "$CONFIG_FILE" "dev_mode=true"
+scripts/vm/dev.sh "$(pwd)" "$CONFIG_FILE" "dev_mode=true"

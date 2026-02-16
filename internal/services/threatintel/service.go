@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package threatintel
 
 import (
@@ -31,11 +33,6 @@ type Service struct {
 	running bool
 }
 
-// NewService creates a new threat intelligence service.
-// Note: We need IPSetManager, but currently Manager encapsulates it.
-// We might need to expose it or add helper methods on Manager.
-// For now let's assume we can create a new IPSetManager instance since it's stateless wrapper around nft/runner.
-// NewService creates a new threat intelligence service.
 func NewService(cfg *config.ThreatIntel, dnsSvc *dns.Service, ipsetMgr *firewall.IPSetManager) *Service {
 	if cfg == nil || !cfg.Enabled {
 		return nil
@@ -53,7 +50,6 @@ func NewService(cfg *config.ThreatIntel, dnsSvc *dns.Service, ipsetMgr *firewall
 	}
 }
 
-// Start starts the threat intelligence polling service.
 func (s *Service) Start() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -78,7 +74,6 @@ func (s *Service) Start() {
 	go s.runLoop(interval)
 }
 
-// Stop stops the service.
 func (s *Service) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

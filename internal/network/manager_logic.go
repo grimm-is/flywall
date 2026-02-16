@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package network
 
 import (
@@ -85,6 +87,19 @@ func (m *Manager) SetupLoopback() error {
 }
 
 // ApplyInterface applies the configuration for a single network interface.
+// This function is idempotent where possible, but may disrupt traffic briefly
+// when changing IP addresses or link state.
+//
+// Operations performed:
+// 1. Link retrieval (or creation for Bonds/VLANs)
+// 2. MTU configuration
+// 3. Link Up
+// 4. IP Address Management (flush & add)
+// 5. DHCP Client management (native or system)
+// 6. IPv6 Configuration (RA/DHCPv6)
+// 7. VLAN creation (if defined under this interface)
+// 8. Bond member association
+// 9. Policy Routing setup (if table ID specified)
 func (m *Manager) ApplyInterface(ifaceCfg config.Interface) error {
 	var link netlink.Link
 	var err error
@@ -122,6 +137,22 @@ func (m *Manager) ApplyInterface(ifaceCfg config.Interface) error {
 	// Bring down interface first to apply changes cleanly
 	if err := m.nl.LinkSetDown(link); err != nil {
 		log.Printf("Warning: failed to bring down interface %s: %v", ifaceCfg.Name, err)
+	}
+
+	// Apply VRF Enslavement (Must be done before adding IPs)
+	if ifaceCfg.VRF != "" {
+		vrfLink, err := m.nl.LinkByName(ifaceCfg.VRF)
+		if err != nil {
+			return fmt.Errorf("VRF %s not found for interface %s: %w", ifaceCfg.VRF, ifaceCfg.Name, err)
+		}
+		if err := m.nl.LinkSetMaster(link, vrfLink); err != nil {
+			return fmt.Errorf("failed to enslave %s to VRF %s: %w", ifaceCfg.Name, ifaceCfg.VRF, err)
+		}
+	} else {
+		// Ensure not enslaved if no VRF specified?
+		// Checking if it's enslaved to something else might be good, but potentially aggressive.
+		// For now, only set master if VRF is explicitly requested.
+		// Ideally we should "nomaster" if it was enslaved but now isn't, but that's complex state management.
 	}
 
 	// Set MTU
@@ -259,6 +290,45 @@ func (m *Manager) ApplyInterface(ifaceCfg config.Interface) error {
 		}
 	}
 
+	return nil
+}
+
+// ApplyVRFs creates and configures VRF devices.
+func (m *Manager) ApplyVRFs(vrfs []config.VRF) error {
+	for _, vrf := range vrfs {
+		// potential issue: vrf names can conflict with interface names
+		link, err := m.nl.LinkByName(vrf.Name)
+		if err != nil {
+			// Create VRF
+			v := &netlink.Vrf{
+				LinkAttrs: netlink.LinkAttrs{
+					Name: vrf.Name,
+				},
+				Table: uint32(vrf.TableID),
+			}
+			if err := m.nl.LinkAdd(v); err != nil {
+				return fmt.Errorf("failed to add VRF %s: %w", vrf.Name, err)
+			}
+			link, err = m.nl.LinkByName(vrf.Name)
+			if err != nil {
+				return fmt.Errorf("failed to get newly created VRF %s: %w", vrf.Name, err)
+			}
+		}
+
+		// Ensure proper table ID (in case it changed)
+		if v, ok := link.(*netlink.Vrf); ok {
+			if v.Table != uint32(vrf.TableID) {
+				// We can't easily change table ID of existing VRF?
+				// Try to recreate or just warn. Recreating is destructive.
+				log.Printf("Warning: VRF %s exists with table %d, config wants %d. Re-creation required but skipped for safety.", vrf.Name, v.Table, vrf.TableID)
+			}
+		}
+
+		// Bring VRF up
+		if err := m.nl.LinkSetUp(link); err != nil {
+			return fmt.Errorf("failed to bring up VRF %s: %w", vrf.Name, err)
+		}
+	}
 	return nil
 }
 
@@ -408,8 +478,16 @@ func isVirtualInterface(name string) bool {
 
 // LeaseInfo represents information about a DHCP lease.
 
-// applyManagementRoutes adds routes for private networks via the management gateway.
 // setupPolicyRouting configures a separate routing table for split-routing traffic.
+// This is essential for Multi-WAN and Policy-Based Routing (PBR).
+//
+// Mechanisms:
+//  1. Creates a separate routing table (ID = ifaceCfg.Table)
+//  2. Adds a default route via the interface's gateway to that table.
+//  3. Adds an "ip rule" to route traffic FROM this interface's IP via this table.
+//     (Ensures return traffic goes out the same interface it came in on).
+//  4. Adds an "ip rule" to route traffic marked with fwmark via this table.
+//     (Allows firewall rules to steer outgoing traffic to this interface).
 func (m *Manager) setupPolicyRouting(link netlink.Link, ifaceCfg config.Interface) error {
 	// 1. Validate Gateway
 	// If DHCP is enabled, we might not have a gateway yet.
@@ -480,6 +558,9 @@ func (m *Manager) setupPolicyRouting(link netlink.Link, ifaceCfg config.Interfac
 }
 
 // ApplyUIDRoutes applies UID-based routing rules.
+// This allows forcing traffic from specific system users (e.g. "torrent", "tor")
+// to use specific uplinks or VPNs, bypassing the default gateway.
+// It works by adding `ip rule` entries that match on user ID.
 func (m *Manager) ApplyUIDRoutes(routes []config.UIDRouting) error {
 	log.Printf("[network] Applying UID routes (count=%d)", len(routes))
 	// 1. List existing UID rules (priority range 15000-15999)

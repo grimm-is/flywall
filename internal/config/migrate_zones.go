@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 // migrate_zones.go canonicalizes deprecated zone fields:
@@ -15,7 +17,7 @@ func findOrCreateZoneForMigration(c *Config, name string) *Zone {
 
 	newZone := Zone{
 		Name:    name,
-		Matches: []ZoneMatch{},
+		Matches: []RuleMatch{},
 	}
 	c.Zones = append(c.Zones, newZone)
 	return &c.Zones[len(c.Zones)-1]
@@ -29,7 +31,7 @@ func canonicalizeZones(c *Config) error {
 			zone := findOrCreateZoneForMigration(c, iface.Zone)
 
 			if zone.Matches == nil {
-				zone.Matches = []ZoneMatch{}
+				zone.Matches = []RuleMatch{}
 			}
 
 			alreadyMatched := false
@@ -41,7 +43,7 @@ func canonicalizeZones(c *Config) error {
 			}
 
 			if !alreadyMatched {
-				zone.Matches = append(zone.Matches, ZoneMatch{
+				zone.Matches = append(zone.Matches, RuleMatch{
 					Interface: iface.Name,
 				})
 			}
@@ -50,22 +52,31 @@ func canonicalizeZones(c *Config) error {
 		}
 	}
 
-	// 2. Migrate Zone.Interfaces -> Zone.Match
+	// 2. Migrate Zone.Interface (singular) -> Zone.Match
 	for i := range c.Zones {
 		zone := &c.Zones[i]
 
-		if len(zone.Interfaces) > 0 {
+		if zone.Interface != "" {
 			if zone.Matches == nil {
-				zone.Matches = []ZoneMatch{}
+				zone.Matches = []RuleMatch{}
 			}
 
-			for _, ifaceName := range zone.Interfaces {
-				zone.Matches = append(zone.Matches, ZoneMatch{
-					Interface: ifaceName,
+			// Check for dupes
+			alreadyMatched := false
+			for _, m := range zone.Matches {
+				if m.Interface == zone.Interface {
+					alreadyMatched = true
+					break
+				}
+			}
+
+			if !alreadyMatched {
+				zone.Matches = append(zone.Matches, RuleMatch{
+					Interface: zone.Interface,
 				})
 			}
 
-			zone.Interfaces = nil
+			zone.Interface = ""
 		}
 	}
 

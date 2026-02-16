@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package state
 
 import (
@@ -11,6 +13,7 @@ import (
 
 	"grimm.is/flywall/internal/clock"
 
+	"grimm.is/flywall/internal/errors"
 	"grimm.is/flywall/internal/logging"
 )
 
@@ -28,6 +31,7 @@ type ReplicationConfig struct {
 	Mode           ReplicationMode
 	ListenAddr     string        // For primary: where to accept replica connections
 	PrimaryAddr    string        // For replica: where to connect to primary
+	PeerAddr       string        // For high availability: address of the peer (for reverse sync)
 	ReconnectDelay time.Duration // How long to wait before reconnecting
 	SyncTimeout    time.Duration // Timeout for initial sync
 
@@ -72,6 +76,8 @@ type Replicator struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	forceSnapshot bool // If true, next sync will request full snapshot
 }
 
 // replicaConn represents a connection to a replica.
@@ -135,6 +141,30 @@ func (r *Replicator) Stop() {
 	}
 }
 
+// SetMode dynamically changes the replication mode (e.g. for HA failover).
+// It stops the current mode and starts the new one.
+func (r *Replicator) SetMode(mode ReplicationMode) error {
+	r.mu.Lock()
+	if r.config.Mode == mode {
+		r.mu.Unlock()
+		return nil
+	}
+	r.logger.Info("Switching replication mode", "from", r.config.Mode, "to", mode)
+	r.mu.Unlock() // Unlock to allow Stop() to acquire lock
+
+	// Stop current operations
+	r.Stop()
+
+	r.mu.Lock()
+	// Re-initialize context since Stop() cancels it
+	r.ctx, r.cancel = context.WithCancel(context.Background())
+	r.config.Mode = mode
+	r.mu.Unlock()
+
+	// Start new mode
+	return r.Start()
+}
+
 // startPrimary starts the primary replication server.
 func (r *Replicator) startPrimary() error {
 	// Use secure listener (TLS if configured)
@@ -144,6 +174,11 @@ func (r *Replicator) startPrimary() error {
 	}
 
 	r.logger.Info("Replication primary started", "addr", r.config.ListenAddr)
+
+	// HA Recovery: Try to sync from peer if we are in HA mode and peer might be active
+	if r.config.PeerAddr != "" {
+		r.attemptReverseSync()
+	}
 
 	// Accept replica connections
 	go func() {
@@ -167,6 +202,81 @@ func (r *Replicator) startPrimary() error {
 	go r.broadcastChanges()
 
 	return nil
+}
+
+// attemptReverseSync tries to fetch the latest state from the peer before starting as primary.
+// This handles the split-brain recovery case where the peer was promoted to primary while we were down.
+func (r *Replicator) attemptReverseSync() {
+	// Heuristic: Assume peer replication port matches our listen port
+	// PeerAddr is usually the HA heartbeat address (e.g. 192.168.100.2:9002)
+	// We need 192.168.100.2:9001 (if we listen on 9001)
+
+	peerHost, _, err := net.SplitHostPort(r.config.PeerAddr)
+	if err != nil {
+		r.logger.Debug("Invalid peer address format, skipping reverse sync", "peer", r.config.PeerAddr)
+		return
+	}
+
+	_, myPort, err := net.SplitHostPort(r.config.ListenAddr)
+	if err != nil {
+		r.logger.Debug("Invalid listen address format, skipping reverse sync", "listen", r.config.ListenAddr)
+		return
+	}
+
+	target := net.JoinHostPort(peerHost, myPort)
+	r.logger.Info("Attempting reverse sync from peer (HA recovery)", "target", target)
+
+	// Short timeout - don't block startup too long
+	// If peer is a replica (normal case), this will fail fast (connection refused)
+	conn, err := dialSecure(target, r.config.securityConfig(), 2*time.Second)
+	if err != nil {
+		r.logger.Debug("Reverse sync failed (peer likely not primary)", "error", err)
+		return
+	}
+	defer conn.Close()
+
+	// Perform Sync
+	decoder := json.NewDecoder(conn)
+	encoder := json.NewEncoder(conn)
+
+	// PSK Authentication
+	if r.config.SecretKey != "" {
+		conn.SetReadDeadline(clock.Now().Add(5 * time.Second))
+		var challenge authChallenge
+		if err := decoder.Decode(&challenge); err != nil {
+			r.logger.Warn("Reverse sync: failed to read auth challenge", "error", err)
+			return
+		}
+		mac := computeMAC(challenge.Nonce, []byte(r.config.SecretKey))
+		if err := encoder.Encode(authResponse{MAC: mac}); err != nil {
+			r.logger.Warn("Reverse sync: failed to send auth response", "error", err)
+			return
+		}
+	}
+
+	// Request Snapshot
+	req := syncRequest{Version: 0}
+	if err := encoder.Encode(req); err != nil {
+		r.logger.Warn("Reverse sync: failed to send sync request", "error", err)
+		return
+	}
+
+	conn.SetReadDeadline(clock.Now().Add(10 * time.Second))
+	var resp syncResponse
+	if err := decoder.Decode(&resp); err != nil {
+		r.logger.Warn("Reverse sync: failed to read sync response", "error", err)
+		return
+	}
+
+	if resp.Type == "snapshot" && resp.Snapshot != nil {
+		if err := r.store.RestoreSnapshot(resp.Snapshot); err != nil {
+			r.logger.Error("Reverse sync: failed to restore snapshot", "error", err)
+		} else {
+			r.logger.Info("Reverse sync successful! Restored state from peer.", "version", resp.Snapshot.Version)
+		}
+	} else {
+		r.logger.Warn("Reverse sync: unexpected response type", "type", resp.Type)
+	}
 }
 
 // handleReplica handles a new replica connection.
@@ -329,7 +439,15 @@ func (r *Replicator) replicaLoop() {
 
 		// Receive updates until disconnected
 		if err := r.receiveUpdates(); err != nil {
-			r.logger.Warn("Lost connection to primary", "error", err)
+			if errors.Is(err, ErrDivergence) {
+				r.logger.Error("Replication divergence detected! Forcing full snapshot sync on next connection.", "error", err)
+				r.mu.Lock()
+				r.forceSnapshot = true
+				r.mu.Unlock()
+			} else {
+				r.logger.Warn("Lost connection to primary", "error", err)
+			}
+
 			r.mu.Lock()
 			if r.primary != nil {
 				r.primary.conn.Close()
@@ -355,6 +473,7 @@ func (r *Replicator) connectToPrimary() error {
 	// PSK Authentication handshake (if secret_key is configured)
 	if r.config.SecretKey != "" {
 		// Receive challenge from server
+		conn.SetReadDeadline(clock.Now().Add(5 * time.Second))
 		var challenge authChallenge
 		if err := decoder.Decode(&challenge); err != nil {
 			conn.Close()
@@ -371,8 +490,15 @@ func (r *Replicator) connectToPrimary() error {
 	}
 
 	// Send sync request
+	r.mu.RLock()
+	requestVersion := r.store.CurrentVersion()
+	if r.forceSnapshot {
+		requestVersion = 0
+	}
+	r.mu.RUnlock()
+
 	req := syncRequest{
-		Version: r.store.CurrentVersion(),
+		Version: requestVersion,
 	}
 	if err := encoder.Encode(req); err != nil {
 		conn.Close()
@@ -380,6 +506,7 @@ func (r *Replicator) connectToPrimary() error {
 	}
 
 	// Receive response
+	conn.SetReadDeadline(clock.Now().Add(30 * time.Second))
 	var resp syncResponse
 	if err := decoder.Decode(&resp); err != nil {
 		conn.Close()
@@ -394,6 +521,11 @@ func (r *Replicator) connectToPrimary() error {
 			return fmt.Errorf("failed to restore snapshot: %w", err)
 		}
 		r.logger.Info("Restored snapshot from primary", "version", resp.Snapshot.Version)
+
+		// Reset forceSnapshot flag after successful restore
+		r.mu.Lock()
+		r.forceSnapshot = false
+		r.mu.Unlock()
 
 	case "changes":
 		for _, change := range resp.Changes {
@@ -447,18 +579,7 @@ func (r *Replicator) receiveUpdates() error {
 
 // applyChange applies a replicated change to the local store.
 func (r *Replicator) applyChange(change Change) error {
-	switch change.Type {
-	case ChangeInsert, ChangeUpdate:
-		return r.store.Set(change.Bucket, change.Key, change.Value)
-	case ChangeDelete:
-		err := r.store.Delete(change.Bucket, change.Key)
-		if err == ErrNotFound {
-			return nil // Already deleted
-		}
-		return err
-	default:
-		return fmt.Errorf("unknown change type: %s", change.Type)
-	}
+	return r.store.ApplyReplicatedChange(change)
 }
 
 // SyncFromPeer performs a one-time sync from another node.
@@ -554,4 +675,9 @@ func (r *Replicator) Status() ReplicatorStatus {
 	}
 
 	return status
+}
+
+// CurrentVersion returns the current state version.
+func (r *Replicator) CurrentVersion() uint64 {
+	return r.store.CurrentVersion()
 }

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package events
 
 import (
@@ -76,6 +78,19 @@ func NewAggregator(db *sql.DB, hub *Hub) (*Aggregator, error) {
 
 // initSchema creates the 3-tier stats tables if they don't exist.
 func (a *Aggregator) initSchema() error {
+	// Enable WAL mode and other performance/reliability settings
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=NORMAL",
+		"PRAGMA busy_timeout=5000",
+	}
+
+	for _, p := range pragmas {
+		if _, err := a.db.Exec(p); err != nil {
+			return err
+		}
+	}
+
 	schema := `
 	-- Tier 1: Raw stats (kept for 2 hours, flushed every 10s)
 	CREATE TABLE IF NOT EXISTS stats_raw (

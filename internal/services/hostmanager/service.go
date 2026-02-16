@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package hostmanager
 
 import (
@@ -86,54 +88,51 @@ func (s *Service) manageSet(ipset config.IPSet) {
 }
 
 func (s *Service) updateSet(ipset config.IPSet) {
-	var allIPs []string
+	var v4IPs, v6IPs []string
 
 	// Resolve all domains
 	for _, domain := range ipset.Domains {
-		// Resolve IPv4
 		ips, err := net.LookupIP(domain)
 		if err != nil {
 			s.logger.Error("Failed to resolve domain", "domain", domain, "error", err)
 			continue
 		}
 		for _, ip := range ips {
-			// Only include IPv4 for now as default type is ipv4_addr.
-			// TODO: Support ipv6_addr type sets.
 			if ip4 := ip.To4(); ip4 != nil {
-				allIPs = append(allIPs, ip4.String())
+				v4IPs = append(v4IPs, ip4.String())
+			} else if ip6 := ip.To16(); ip6 != nil {
+				v6IPs = append(v6IPs, ip6.String())
 			}
 		}
 	}
 
-	if len(allIPs) == 0 {
+	// Update IPv4 set
+	if len(v4IPs) > 0 {
+		s.updateNftSet(ipset.Name, v4IPs)
+	}
+
+	// Update IPv6 set (convention: <name>_v6)
+	if len(v6IPs) > 0 {
+		s.updateNftSet(ipset.Name+"_v6", v6IPs)
+	}
+}
+
+func (s *Service) updateNftSet(setName string, ips []string) {
+	// Strategy: Flush and refill (Atomic updates in set are hard without diffing).
+
+	// 1. Flush
+	cmdFlush := exec.Command("nft", "flush", "set", "inet", "filter", setName)
+	if err := cmdFlush.Run(); err != nil {
+		s.logger.Error("Failed to flush set", "set", setName, "error", err)
 		return
 	}
 
-	// Update nftables set
-	// Strategy: Flush and refill (Atomic updates in set are hard without diffing).
-	// "nft flush set inet filter <name>"
-	// "nft add element inet filter <name> { ... }"
-	
-	// Construct element string
-	elements := strings.Join(allIPs, ", ")
-	
-	// We need to execute nft commands.
-	// Using exec for simplicity rather than native library to avoid dependency complexity for this task.
-	// Note: In production, use google/nftables.
-	
-	// 1. Flush
-	cmdFlush := exec.Command("nft", "flush", "set", "inet", "filter", ipset.Name)
-	if err := cmdFlush.Run(); err != nil {
-		s.logger.Error("Failed to flush set", "set", ipset.Name, "error", err)
-		return 
-	}
-	
 	// 2. Add elements
-	// Using --file via stdin typically safer for large sets, but command line OK for small.
-	cmdAdd := exec.Command("nft", "add", "element", "inet", "filter", ipset.Name, fmt.Sprintf("{ %s }", elements))
+	elements := strings.Join(ips, ", ")
+	cmdAdd := exec.Command("nft", "add", "element", "inet", "filter", setName, fmt.Sprintf("{ %s }", elements))
 	if output, err := cmdAdd.CombinedOutput(); err != nil {
-		s.logger.Error("Failed to update set elements", "set", ipset.Name, "error", err, "output", string(output))
+		s.logger.Error("Failed to update set elements", "set", setName, "error", err, "output", string(output))
 	} else {
-		s.logger.Info("Updated DNS set", "set", ipset.Name, "count", len(allIPs))
+		s.logger.Info("Updated DNS set", "set", setName, "count", len(ips))
 	}
 }

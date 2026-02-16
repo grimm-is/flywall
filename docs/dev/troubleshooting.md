@@ -85,11 +85,11 @@ qemu-system-x86_64: error: ...
 **Fix**:
 ```bash
 # Kill existing VMs
-make vm-stop
+fw vm stop
 
 # Rebuild image
-make clean-all
-make vm-setup
+fw clean
+fw vm setup
 
 # Check if KVM available (optional, VM will be slow without)
 ls /dev/kvm
@@ -120,7 +120,7 @@ ssh -p 2222 root@localhost
 **Fix**: Check VM console output:
 ```bash
 # Run with visible console
-VISIBLE=1 make vm-start
+fw vm start --visible
 ```
 
 ## Configuration Errors

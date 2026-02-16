@@ -1,7 +1,10 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package vpn
 
 import (
 	"context"
+
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/logging"
 )
@@ -28,6 +31,11 @@ func NewManager(cfg *config.VPNConfig, logger *logging.Logger) (*Manager, error)
 			continue
 		}
 
+		// Default interface to Name if empty
+		if wgCfg.Interface == "" {
+			wgCfg.Interface = wgCfg.Name
+		}
+
 		// Map config to internal vpn type
 		internalCfg := WireGuardConfig{
 			Enabled:          wgCfg.Enabled,
@@ -38,19 +46,20 @@ func NewManager(cfg *config.VPNConfig, logger *logging.Logger) (*Manager, error)
 			PrivateKeyFile:   wgCfg.PrivateKeyFile,
 			ListenPort:       wgCfg.ListenPort,
 			Address:          wgCfg.Address,
-			DNS:              wgCfg.DNS,
 			MTU:              wgCfg.MTU,
 			FWMark:           wgCfg.FWMark,
+			Table:            wgCfg.Table,
 		}
 
-		for _, p := range wgCfg.Peers {
+		// Convert peers
+		for _, peer := range wgCfg.Peers {
 			internalPeer := WireGuardPeer{
-				Name:                p.Name,
-				PublicKey:           p.PublicKey,
-				PresharedKey:        p.PresharedKey,
-				Endpoint:            p.Endpoint,
-				AllowedIPs:          p.AllowedIPs,
-				PersistentKeepalive: p.PersistentKeepalive,
+				Name:                peer.Name,
+				PublicKey:           peer.PublicKey,
+				PresharedKey:        peer.PresharedKey,
+				Endpoint:            peer.Endpoint,
+				AllowedIPs:          peer.AllowedIPs,
+				PersistentKeepalive: peer.PersistentKeepalive,
 			}
 			internalCfg.Peers = append(internalCfg.Peers, internalPeer)
 		}
@@ -65,10 +74,15 @@ func NewManager(cfg *config.VPNConfig, logger *logging.Logger) (*Manager, error)
 			continue
 		}
 
+		// Default interface to Name if empty
+		if tsCfg.Interface == "" {
+			tsCfg.Interface = tsCfg.Name
+		}
+
 		internalCfg := TailscaleConfig{
 			Enabled:           tsCfg.Enabled,
 			Interface:         tsCfg.Interface,
-			AuthKey:           tsCfg.AuthKey,
+			AuthKey:           string(tsCfg.AuthKey),
 			AuthKeyEnv:        tsCfg.AuthKeyEnv,
 			ControlURL:        tsCfg.ControlURL,
 			ManagementAccess:  tsCfg.ManagementAccess,

@@ -220,6 +220,12 @@ export const zones = derived(
                 (p: any) => p.source_zone === zone.name || p.destination_zone === zone.name
             ).length;
 
+            // Latency from monitors
+            const monitor = ($status?.monitors || []).find(
+                (m: any) => m.route_name === zone.name || m.target === zone.gateway || m.target === zone.ip
+            );
+            const latencyMs = monitor?.latency_ms;
+
             return {
                 name: zone.name,
                 type: zoneType,
@@ -227,12 +233,12 @@ export const zones = derived(
                 ip: zone.ip || ips[0] || "",
                 ips,
                 cidr: zone.cidr,
-                status: isWan ? "connected" : "active",
+                status: isWan ? (monitor?.is_up ? "connected" : "down") : "active",
                 isWan,
                 stealthStatus,
                 pingEnabled: stealthStatus === "beacon",
                 openPorts,
-                latencyMs: isWan ? 12 : undefined, // TODO: Real latency from health check
+                latencyMs,
                 deviceCount,
                 devices,
                 learningMode: zone.learning_mode || null,

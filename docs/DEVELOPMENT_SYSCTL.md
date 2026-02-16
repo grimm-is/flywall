@@ -41,7 +41,7 @@ Created comprehensive tuning system with:
 - ICMP rate limiting
 
 ### 2. Configuration Schema
-**Files**: 
+**Files**:
 - `internal/config/config.go` - Added `System *SystemConfig` field
 - `internal/config/system.go` - Added `SystemConfig` struct
 
@@ -49,7 +49,7 @@ HCL syntax:
 ```hcl
 system {
   sysctl_profile = "default"  # or performance, low-memory, security
-  
+
   sysctl = {
     "net.core.rmem_max" = "134217728"
   }
@@ -174,7 +174,7 @@ system {
 ```hcl
 system {
   sysctl_profile = "default"
-  
+
   sysctl = {
     "net.netfilter.nf_conntrack_max" = "524288"  # 512k connections
     "net.core.rmem_max" = "134217728"            # 128MB buffers

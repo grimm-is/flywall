@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -111,7 +113,12 @@ func (h *ScannerHandlers) Status(w http.ResponseWriter, r *http.Request) {
 		WriteErrorCtx(w, r, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-
+	h.server.logger.Info("DEBUG: Status Handler: Calling client.GetScanStatus")
+	defer func() {
+		if r := recover(); r != nil {
+			h.server.logger.Info("DEBUG: Status Handler: PANIC", "panic", r)
+		}
+	}()
 	scanning, lastResult, err := h.client.GetScanStatus()
 	if err != nil {
 		WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())

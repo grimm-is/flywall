@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package identity
 
 import (
@@ -63,15 +65,18 @@ func (s *Service) syncGroupToFirewallLocked(groupID string) {
 	// Or we just implement removal for exact names.
 
 	if hasSchedule {
+		targetPolicy := group.TargetPolicy
+		if targetPolicy == "" {
+			targetPolicy = "lan_wan" // Default
+		}
+
 		for i, block := range group.Schedule.Blocks {
 			ruleName := fmt.Sprintf("%s_%d", rulePrefix, i)
 
 			// Construct ScheduledRule
-			// We target the "lan_wan" policy by default for internet blocking.
-			// TODO: Make this configurable or dynamic.
 			schedRule := config.ScheduledRule{
 				Name:       ruleName,
-				PolicyName: "lan_wan",
+				PolicyName: targetPolicy,
 				Enabled:    true,
 				Rule: config.PolicyRule{
 					Name:        fmt.Sprintf("Block %s (%d)", group.Name, i),
@@ -88,8 +93,13 @@ func (s *Service) syncGroupToFirewallLocked(groupID string) {
 				logging.Error("Failed to apply group schedule rule", "rule", ruleName, "error", err)
 			}
 		}
-		// TODO: Clean up extra rules if blocks decreased?
-		// For now, we don't handle shrinking block lists gracefully without tracking.
+
+		// Clean up extra rules if blocks decreased
+		for i := len(group.Schedule.Blocks); i < 10; i++ {
+			ruleName := fmt.Sprintf("%s_%d", rulePrefix, i)
+			dummyRule := config.ScheduledRule{Name: ruleName}
+			_ = s.fwMgr.ApplyScheduledRule(dummyRule, false)
+		}
 	} else {
 		// Schedule disabled - remove rules (we try to remove index 0..9 just in case)
 		for i := 0; i < 10; i++ {

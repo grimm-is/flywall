@@ -10,7 +10,7 @@
   let confirmOpen = $state(false);
   let verify = $state(true);
   let pingTargetsText = $state("8.8.8.8");
-  
+
   // Countdown / verification state
   let applyPhase = $state<"idle" | "applying" | "verifying" | "success" | "failed">("idle");
   let countdown = $state(0);
@@ -47,7 +47,7 @@
     applying = true;
     applyPhase = "applying";
     verificationMessage = "Applying configuration...";
-    
+
     try {
       let targets: string[] = [];
       if (verify && pingTargetsText.trim()) {
@@ -66,7 +66,7 @@
 
       const res = await api.safeApplyConfig(targets);
       stopCountdown();
-      
+
       if (res.success) {
         applyPhase = "success";
         verificationMessage = "";

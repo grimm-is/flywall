@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -308,13 +310,19 @@ type rateLimiter struct {
 }
 
 func (m *AuthMiddleware) checkRateLimit(keyID string, limit int) bool {
-	m.mu.Lock()
+	m.mu.RLock()
 	rl, ok := m.rateLimiters[keyID]
+	m.mu.RUnlock()
+
 	if !ok {
-		rl = &rateLimiter{tokens: limit, lastReset: clock.Now()}
-		m.rateLimiters[keyID] = rl
+		m.mu.Lock()
+		rl, ok = m.rateLimiters[keyID]
+		if !ok {
+			rl = &rateLimiter{tokens: limit, lastReset: clock.Now()}
+			m.rateLimiters[keyID] = rl
+		}
+		m.mu.Unlock()
 	}
-	m.mu.Unlock()
 
 	rl.mu.Lock()
 	defer rl.mu.Unlock()

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 func init() {
@@ -66,7 +68,7 @@ func migrateLegacyAPIConfig(cfg *Config) error {
 		// BUT we can use "interfaces = []" rule with the specific interfaces if we knew them.
 		// OR we can just add a comment/rule?
 		// HACK: The configuration object doesn't have the ZoneResolver loaded/map built.
-		
+
 		// If we skip Zone migration here, we MUST keep Zone support in script_builder.
 		// This implies hybrid approach: cfg.Web is truth, BUT Zone.Management adds to it?
 		// No, better to keep script_builder able to generate "legacy" rules if they exist.

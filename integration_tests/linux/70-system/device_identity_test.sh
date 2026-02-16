@@ -43,12 +43,14 @@ EOF
 plan 8
 
 start_ctl "$CONFIG_FILE"
+export FLYWALL_NO_SANDBOX=1
+export FLYWALL_MOCK_RPC=0
 start_api -listen :8090
 dilated_sleep 2
 
 # Test 1: GET devices endpoint
 diag "Test 1: Devices endpoint"
-HTTP_CODE=$(curl -s -o /tmp/devices.json -w "%{http_code}" "http://127.0.0.1:8090/api/devices")
+HTTP_CODE=$(curl -s -o /tmp/devices_$$.json -w "%{http_code}" "http://127.0.0.1:8090/api/devices")
 if [ "$HTTP_CODE" -eq 200 ]; then
     ok 0 "GET /api/devices returns 200"
 else
@@ -57,23 +59,23 @@ fi
 
 # Test 2: POST device identity
 diag "Test 2: Device identity update"
-curl -s -o /tmp/identity_response.txt -w "%{http_code}" -X POST \
+curl -s -o /tmp/identity_response_$$.txt -w "%{http_code}" -X POST \
     -H "Content-Type: application/json" \
     -H "X-API-Key: test-bypass" \
     -d '{"mac":"aa:bb:cc:dd:ee:ff","alias":"Test Device","owner":"TestUser"}' \
-    "http://127.0.0.1:8090/api/devices/identity" > /tmp/http_code.txt
-HTTP_CODE=$(cat /tmp/http_code.txt)
+    "http://127.0.0.1:8090/api/devices/identity" > /tmp/http_code_$$.txt
+HTTP_CODE=$(cat /tmp/http_code_$$.txt)
 if [ "$HTTP_CODE" -eq 200 ]; then
     ok 0 "POST /api/devices/identity returns 200"
 else
     ok 1 "POST /api/devices/identity returns 200" severity fail expected "200" actual "$HTTP_CODE"
     echo "# Response Body:"
-    cat /tmp/identity_response.txt
+    cat /tmp/identity_response_$$.txt
 fi
 
 # Test 3: GET groups (empty initially)
 diag "Test 3: GET groups"
-HTTP_CODE=$(curl -s -o /tmp/groups.json -w "%{http_code}" "http://127.0.0.1:8090/api/groups")
+HTTP_CODE=$(curl -s -o /tmp/groups_$$.json -w "%{http_code}" "http://127.0.0.1:8090/api/groups")
 if [ "$HTTP_CODE" -eq 200 ]; then
     ok 0 "GET /api/groups returns 200"
 else
@@ -102,7 +104,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:809
 if [ "$HTTP_CODE" -eq 400 ]; then
     ok 0 "Empty group name returns 400"
 else
-    ok 0 "Empty group name returns $HTTP_CODE (validation behavior varies)" severity skip
+    ok 1 "Empty group name returns $HTTP_CODE (validation behavior varies)" severity fail expected "400" actual "$HTTP_CODE"
 fi
 
 # Test 6: Sad path - invalid JSON
@@ -140,7 +142,7 @@ if [ -n "$GROUP_ID" ]; then
         ok 1 "DELETE /api/groups/:id returns 200" severity fail expected "200" actual "$HTTP_CODE"
     fi
 else
-    ok 0 "DELETE skipped (no group ID found)" severity skip
+    ok 1 "DELETE skipped (no group ID found)" severity fail
 fi
 
 diag "Device identity & groups test completed"

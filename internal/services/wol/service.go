@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package wol
 
 import (
@@ -7,11 +9,10 @@ import (
 	"strings"
 )
 
-// MagicPacket represents a Wake-on-LAN magic packet.
+// MagicPacket for Wake-on-LAN.
 // Format: 6 bytes of 0xFF followed by target MAC address repeated 16 times.
 type MagicPacket [102]byte
 
-// New creates a new magic packet for the given MAC address.
 func New(mac string) (*MagicPacket, error) {
 	// Parse MAC address
 	macBytes, err := ParseMAC(mac)
@@ -34,7 +35,6 @@ func New(mac string) (*MagicPacket, error) {
 	return &packet, nil
 }
 
-// Send sends the magic packet to the broadcast address.
 func (p *MagicPacket) Send(broadcastAddr string) error {
 	if broadcastAddr == "" {
 		broadcastAddr = "255.255.255.255:9"
@@ -81,7 +81,6 @@ func SendToInterface(mac, ifaceName string) error {
 	return packet.Send(broadcastAddr + ":9")
 }
 
-// Wake sends a WoL packet to the specified MAC address.
 func Wake(mac string) error {
 	packet, err := New(mac)
 	if err != nil {
@@ -90,7 +89,6 @@ func Wake(mac string) error {
 	return packet.Send("255.255.255.255:9")
 }
 
-// ParseMAC parses a MAC address string into bytes.
 func ParseMAC(mac string) ([]byte, error) {
 	// Remove common separators
 	mac = strings.ReplaceAll(mac, ":", "")
@@ -110,7 +108,6 @@ func ParseMAC(mac string) ([]byte, error) {
 	return bytes, nil
 }
 
-// getInterfaceBroadcast returns the broadcast address for an interface.
 func getInterfaceBroadcast(ifaceName string) (string, error) {
 	iface, err := net.InterfaceByName(ifaceName)
 	if err != nil {

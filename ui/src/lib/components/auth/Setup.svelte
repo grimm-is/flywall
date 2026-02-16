@@ -2,6 +2,7 @@
     import { api, currentView, brand } from "$lib/stores/app";
     import Button from "$lib/components/Button.svelte";
     import Input from "$lib/components/Input.svelte";
+    import PasswordInput from "$lib/components/PasswordInput.svelte";
     import Card from "$lib/components/Card.svelte";
     import { t } from "svelte-i18n";
 
@@ -16,8 +17,9 @@
             setupError = "Passwords do not match";
             return;
         }
-        if (setupPassword.length < 8) {
-            setupError = "Password must be at least 8 characters";
+        // Basic length check, but rely more on complexity meter visually
+        if (setupPassword.length < 1) {
+            setupError = "Password cannot be empty";
             return;
         }
         try {
@@ -28,6 +30,8 @@
             setupError = e.message || "Setup failed";
         }
     }
+
+    // Complexity logic moved to PasswordInput.svelte
 </script>
 
 <div class="auth-view">
@@ -52,27 +56,37 @@
                         id="setup-username"
                         label={$t("auth.username")}
                         bind:value={setupUsername}
-                        placeholder={$t("auth.username_placeholder")}
+                        placeholder="admin"
                         required
                     />
 
-                    <Input
+                    <PasswordInput
                         id="setup-password"
-                        type="password"
                         label={$t("auth.password")}
                         bind:value={setupPassword}
-                        placeholder={$t("auth.password_min_chars")}
+                        placeholder={$t("auth.password")}
+                        required
+                        showComplexity
+                        username={setupUsername}
+                    />
+
+                    <PasswordInput
+                        id="setup-confirm"
+                        label={$t("auth.confirm_password")}
+                        bind:value={setupConfirm}
+                        placeholder={$t("auth.confirm_password")}
                         required
                     />
 
-                    <Input
-                        id="setup-confirm"
-                        type="password"
-                        label={$t("auth.confirm_password")}
-                        bind:value={setupConfirm}
-                        placeholder={$t("auth.confirm_password_placeholder")}
-                        required
-                    />
+                    {#if setupPassword && setupConfirm}
+                        {#if setupPassword === setupConfirm}
+                            <div class="password-match">✓ Passwords match</div>
+                        {:else}
+                            <div class="password-mismatch">
+                                Passwords do not match
+                            </div>
+                        {/if}
+                    {/if}
 
                     {#if setupError}
                         <div class="error-message">{setupError}</div>
@@ -135,5 +149,21 @@
         border-radius: var(--radius-md);
         color: var(--color-destructive);
         font-size: var(--text-sm);
+    }
+
+    .password-match {
+        font-size: var(--text-xs);
+        color: var(--color-success, #22c55e);
+        margin-top: -10px;
+        margin-bottom: 10px;
+        font-weight: 500;
+    }
+
+    .password-mismatch {
+        font-size: var(--text-xs);
+        color: var(--color-destructive);
+        margin-top: -10px;
+        margin-bottom: 10px;
+        font-weight: 500;
     }
 </style>

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package network
 
 import (
@@ -7,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"grimm.is/flywall/internal/host"
 	"grimm.is/flywall/internal/logging"
 )
 
@@ -328,23 +331,14 @@ func (t *SysctlTuner) getAvailableCongestionControls() []string {
 
 // detectRAM detects total system RAM in GB.
 func detectRAM() int {
-	data, err := os.ReadFile("/proc/meminfo")
+	info, err := host.GetMemoryInfo()
 	if err != nil {
 		return 1 // Safe fallback
 	}
 
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "MemTotal:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				kb, _ := strconv.Atoi(fields[1])
-				gb := kb / (1024 * 1024)
-				if gb < 1 {
-					return 1
-				}
-				return gb
-			}
-		}
+	gb := int(info.TotalBytes / (1024 * 1024 * 1024))
+	if gb < 1 {
+		return 1
 	}
-	return 1
+	return gb
 }

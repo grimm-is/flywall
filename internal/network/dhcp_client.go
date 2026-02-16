@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 // +build linux
 
@@ -14,10 +16,11 @@ import (
 	"strings"
 	"time"
 
+	"grimm.is/flywall/internal/install"
+
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
 	"github.com/vishvananda/netlink"
-	"grimm.is/flywall/internal/brand"
 )
 
 // StartNativeDHCPClient starts a native DHCPv4 client on the specified interface.
@@ -52,7 +55,7 @@ func (m *Manager) runDHCPClientLoop(client *nclient4.Client, ifaceName string, t
 			log.Printf("[network] CRITICAL: DHCP client panic on %s: %v", ifaceName, r)
 
 			// Delete the saved lease file to prevent crash loops on restart
-			leasePath := filepath.Join(brand.GetStateDir(), fmt.Sprintf("dhcp_client_%s.json", ifaceName))
+			leasePath := filepath.Join(install.GetStateDir(), fmt.Sprintf("dhcp_client_%s.json", ifaceName))
 			if err := os.Remove(leasePath); err != nil && !os.IsNotExist(err) {
 				log.Printf("[network] Failed to remove potentially corrupted lease file %s: %v", leasePath, err)
 			} else {
@@ -200,7 +203,7 @@ func (m *Manager) saveLease(ifaceName string, lease *nclient4.Lease) {
 		return
 	}
 
-	path := filepath.Join(brand.GetStateDir(), fmt.Sprintf("dhcp_client_%s.json", ifaceName))
+	path := filepath.Join(install.GetStateDir(), fmt.Sprintf("dhcp_client_%s.json", ifaceName))
 	// Ensure dir exists
 	os.MkdirAll(filepath.Dir(path), 0755)
 
@@ -210,7 +213,7 @@ func (m *Manager) saveLease(ifaceName string, lease *nclient4.Lease) {
 }
 
 func (m *Manager) loadLease(ifaceName string) (*SavedLease, error) {
-	path := filepath.Join(brand.GetStateDir(), fmt.Sprintf("dhcp_client_%s.json", ifaceName))
+	path := filepath.Join(install.GetStateDir(), fmt.Sprintf("dhcp_client_%s.json", ifaceName))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

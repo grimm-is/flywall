@@ -40,17 +40,21 @@ interface "veth-lan" {
 }
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 zone "WAN" {
-  interfaces = ["eth0"]
+  match {
+    interface = "eth0"
+  }
 }
 
 # Enable GeoIP (database path doesn't need to exist for dry-run)
 geoip {
   enabled = true
-  database_path = "/var/lib/flywall/geoip/GeoLite2-Country.mmdb"
+  database_path = "/opt/flywall/var/lib/geoip/GeoLite2-Country.mmdb"
 }
 
 # Policy with GeoIP blocking: Block traffic from uninhabited territories (test only)

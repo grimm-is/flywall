@@ -38,17 +38,13 @@ EOF
 # Start should succeed and log migration
 start_ctl "$LEGACY_CONFIG"
 
-dilated_sleep 2
-
-if [ -f "$CTL_LOG" ]; then
-    if grep -q "Configuration loaded\|migrated\|schema" "$CTL_LOG" 2>/dev/null; then
-        pass "Missing schema_version handled gracefully"
-    else
-        pass "Config loaded despite missing schema_version"
-    fi
+# Wait for migration log or config load
+if wait_for_log_entry "$CTL_LOG" "Configuration loaded\|migrated\|schema" 5; then
+    pass "Migration logs found"
 else
-    pass "Control plane started (implicit migration)"
+    pass "Config loaded (implicit)"
 fi
+
 
 stop_ctl
 
@@ -66,7 +62,7 @@ interface "eth0" {
 EOF
 
 start_ctl "$LEGACY_CONFIG"
-dilated_sleep 2
+
 
 # Check if control plane is still running with new PID
 if [ -n "$CTL_PID" ] && kill -0 $CTL_PID 2>/dev/null; then
@@ -94,7 +90,7 @@ protection {
 EOF
 
 start_ctl "$LEGACY_CONFIG"
-dilated_sleep 2
+
 
 # Should have been migrated to protection "legacy_global" { interface = "*" }
 if [ -n "$CTL_PID" ] && kill -0 $CTL_PID 2>/dev/null; then
@@ -127,7 +123,7 @@ zone "dmz" {}
 EOF
 
 start_ctl "$LEGACY_CONFIG"
-dilated_sleep 2
+
 
 if [ -n "$CTL_PID" ] && kill -0 $CTL_PID 2>/dev/null; then
     pass "Interface zone field canonicalized to zone matches"
@@ -137,35 +133,8 @@ fi
 
 stop_ctl
 
-# Test 5: Zone.interfaces deprecated list migration
-diag "Test 5: Zone interfaces list migration"
-cat > "$LEGACY_CONFIG" <<'EOF'
-schema_version = "1.0"
-
-interface "eth0" {
-    ipv4 = ["192.168.1.1/24"]
-}
-
-interface "wlan0" {
-    ipv4 = ["10.0.0.1/24"]
-}
-
-zone "lan" {
-    # Deprecated syntax - interfaces list
-    interfaces = ["eth0", "wlan0"]
-}
-EOF
-
-start_ctl "$LEGACY_CONFIG"
-dilated_sleep 2
-
-if [ -n "$CTL_PID" ] && kill -0 $CTL_PID 2>/dev/null; then
-    pass "Zone interfaces list migrated to matches"
-else
-    diag "CTL log:"
-    cat "$CTL_LOG" 2>/dev/null | tail -20
-    fail "Control plane crashed on zone interfaces list migration"
-fi
+# Test 5: Removed (Zone.interfaces deprecated list migration logic removed)
+# diag "Test 5: Zone interfaces list migration" - SKIPPED
 
 stop_ctl
 

@@ -14,16 +14,8 @@ TEST_TIMEOUT=60
 
 require_root
 require_binary
+# Register cleanup handler
 cleanup_on_exit
-
-plan 4
-
-cleanup() {
-    diag "Cleanup..."
-    stop_ctl
-    rm -f "$TEST_CONFIG" 2>/dev/null
-}
-trap cleanup EXIT
 
 # --- Setup ---
 diag "Starting LLDP Listener Integration Test"
@@ -35,7 +27,7 @@ schema_version = "1.0"
 
 api {
   enabled = false
-  listen  = "127.0.0.1:8081"
+  listen  = "127.0.0.1:$TEST_API_PORT"
   require_auth = true
 
   key "admin-key" {
@@ -50,7 +42,9 @@ interface "eth0" {
 }
 
 zone "lan" {
-  interfaces = ["eth0"]
+  match {
+    interface = "eth0"
+  }
 }
 EOF
 
@@ -60,10 +54,10 @@ ok 0 "Control plane started"
 
 # 2. Start API Server
 export FLYWALL_NO_SANDBOX=1
-start_api -listen :8081
+start_api -listen :$TEST_API_PORT
 ok 0 "API server started"
 
-API_URL="http://127.0.0.1:8081/api"
+API_URL="http://127.0.0.1:$TEST_API_PORT/api"
 AUTH_HEADER="X-API-Key: gfw_lldptest123"
 
 dilated_sleep 2

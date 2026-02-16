@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 // +build linux
 
@@ -16,9 +18,9 @@ import (
 	"grimm.is/flywall/internal/clock"
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/logging"
+	"grimm.is/flywall/internal/netutil"
 )
 
-// Role represents the current HA role of this node.
 type Role string
 
 const (
@@ -99,16 +101,22 @@ type DHCPReclaimer interface {
 	ReclaimLease(ifaceName string) (interface{}, error)
 }
 
+// Replicator defines the interface for getting state version.
+type Replicator interface {
+	CurrentVersion() uint64
+}
+
 // Service manages high-availability failover.
 type Service struct {
-	config  *config.ReplicationConfig
-	haConf  *config.HAConfig
-	nodeID  string
-	role    Role
-	peer    PeerState
-	linkMgr LinkManager
-	dhcpMgr DHCPReclaimer
-	logger  *logging.Logger
+	config     *config.ReplicationConfig
+	haConf     *config.HAConfig
+	nodeID     string
+	role       Role
+	peer       PeerState
+	linkMgr    LinkManager
+	dhcpMgr    DHCPReclaimer
+	replicator Replicator
+	logger     *logging.Logger
 
 	// Callbacks for role transitions
 	onBecomePrimary func() error
@@ -125,9 +133,11 @@ type Service struct {
 
 	// Conntrackd manager for connection state sync
 	conntrackdMgr *ConntrackdManager
+
+	// Original MAC addresses saved before virtual MAC application
+	origMACs map[string][]byte
 }
 
-// NewService creates a new HA service.
 func NewService(cfg *config.ReplicationConfig, nodeID string, linkMgr LinkManager, logger *logging.Logger) (*Service, error) {
 	if cfg.HA == nil {
 		return nil, fmt.Errorf("HA configuration is nil")
@@ -161,14 +171,15 @@ func NewService(cfg *config.ReplicationConfig, nodeID string, linkMgr LinkManage
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Service{
-		config:  cfg,
-		haConf:  haConf,
-		nodeID:  nodeID,
-		role:    role,
-		linkMgr: linkMgr,
-		logger:  logger,
-		ctx:     ctx,
-		cancel:  cancel,
+		config:   cfg,
+		haConf:   haConf,
+		nodeID:   nodeID,
+		role:     role,
+		linkMgr:  linkMgr,
+		logger:   logger,
+		ctx:      ctx,
+		cancel:   cancel,
+		origMACs: make(map[string][]byte),
 	}, nil
 }
 
@@ -196,7 +207,13 @@ func (s *Service) SetDHCPReclaimer(mgr DHCPReclaimer) {
 	s.dhcpMgr = mgr
 }
 
-// Start begins HA monitoring.
+// SetReplicator sets the replicator for getting state version.
+func (s *Service) SetReplicator(r Replicator) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.replicator = r
+}
+
 func (s *Service) Start() error {
 	if !s.haConf.Enabled {
 		s.logger.Info("HA is disabled, skipping start")
@@ -208,6 +225,12 @@ func (s *Service) Start() error {
 		"role", s.role,
 		"priority", s.haConf.Priority,
 		"peer", s.config.PeerAddr)
+
+	// Initialize peer state to avoid immediate failover on startup
+	// We act as if we just saw the peer, giving us HeartbeatInterval time to receive the first real packet
+	s.mu.Lock()
+	s.peer.LastSeen = clock.Now()
+	s.mu.Unlock()
 
 	// Setup UDP listener for receiving heartbeats
 	listenAddr := fmt.Sprintf(":%d", s.haConf.HeartbeatPort)
@@ -244,7 +267,6 @@ func (s *Service) Start() error {
 	return nil
 }
 
-// Stop stops HA monitoring.
 func (s *Service) Stop() {
 	s.cancel()
 
@@ -265,14 +287,12 @@ func (s *Service) Stop() {
 	s.logger.Info("HA service stopped")
 }
 
-// GetRole returns the current HA role.
 func (s *Service) GetRole() Role {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.role
 }
 
-// GetPeerState returns the current peer state.
 func (s *Service) GetPeerState() PeerState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -292,7 +312,6 @@ func (s *Service) TriggerFailover() error {
 	return s.performTakeover()
 }
 
-// runHeartbeatSender periodically sends heartbeats to the peer.
 func (s *Service) runHeartbeatSender() {
 	defer s.wg.Done()
 
@@ -330,14 +349,17 @@ func (s *Service) runHeartbeatSender() {
 	}
 }
 
-// sendHeartbeat sends a single heartbeat message to the peer.
 func (s *Service) sendHeartbeat() error {
 	s.mu.RLock()
+	version := uint64(0)
+	if s.replicator != nil {
+		version = s.replicator.CurrentVersion()
+	}
 	msg := HeartbeatMessage{
 		NodeID:       s.nodeID,
 		Role:         s.role,
 		Priority:     s.haConf.Priority,
-		StateVersion: 0, // TODO: Get from replicator
+		StateVersion: version,
 		Timestamp:    clock.Now(),
 	}
 	s.mu.RUnlock()
@@ -365,7 +387,6 @@ func (s *Service) sendHeartbeat() error {
 	return err
 }
 
-// runHeartbeatReceiver listens for heartbeats from the peer.
 func (s *Service) runHeartbeatReceiver() {
 	defer s.wg.Done()
 
@@ -611,16 +632,16 @@ func (s *Service) removeVirtualResources() error {
 		}
 	}
 
-	// Remove MACs (restore original?)
-	// For now we don't restore original MACs as it might be complex to track.
-	// We rely on the fact that we're no longer using the VIPs.
-	// But ideally we should. For now, let's just leave MACs as they are or log.
-	// TODO: Restore original MACs
-
-	// Actually, we must at least stop asserting the virtual MAC if we can.
-	// But LinkManager SetHardwareAddr replaces it.
-	// Without storing original MAC, we can't restore.
-	// For this sprint, removing IPs is the critical part for avoiding conflict.
+	// Restore original MACs
+	for _, vmac := range s.haConf.VirtualMACs {
+		if origMAC, ok := s.origMACs[vmac.Interface]; ok {
+			s.logger.Info("Restoring original MAC", "interface", vmac.Interface, "mac", netutil.FormatMAC(origMAC))
+			if err := s.linkMgr.SetHardwareAddr(vmac.Interface, origMAC); err != nil {
+				s.logger.Error("Failed to restore original MAC", "interface", vmac.Interface, "error", err)
+				lastErr = err
+			}
+		}
+	}
 
 	return lastErr
 }
@@ -632,18 +653,26 @@ func (s *Service) applyVirtualMAC(vmac config.VirtualMAC) error {
 
 	if vmac.Address != "" {
 		// Parse configured MAC
-		mac, err = parseMAC(vmac.Address)
+		mac, err = netutil.ParseMAC(vmac.Address)
 		if err != nil {
 			return fmt.Errorf("invalid MAC address %s: %w", vmac.Address, err)
 		}
 	} else {
 		// Generate MAC from interface name
-		mac = generateVirtualMAC(vmac.Interface)
+		mac = netutil.GenerateVirtualMAC(vmac.Interface)
 	}
 
 	s.logger.Info("Applying virtual MAC",
 		"interface", vmac.Interface,
-		"mac", formatMAC(mac))
+		"mac", netutil.FormatMAC(mac))
+
+	// Save original MAC before overwriting (for restore on demotion)
+	if _, saved := s.origMACs[vmac.Interface]; !saved {
+		if origMAC, err := s.linkMgr.GetHardwareAddr(vmac.Interface); err == nil {
+			s.origMACs[vmac.Interface] = origMAC
+			s.logger.Debug("Saved original MAC", "interface", vmac.Interface, "mac", netutil.FormatMAC(origMAC))
+		}
+	}
 
 	if err := s.linkMgr.SetHardwareAddr(vmac.Interface, mac); err != nil {
 		return err
@@ -698,35 +727,8 @@ func (s *Service) removeVirtualIP(vip config.VirtualIP) error {
 	return removeIPAddress(vip.Interface, addr)
 }
 
-// Helper functions (duplicated from ctlplane to avoid circular import)
+// detectIPAddr adds a virtual IP address to an interface.
+// This is a helper function that might be missing or part of a different file not shown in the diff.
+// However, we are removing the duplicate MAC functions.
 
-func parseMAC(macStr string) ([]byte, error) {
-	hw, err := net.ParseMAC(macStr)
-	if err != nil {
-		return nil, err
-	}
-	return hw, nil
-}
-
-func formatMAC(mac []byte) string {
-	if len(mac) != 6 {
-		return ""
-	}
-	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x",
-		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
-}
-
-func generateVirtualMAC(ifaceName string) []byte {
-	hash := uint32(0)
-	for _, c := range ifaceName {
-		hash = hash*31 + uint32(c)
-	}
-	return []byte{
-		0x02, // Locally-administered, unicast
-		0x67, // 'g'
-		0x63, // 'c'
-		byte(hash >> 16),
-		byte(hash >> 8),
-		byte(hash),
-	}
-}
+// Helpers removed (moved to internal/netutil)

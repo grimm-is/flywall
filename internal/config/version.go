@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 import (
@@ -77,6 +79,7 @@ func (v SchemaVersion) NeedsMigration(target SchemaVersion) bool {
 // SupportedVersions lists all schema versions we can read
 var SupportedVersions = []SchemaVersion{
 	{Major: 1, Minor: 0},
+	{Major: 1, Minor: 1},
 }
 
 // IsSupportedVersion checks if we have a reader for this version

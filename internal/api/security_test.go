@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -54,6 +56,9 @@ func TestSecurityManager_BlockIP(t *testing.T) {
 		t.Errorf("BlockIP failed: %v", err)
 	}
 
+	// Wait for async operation to complete
+	time.Sleep(100 * time.Millisecond)
+
 	// Verify call
 	if len(mock.added) != 1 {
 		t.Errorf("Expected 1 addition, got %d", len(mock.added))
@@ -87,6 +92,10 @@ func TestSecurityManager_AutoBlock(t *testing.T) {
 
 	// 3rd attempt - Should Block
 	sm.RecordFailedAttempt("10.0.0.1", "bad_pass", 3, time.Minute)
+
+	// Wait for async operation to complete
+	time.Sleep(100 * time.Millisecond)
+
 	if len(mock.added) != 1 {
 		t.Errorf("Should have blocked after 3 attempts")
 	} else if mock.added[0] != "blocked_ips:10.0.0.1" {

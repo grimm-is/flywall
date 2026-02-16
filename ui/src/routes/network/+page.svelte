@@ -16,7 +16,7 @@
   // Tab definitions
   const tabs = [
     { id: "interfaces", label: "Interfaces", icon: "settings_ethernet" },
-    { id: "zones", label: "Zones", icon: "security" },
+    { id: "zones", label: "Zones", icon: "domain" },
     { id: "devices", label: "Devices", icon: "devices" },
     { id: "dhcp", label: "DHCP Server", icon: "dns" }, // Using DNS icon for DHCP as it relates to addressing
     { id: "dns", label: "DNS Server", icon: "language" },

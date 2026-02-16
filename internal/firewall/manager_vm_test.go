@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 // +build linux
 
@@ -47,8 +49,8 @@ func TestManager_ApplyConfig_Integration(t *testing.T) {
 			{Name: "whitelist", Type: "ipv4_addr", Entries: []string{"1.2.3.4"}},
 		},
 		Zones: []config.Zone{
-			{Name: "wan", Action: "drop", Interfaces: []string{"eth0"}},
-			{Name: "lan", Action: "accept", Interfaces: []string{"eth1"}},
+			{Name: "wan", Action: "drop", Matches: []config.RuleMatch{{Interface: "eth0"}}},
+			{Name: "lan", Action: "accept", Matches: []config.RuleMatch{{Interface: "eth1"}}},
 		},
 		NAT: []config.NATRule{
 			{Name: "masq", Type: "masquerade", OutInterface: "eth0"},

@@ -17,7 +17,7 @@ echo "Starting Integrity Protection Test..."
 
 # 1. Start Control Plane with Integrity Monitoring enabled
 # We need a config that enables monitoring
-cat > /tmp/firewall_integrity.hcl <<EOF
+cat > /tmp/firewall_integrity_$$.hcl <<EOF
 interface "eth0" {
     ipv4 = ["192.168.1.1/24"]
 }
@@ -33,7 +33,7 @@ EOF
 
 # Start the firewall in background (config is positional arg, not flag)
 cleanup_on_exit
-start_ctl "/tmp/firewall_integrity.hcl"
+start_ctl "/tmp/firewall_integrity_$$.hcl"
 diag "Control plane started"
 
 # Wait for startup

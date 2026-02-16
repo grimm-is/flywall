@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package dns
 
 import (
@@ -6,12 +8,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"grimm.is/flywall/internal/logging"
 )
 
 var (
@@ -24,13 +27,11 @@ const (
 	MaxBlocklistSize = 10 * 1024 * 1024
 )
 
-// DownloadBlocklist fetches a blocklist from URL and parses it
-// Supports both hosts-file format (0.0.0.0 domain) and plain domain lists
+// DownloadBlocklist fetches and parses a blocklist.
 func DownloadBlocklist(url string) ([]string, error) {
 	return DownloadBlocklistWithTimeout(url, int(DefaultBlocklistTimeout.Milliseconds()))
 }
 
-// DownloadBlocklistWithTimeout fetches a blocklist with a custom timeout in milliseconds
 func DownloadBlocklistWithTimeout(url string, timeoutMs int) ([]string, error) {
 	client := &http.Client{
 		Timeout: time.Duration(timeoutMs) * time.Millisecond,
@@ -60,12 +61,12 @@ func DownloadBlocklistWithCache(url, cachePath string) ([]string, error) {
 	if err == nil {
 		// Cache the successful download
 		if cacheErr := CacheBlocklist(cachePath, url, domains); cacheErr != nil {
-			log.Printf("[DNS] Warning: failed to cache blocklist: %v", cacheErr)
+			logging.Warn("[DNS] Warning: failed to cache blocklist: %v", cacheErr)
 		}
 		return domains, nil
 	}
 
-	log.Printf("[DNS] Failed to download blocklist, trying cache: %v", err)
+	logging.Warn("[DNS] Failed to download blocklist, trying cache: %v", err)
 
 	// Fallback to cache
 	cached, cacheErr := LoadCachedBlocklist(cachePath, url)
@@ -73,7 +74,7 @@ func DownloadBlocklistWithCache(url, cachePath string) ([]string, error) {
 		return nil, fmt.Errorf("download failed (%v) and no cache available (%v)", err, cacheErr)
 	}
 
-	log.Printf("[DNS] Loaded %d domains from cache for %s", len(cached), url)
+	logging.Info("[DNS] Loaded %d domains from cache for %s", len(cached), url)
 	return cached, nil
 }
 
@@ -132,7 +133,6 @@ func urlToFilename(url string) string {
 	return hex.EncodeToString(hash[:8]) + ".txt"
 }
 
-// CacheBlocklist saves a blocklist to disk
 func CacheBlocklist(cachePath, url string, domains []string) error {
 	if err := os.MkdirAll(cachePath, 0755); err != nil {
 		return fmt.Errorf("failed to create cache directory: %w", err)
@@ -154,7 +154,6 @@ func CacheBlocklist(cachePath, url string, domains []string) error {
 	return nil
 }
 
-// LoadCachedBlocklist loads a blocklist from cache
 func LoadCachedBlocklist(cachePath, url string) ([]string, error) {
 	filename := filepath.Join(cachePath, urlToFilename(url))
 	f, err := os.Open(filename)

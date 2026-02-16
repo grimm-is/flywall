@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -52,7 +54,7 @@ func TestCSRFEnforcement(t *testing.T) {
 		authStore:   store,
 		mux:         http.NewServeMux(),
 		logger:      logging.New(logging.DefaultConfig()),
-		Config:      &config.Config{API: &config.APIConfig{}},
+		Config:      &config.Config{API: &config.APIConfig{RequireAuth: true}},
 	}
 	s.initRoutes() // Registers routes on s.mux
 

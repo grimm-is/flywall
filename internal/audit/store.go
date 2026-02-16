@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package audit
 
 import (
@@ -28,9 +30,9 @@ type Event struct {
 
 // Store provides persistent storage for audit events.
 type Store struct {
-	mu           sync.RWMutex
-	db           *sql.DB
-	kernelAudit  bool
+	mu            sync.RWMutex
+	db            *sql.DB
+	kernelAudit   bool
 	retentionDays int
 }
 

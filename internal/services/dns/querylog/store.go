@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package querylog
 
 import (
@@ -121,8 +123,8 @@ func (s *Store) GetStats(from, to time.Time) (*Stats, error) {
 
 	// Total and Blocked
 	err := s.db.QueryRow(`
-		SELECT 
-			COUNT(*), 
+		SELECT
+			COUNT(*),
 			SUM(CASE WHEN blocked THEN 1 ELSE 0 END)
 		FROM query_logs
 		WHERE timestamp >= ? AND timestamp <= ?

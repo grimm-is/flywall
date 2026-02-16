@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package runtime
 
 import (
@@ -26,11 +28,11 @@ type NetworkSettings struct {
 }
 
 type NetworkEndpoint struct {
-	IPAddress   string `json:"IPAddress"`
-	Gateway     string `json:"Gateway"`
-	MacAddress  string `json:"MacAddress"`
-	NetworkID   string `json:"NetworkID"`
-	EndpointID  string `json:"EndpointID"`
+	IPAddress  string `json:"IPAddress"`
+	Gateway    string `json:"Gateway"`
+	MacAddress string `json:"MacAddress"`
+	NetworkID  string `json:"NetworkID"`
+	EndpointID string `json:"EndpointID"`
 }
 
 // DockerClient is a lightweight client for the Docker Unix socket.

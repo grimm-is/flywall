@@ -1,10 +1,14 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
+	"grimm.is/flywall/internal/install"
 	"context"
 	"flag"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"grimm.is/flywall/internal/brand"
@@ -17,7 +21,7 @@ import (
 func RunProxy(args []string) {
 	flags := flag.NewFlagSet("_proxy", flag.ExitOnError)
 	listenAddr := flags.String("listen", ":8080", "Address to listen on (TCP)")
-	targetSock := flags.String("target", "/run/flywall/api/api.sock", "Target Unix socket path")
+	targetSock := flags.String("target", filepath.Join(install.GetRunDir(), "api/api.sock"), "Target Unix socket path")
 	dropUser := flags.String("user", "", "User to drop privileges to")
 	noChroot := flags.Bool("no-chroot", false, "Skip chroot/sandbox setup")
 	tlsCert := flags.String("tls-cert", "", "TLS certificate file (enables HTTPS)")
@@ -50,7 +54,7 @@ func RunProxy(args []string) {
 		if uid, gid, err := resolveDropUser(*dropUser); err == nil {
 			// Chroot setup - skip if --no-chroot flag is set (for dev/demo mode)
 			if syscall.Geteuid() == 0 && !*noChroot {
-				jailPath := "/run/" + brand.LowerName + "-proxy-jail"
+				jailPath := filepath.Join(install.GetRunDir(), brand.LowerName+"-proxy-jail")
 				if err := setupProxyChroot(jailPath, *targetSock); err != nil {
 					logging.Error("Failed to setup proxy chroot: " + err.Error())
 					os.Exit(1)
@@ -60,13 +64,8 @@ func RunProxy(args []string) {
 					os.Exit(1)
 				}
 				// Adjust target path to be relative to chroot root
-				// If we mount /var/run/flywall/api -> /run/api
-				// Then target /var/run/flywall/api/api.sock becomes /run/api/api.sock
-				// Logic: setupProxyChroot handles the bind mount.
-				// We need to know the mapping.
-				// Assume targetSock is absolute host path.
-				// We map it to fixed path inside jail.
-				*targetSock = "/run/api/api.sock" // Simplified for now
+				// We mount the directory containing the socket to /run/api
+				*targetSock = filepath.Join("/run/api", filepath.Base(*targetSock))
 				server.SetTargetSock(*targetSock)
 			}
 
@@ -80,7 +79,7 @@ func RunProxy(args []string) {
 			os.Exit(1)
 		}
 	}
-    
+
 	// Context for shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

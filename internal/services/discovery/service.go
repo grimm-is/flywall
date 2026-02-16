@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package discovery
 
 import (
@@ -8,12 +10,13 @@ import (
 	"time"
 
 	"encoding/json"
-	"grimm.is/flywall/internal/logging"
 	"os"
 	"os/exec"
+
+	"grimm.is/flywall/internal/logging"
 )
 
-// SeenDevice represents a device observed on the network
+// SeenDevice observed on the network.
 type SeenDevice struct {
 	MAC       string    `json:"mac"`       // Primary key
 	IPs       []string  `json:"ips"`       // All IPs seen for this MAC
@@ -31,9 +34,9 @@ type SeenDevice struct {
 	PacketCount int64 `json:"packet_count"`
 
 	// mDNS profiling - collected from multicast DNS announcements
-	MDNSServices   []string          `json:"mdns_services,omitempty"`  // Service types: ["_googlecast._tcp", "_airplay._tcp"]
-	MDNSHostname   string            `json:"mdns_hostname,omitempty"`  // Announced hostname
-	MDNSTXTRecords map[string]string `json:"mdns_txt,omitempty"`       // TXT record key-values
+	MDNSServices   []string          `json:"mdns_services,omitempty"` // Service types: ["_googlecast._tcp", "_airplay._tcp"]
+	MDNSHostname   string            `json:"mdns_hostname,omitempty"` // Announced hostname
+	MDNSTXTRecords map[string]string `json:"mdns_txt,omitempty"`      // TXT record key-values
 
 	// DHCP profiling - collected from DHCP requests
 	DHCPFingerprint string           `json:"dhcp_fingerprint,omitempty"`  // Option 55: "1,3,6,15,31,33..."
@@ -99,15 +102,14 @@ type Collector struct {
 
 	// Event channels
 	events     chan PacketEvent
-	mdnsEvents chan MDNSEvent  // mDNS announcements
-	dhcpEvents chan DHCPEvent  // DHCP requests
+	mdnsEvents chan MDNSEvent // mDNS announcements
+	dhcpEvents chan DHCPEvent // DHCP requests
 
 	storagePath string // Path to persistence file
 	ctx         context.Context
 	cancel      context.CancelFunc
 }
 
-// NewCollector creates a new device collector
 func NewCollector(enrichFunc EnrichFunc, storagePath string) *Collector {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Collector{
@@ -125,22 +127,18 @@ func NewCollector(enrichFunc EnrichFunc, storagePath string) *Collector {
 	}
 }
 
-// Events returns the channel to send packet events to
 func (c *Collector) Events() chan<- PacketEvent {
 	return c.events
 }
 
-// MDNSEvents returns the channel to send mDNS events to
 func (c *Collector) MDNSEvents() chan<- MDNSEvent {
 	return c.mdnsEvents
 }
 
-// DHCPEvents returns the channel to send DHCP events to
 func (c *Collector) DHCPEvents() chan<- DHCPEvent {
 	return c.dhcpEvents
 }
 
-// Start begins processing packet events
 func (c *Collector) Start() {
 	// Load persisted data
 	if err := c.Load(); err != nil {
@@ -172,7 +170,6 @@ func (c *Collector) Start() {
 	c.logger.Info("collector started")
 }
 
-// Stop stops the collector
 func (c *Collector) Stop() {
 	c.cancel()
 	// Save on exit
@@ -279,7 +276,6 @@ func (c *Collector) enrichmentWorker() {
 	}
 }
 
-// GetDevices returns a copy of all seen devices
 func (c *Collector) GetDevices() []SeenDevice {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -291,7 +287,6 @@ func (c *Collector) GetDevices() []SeenDevice {
 	return result
 }
 
-// GetDevice returns a specific device by MAC
 func (c *Collector) GetDevice(mac string) *SeenDevice {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -525,7 +520,6 @@ func inferDeviceTypeFromMDNS(services []string) string {
 	return ""
 }
 
-// Save persists the devices to disk
 func (c *Collector) Save() error {
 	if c.storagePath == "" {
 		return nil
@@ -551,7 +545,6 @@ func (c *Collector) Save() error {
 	return os.Rename(tmp, c.storagePath)
 }
 
-// Load reads devices from disk
 func (c *Collector) Load() error {
 	if c.storagePath == "" {
 		return nil
@@ -592,9 +585,15 @@ func (c *Collector) Load() error {
 			dev.Flags = []string{}
 		}
 		// Maps don't need init unless used, but safer to init if we access them
-		if dev.MDNSServices == nil { dev.MDNSServices = []string{} }
-		if dev.MDNSTXTRecords == nil { dev.MDNSTXTRecords = make(map[string]string) }
-		if dev.DHCPOptions == nil { dev.DHCPOptions = make(map[uint8]string) }
+		if dev.MDNSServices == nil {
+			dev.MDNSServices = []string{}
+		}
+		if dev.MDNSTXTRecords == nil {
+			dev.MDNSTXTRecords = make(map[string]string)
+		}
+		if dev.DHCPOptions == nil {
+			dev.DHCPOptions = make(map[uint8]string)
+		}
 
 		c.devices[strings.ToLower(dev.MAC)] = &dev
 		count++

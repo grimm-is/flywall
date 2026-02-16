@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "timestamp": "2026-01-18T07:54:48.217186-06:00",
+  "description": "Safe apply successful",
+  "path": "configs/backups/config.2.20260118-075448.hcl",
+  "size": 121,
+  "is_auto": false,
+  "pinned": false,
+  "schema_version": "1.0"
+}

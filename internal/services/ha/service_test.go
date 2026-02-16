@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 // +build linux
 
@@ -9,6 +11,7 @@ import (
 
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/logging"
+	"grimm.is/flywall/internal/netutil"
 )
 
 // MockLinkManager implements LinkManager for testing.
@@ -178,7 +181,7 @@ func TestGenerateVirtualMAC(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.iface, func(t *testing.T) {
-			mac := generateVirtualMAC(tt.iface)
+			mac := netutil.GenerateVirtualMAC(tt.iface)
 			if len(mac) != 6 {
 				t.Errorf("MAC length = %d, want 6", len(mac))
 			}
@@ -194,8 +197,8 @@ func TestGenerateVirtualMAC(t *testing.T) {
 	}
 
 	// Same interface should generate same MAC
-	mac1 := generateVirtualMAC("eth0")
-	mac2 := generateVirtualMAC("eth0")
+	mac1 := netutil.GenerateVirtualMAC("eth0")
+	mac2 := netutil.GenerateVirtualMAC("eth0")
 	for i := range mac1 {
 		if mac1[i] != mac2[i] {
 			t.Error("Same interface generated different MACs")
@@ -204,7 +207,7 @@ func TestGenerateVirtualMAC(t *testing.T) {
 	}
 
 	// Different interfaces should generate different MACs
-	mac3 := generateVirtualMAC("eth1")
+	mac3 := netutil.GenerateVirtualMAC("eth1")
 	same := true
 	for i := range mac1 {
 		if mac1[i] != mac3[i] {
@@ -229,7 +232,7 @@ func TestFormatMAC(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := formatMAC(tt.mac)
+		got := netutil.FormatMAC(tt.mac)
 		if got != tt.want {
 			t.Errorf("formatMAC(%v) = %s, want %s", tt.mac, got, tt.want)
 		}
@@ -250,7 +253,7 @@ func TestParseMAC(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			_, err := parseMAC(tt.input)
+			_, err := netutil.ParseMAC(tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("parseMAC(%s) error = %v, wantErr %v", tt.input, err, tt.wantErr)
 			}
@@ -388,8 +391,8 @@ func TestVirtualMACApply(t *testing.T) {
 		t.Error("eth0 MAC not set")
 	} else {
 		expected := "02:67:63:aa:bb:cc"
-		if formatMAC(mac) != expected {
-			t.Errorf("eth0 MAC = %s, want %s", formatMAC(mac), expected)
+		if netutil.FormatMAC(mac) != expected {
+			t.Errorf("eth0 MAC = %s, want %s", netutil.FormatMAC(mac), expected)
 		}
 	}
 

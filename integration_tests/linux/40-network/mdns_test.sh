@@ -45,11 +45,15 @@ interface "veth-wan" {
 }
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 # Enable mDNS reflector between LAN and WAN

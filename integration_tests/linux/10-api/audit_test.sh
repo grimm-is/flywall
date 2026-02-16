@@ -92,7 +92,8 @@ else
 fi
 
 # Cleanup
-stop_api
+# Cleanup
+wait_for_port $TEST_API_PORT 10
 stop_ctl
 
 if [ $failed_count -eq 0 ]; then

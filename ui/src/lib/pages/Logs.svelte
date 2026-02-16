@@ -186,7 +186,24 @@
               {#if log.source}
                 <span class="log-source">[{log.source}]</span>
               {/if}
-              <span class="log-message">{log.message}</span>
+              {#if log.source === "dns" && log.extra}
+                <div class="dns-content">
+                  <span class="dns-type">{log.extra.TYPE}</span>
+                  <span class="dns-domain">{log.extra.DOMAIN}</span>
+                  <span class="dns-arrow">→</span>
+                  {#if log.extra.BLOCKED}
+                    <Badge variant="destructive">BLOCKED</Badge>
+                    <span class="dns-blocklist">({log.extra.BLOCKLIST})</span>
+                  {:else}
+                    <span class="dns-rcode">{log.extra.RCODE}</span>
+                  {/if}
+                  <span class="dns-meta"
+                    >{log.extra.CLIENT} ({log.extra.DURATION}ms)</span
+                  >
+                </div>
+              {:else}
+                <span class="log-message">{log.message}</span>
+              {/if}
             </div>
           {/each}
         {/if}
@@ -350,6 +367,51 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* DNS Log Styles */
+  .dns-content {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .dns-type {
+    font-weight: 600;
+    color: var(--color-primary);
+    width: 40px;
+  }
+
+  .dns-domain {
+    font-weight: 500;
+    color: var(--color-foreground);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .dns-arrow {
+    color: var(--color-muted);
+  }
+
+  .dns-rcode {
+    color: var(--color-success);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .dns-meta {
+    margin-left: auto;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+  }
+
+  .dns-blocklist {
+    color: var(--color-destructive);
+    font-size: var(--text-xs);
   }
 
   .empty-message {

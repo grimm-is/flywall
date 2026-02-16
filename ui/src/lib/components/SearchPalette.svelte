@@ -27,11 +27,12 @@
       action: () => goto("/policy"),
     },
     {
-      id: "goto-observatory",
+      id: "goto-discovery",
       category: "Navigate",
-      label: "Go to Observatory",
-      icon: "monitoring",
-      action: () => goto("/observatory"),
+      type: "goto",
+      label: "Go to Discovery",
+      icon: "activity",
+      action: () => goto("/discovery"),
     },
     {
       id: "goto-tunnels",
@@ -79,7 +80,7 @@
       category: "Actions",
       label: "Start Packet Capture...",
       icon: "radio_button_checked",
-      action: () => goto("/observatory?capture=true"),
+      action: () => goto("/discovery?capture=true"),
     },
     {
       id: "action-simulate",
@@ -119,14 +120,14 @@
       category: "Network",
       label: "Active Connections",
       icon: "swap_calls",
-      action: () => goto("/observatory?tab=flows"),
+      action: () => goto("/discovery?tab=flows"),
     },
     {
       id: "quick-logs",
       category: "Network",
       label: "Live Logs",
       icon: "terminal",
-      action: () => goto("/observatory?tab=logs"),
+      action: () => goto("/discovery?tab=logs"),
     },
   ];
 

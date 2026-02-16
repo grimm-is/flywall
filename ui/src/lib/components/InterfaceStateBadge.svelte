@@ -107,27 +107,28 @@
   }
 
   /* Color variants */
+  /* Color variants */
   .state-badge--success {
     background-color: var(--color-success-bg, rgba(34, 197, 94, 0.15));
-    color: var(--color-success, #16a34a);
+    color: var(--color-success);
     border: 1px solid var(--color-success-border, rgba(34, 197, 94, 0.3));
   }
 
   .state-badge--neutral {
     background-color: var(--color-muted-bg, rgba(107, 114, 128, 0.15));
-    color: var(--color-muted, #6b7280);
+    color: var(--color-muted);
     border: 1px solid var(--color-muted-border, rgba(107, 114, 128, 0.3));
   }
 
   .state-badge--warning {
     background-color: var(--color-warning-bg, rgba(245, 158, 11, 0.15));
-    color: var(--color-warning, #d97706);
+    color: var(--color-warning);
     border: 1px solid var(--color-warning-border, rgba(245, 158, 11, 0.3));
   }
 
   .state-badge--error {
     background-color: var(--color-destructive-bg, rgba(239, 68, 68, 0.15));
-    color: var(--color-destructive, #dc2626);
+    color: var(--color-destructive);
     border: 1px solid var(--color-destructive-border, rgba(239, 68, 68, 0.3));
   }
 

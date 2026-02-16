@@ -36,7 +36,7 @@ diag "================================================"
 # Cleanup function
 cleanup() {
     diag "Cleanup..."
-    rm -f "$TEST_CONFIG" /tmp/dns_result.txt 2>/dev/null
+    rm -f "$TEST_CONFIG" /tmp/dns_result_$$.txt 2>/dev/null
     nft delete table inet flywall 2>/dev/null || true
     nft delete table ip nat 2>/dev/null || true
     [ -n "$CTL_PID" ] && kill $CTL_PID 2>/dev/null
@@ -54,7 +54,9 @@ interface "lo" {
 }
 
 zone "local" {
-  interfaces = ["lo"]
+  match {
+    interface = "lo"
+  }
   services {
     dns = true
   }
@@ -82,7 +84,7 @@ ok 0 "Created DNS config with local host records"
 
 # Test 2: Start firewall with DNS server
 diag "Starting firewall with DNS server..."
-$APP_BIN ctl "$TEST_CONFIG" > /tmp/dns_traffic_ctl.log 2>&1 &
+$APP_BIN ctl "$TEST_CONFIG" > /tmp/dns_traffic_ctl_$$.log 2>&1 &
 CTL_PID=$!
 track_pid $CTL_PID
 
@@ -91,7 +93,7 @@ while [ ! -S "$CTL_SOCKET" ]; do
     dilated_sleep 1
     count=$((count + 1))
     if [ $count -ge 15 ]; then
-        _log=$(head -n 30 /tmp/dns_traffic_ctl.log)
+        _log=$(head -n 30 /tmp/dns_traffic_ctl_$$.log)
         ok 1 "Firewall started" severity fail error "Timeout waiting for socket" log_head "$_log"
         exit 1
     fi
@@ -107,7 +109,7 @@ if netstat -uln 2>/dev/null | grep -q ":53 " || ss -uln 2>/dev/null | grep -q ":
     ok 0 "DNS server listening on port 53"
 else
     diag "DNS server not listening. CTL log:"
-    cat /tmp/dns_traffic_ctl.log | tail -20
+    cat /tmp/dns_traffic_ctl_$$.log | tail -20
     ok 1 "DNS server listening on port 53"
 fi
 
@@ -118,7 +120,7 @@ if echo "$QUERY_RESULT" | grep -qE "^10\.0\.0\.1$"; then
     ok 0 "Local DNS query succeeded: testhost.local -> $QUERY_RESULT"
 else
 
-    _log=$(tail -n 20 /tmp/dns_traffic_ctl.log)
+    _log=$(tail -n 20 /tmp/dns_traffic_ctl_$$.log)
     ok 1 "Local DNS query succeeded" severity fail expected "10.0.0.1" actual "$QUERY_RESULT" log_tail "$_log"
 fi
 

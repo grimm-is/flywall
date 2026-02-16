@@ -1,12 +1,14 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package dns
 
 import (
-	"log"
 	"net"
 	"strings"
 
 	"github.com/miekg/dns"
 	"grimm.is/flywall/internal/config"
+	"grimm.is/flywall/internal/logging"
 )
 
 type serverState struct {
@@ -57,12 +59,6 @@ func (s *Service) buildServerState(cfg *config.Config) *serverState {
 
 		// 2. Referenced in zone block (canonical)
 		for _, z := range cfg.Zones {
-			// Legacy interfaces list
-			for _, matchIf := range z.Interfaces {
-				if matchIf == iface.Name {
-					zoneIfaceMap[strings.ToLower(z.Name)] = append(zoneIfaceMap[strings.ToLower(z.Name)], ips...)
-				}
-			}
 			// Match list
 			for _, m := range z.Matches {
 				if m.Interface == iface.Name {
@@ -83,7 +79,7 @@ func (s *Service) buildServerState(cfg *config.Config) *serverState {
 			if ips, ok := zoneIfaceMap[zoneName]; ok {
 				listenAddrs = append(listenAddrs, ips...)
 			} else {
-				log.Printf("[DNS] Warning: serve zone %q has no associated interfaces/IPs", serve.Zone)
+				logging.Warn("[DNS] Warning: serve zone %q has no associated interfaces/IPs", serve.Zone)
 			}
 		}
 

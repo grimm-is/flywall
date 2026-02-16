@@ -58,7 +58,9 @@ interface "veth-dns" {
 }
 
 zone "lan" {
-    interfaces = ["veth-dns"]
+    match {
+        interface = "veth-dns"
+    }
 }
 
 dhcp {

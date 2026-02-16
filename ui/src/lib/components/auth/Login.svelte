@@ -2,6 +2,7 @@
     import { api, currentView, brand } from "$lib/stores/app";
     import Button from "$lib/components/Button.svelte";
     import Input from "$lib/components/Input.svelte";
+    import PasswordInput from "$lib/components/PasswordInput.svelte";
     import Card from "$lib/components/Card.svelte";
     import { t } from "svelte-i18n";
 
@@ -45,9 +46,8 @@
                         required
                     />
 
-                    <Input
+                    <PasswordInput
                         id="login-password"
-                        type="password"
                         label={$t("auth.password")}
                         bind:value={loginPassword}
                         placeholder={$t("auth.password")}

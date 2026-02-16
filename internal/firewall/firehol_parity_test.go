@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package firewall
 
 import (
@@ -40,7 +42,7 @@ func TestFireHOLParityGeneration(t *testing.T) {
 	}
 
 	// 1. Verify MSS Clamping in Filter Table
-	sb, err := BuildFilterTableScript(cfg, nil, "flywall_test", "")
+	sb, err := BuildFilterTableScript(cfg, nil, "flywall_test", "", nil)
 	if err != nil {
 		t.Fatalf("BuildFilterTableScript failed: %v", err)
 	}

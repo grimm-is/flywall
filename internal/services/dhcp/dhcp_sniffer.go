@@ -1,24 +1,25 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package dhcp
 
 import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
-	"fmt"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"grimm.is/flywall/internal/errors"
 	"grimm.is/flywall/internal/logging"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/mdlayher/packet"
 )
 
-// SnifferEvent represents a DHCP fingerprint observation
+// SnifferEvent for a DHCP fingerprint observation.
 type SnifferEvent struct {
 	Timestamp   time.Time
 	ClientMAC   string
@@ -30,7 +31,6 @@ type SnifferEvent struct {
 	Options     map[uint8]string // All DHCP options (hex-encoded values)
 }
 
-// SnifferConfig holds the configuration for the DHCP sniffer
 type SnifferConfig struct {
 	Enabled    bool
 	Interfaces []string // LAN interfaces to listen on
@@ -48,7 +48,6 @@ type Sniffer struct {
 	logger *logging.Logger
 }
 
-// NewSniffer creates a new DHCP sniffer
 func NewSniffer(cfg SnifferConfig) *Sniffer {
 	return &Sniffer{
 		config: cfg,
@@ -56,14 +55,12 @@ func NewSniffer(cfg SnifferConfig) *Sniffer {
 	}
 }
 
-// SetEventCallback sets or updates the event callback
 func (s *Sniffer) SetEventCallback(cb func(event SnifferEvent)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.config.EventCallback = cb
 }
 
-// Start begins listening for DHCP broadcasts
 func (s *Sniffer) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -98,7 +95,6 @@ func (s *Sniffer) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the DHCP sniffer
 func (s *Sniffer) Stop() {
 	s.mu.Lock()
 	if s.cancel != nil {
@@ -111,7 +107,6 @@ func (s *Sniffer) Stop() {
 	s.logger.Info("stopped")
 }
 
-// run listens for DHCP packets on a raw connection
 func (s *Sniffer) run(ctx context.Context, conn *packet.Conn, ifaceName string) {
 	defer s.wg.Done()
 	defer conn.Close()
@@ -167,18 +162,18 @@ func (s *Sniffer) run(ctx context.Context, conn *packet.Conn, ifaceName string) 
 	}
 }
 
-// parseDHCPFromFrame extracts a DHCPv4 packet from an Ethernet frame
+// parseDHCPFromFrame extracts a DHCPv4 packet from an Ethernet frame.
 func parseDHCPFromFrame(frame []byte) (*dhcpv4.DHCPv4, error) {
 	// Minimum Ethernet(14) + IP(20) + UDP(8) = 42 bytes
 	if len(frame) < 42 {
-		return nil, fmt.Errorf("frame too short")
+		return nil, errors.New(errors.KindValidation, "frame too short")
 	}
 
 	// Ethernet Header (14 bytes)
 	// EtherType at offset 12
 	ethType := binary.BigEndian.Uint16(frame[12:14])
 	if ethType != 0x0800 { // IPv4
-		return nil, fmt.Errorf("not ipv4")
+		return nil, errors.New(errors.KindValidation, "not ipv4")
 	}
 
 	// IP Header
@@ -187,37 +182,37 @@ func parseDHCPFromFrame(frame []byte) (*dhcpv4.DHCPv4, error) {
 	ihl := int(frame[ipOffset] & 0x0F)
 	ipHeaderLen := ihl * 4
 	if ipHeaderLen < 20 {
-		return nil, fmt.Errorf("invalid ip header/ihl")
+		return nil, errors.New(errors.KindValidation, "invalid ip header/ihl")
 	}
 
 	// Protocol is at offset 9 in IP header
 	proto := frame[ipOffset+9]
 	if proto != 17 { // UDP
-		return nil, fmt.Errorf("not udp")
+		return nil, errors.New(errors.KindValidation, "not udp")
 	}
 
 	// UDP Header matches?
 	udpOffset := ipOffset + ipHeaderLen
 	if udpOffset+8 > len(frame) {
-		return nil, fmt.Errorf("frame too short for udp")
+		return nil, errors.New(errors.KindValidation, "frame too short for udp")
 	}
 
 	// Dst Port is bytes 2-3 of UDP header
 	dstPort := binary.BigEndian.Uint16(frame[udpOffset+2 : udpOffset+4])
 	if dstPort != 67 {
-		return nil, fmt.Errorf("not bootps")
+		return nil, errors.New(errors.KindValidation, "not bootps")
 	}
 
 	// DHCP Payload starts after UDP header
 	payloadOffset := udpOffset + 8
 	if payloadOffset >= len(frame) {
-		return nil, fmt.Errorf("no payload")
+		return nil, errors.New(errors.KindValidation, "no payload")
 	}
 
 	return dhcpv4.FromBytes(frame[payloadOffset:])
 }
 
-// ExtractEvent extracts fingerprint information from a DHCP packet
+// ExtractEvent fingerprint information from a DHCP packet.
 func ExtractEvent(pkt *dhcpv4.DHCPv4, ifaceName string, src net.Addr) SnifferEvent {
 	event := SnifferEvent{
 		Timestamp: time.Now(),

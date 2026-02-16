@@ -13,6 +13,8 @@ TEST_TIMEOUT=60
 require_root
 require_binary
 cleanup_on_exit
+export FLYWALL_SKIP_API=1
+export FLYWALL_NO_SANDBOX=1
 
 if ! command -v curl >/dev/null 2>&1; then
     echo "1..0 # SKIP curl command not found"
@@ -43,7 +45,9 @@ interface "lo" {
 }
 
 zone "local" {
-  interfaces = ["lo"]
+  match {
+    interface = "lo"
+  }
 }
 
 api {
@@ -61,13 +65,22 @@ ok 0 "Control plane started"
 start_api -listen :8082
 ok 0 "API server started"
 
-# Test 2: Get Bandwidth
+# Test 2: Get Bandwidth (with retry for RPC initialization)
 diag "Testing GET /api/analytics/bandwidth..."
-HTTP_CODE=$(curl -s -o /tmp/analytics_bw.json -w "%{http_code}" "http://127.0.0.1:8082/api/analytics/bandwidth?interval=1h")
+HTTP_CODE=0
+for attempt in 1 2 3; do
+    HTTP_CODE=$(curl -s --max-time 5 -o /tmp/analytics_bw_$$.json -w "%{http_code}" "http://127.0.0.1:8082/api/analytics/bandwidth?interval=1h")
+    if [ "$HTTP_CODE" -eq 200 ]; then
+        break
+    fi
+    diag "Bandwidth API attempt $attempt returned $HTTP_CODE, retrying..."
+    dilated_sleep 1
+done
+
 if [ "$HTTP_CODE" -eq 200 ]; then
     ok 0 "Bandwidth API returns 200"
     # Check if response is valid JSON array or object
-    if jq -e . /tmp/analytics_bw.json >/dev/null; then
+    if jq -e . /tmp/analytics_bw_$$.json >/dev/null; then
         ok 0 "Bandwidth API returns valid JSON"
     else
         ok 1 "Bandwidth API returns valid JSON" severity fail error "Invalid JSON"
@@ -79,7 +92,7 @@ fi
 
 # Test 3: Get Top Talkers
 diag "Testing GET /api/analytics/top-talkers..."
-HTTP_CODE=$(curl -s -o /tmp/analytics_talkers.json -w "%{http_code}" "http://127.0.0.1:8082/api/analytics/top-talkers")
+HTTP_CODE=$(curl -s -o /tmp/analytics_talkers_$$.json -w "%{http_code}" "http://127.0.0.1:8082/api/analytics/top-talkers")
 if [ "$HTTP_CODE" -eq 200 ]; then
     ok 0 "Top Talkers API returns 200"
 else

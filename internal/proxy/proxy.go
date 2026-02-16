@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package proxy
 
 import (
@@ -115,10 +117,22 @@ func (s *Server) handle(conn net.Conn) {
 	defer s.wg.Done()
 	defer conn.Close()
 
-	// Connect to Unix socket
-	upstream, err := net.DialTimeout("unix", s.targetSock, 1*time.Second)
+	// Connect to Unix socket with retry
+	var upstream net.Conn
+	var err error
+
+	// Retry loop for backend availability (up to 3 seconds)
+	for i := 0; i < 6; i++ {
+		upstream, err = net.DialTimeout("unix", s.targetSock, 500*time.Millisecond)
+		if err == nil {
+			break
+		}
+		// If error is transient (e.g. file not found yet), wait and retry
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	if err != nil {
-		s.logger.Error(fmt.Sprintf("Failed to dial upstream %s: %v", s.targetSock, err))
+		s.logger.Error(fmt.Sprintf("Failed to dial upstream %s after retries: %v", s.targetSock, err))
 		return
 	}
 	defer upstream.Close()
@@ -144,4 +158,3 @@ func (s *Server) handle(conn net.Conn) {
 func (s *Server) Wait() {
 	s.wg.Wait()
 }
-

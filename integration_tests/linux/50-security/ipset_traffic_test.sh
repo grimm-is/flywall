@@ -52,11 +52,15 @@ schema_version = "1.0"
 ip_forwarding = true
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 interface "veth-lan" {
@@ -116,7 +120,7 @@ run_server ip addr add 10.99.99.200/24 dev veth-server
 ok $? "Added blocked test IP (10.99.99.200) to server"
 
 # Test 3: Apply firewall rules
-apply_firewall_rules "$TEST_CONFIG" /tmp/ipset_traffic.log
+apply_firewall_rules "$TEST_CONFIG" /tmp/ipset_traffic_$$.log
 ok $? "Firewall rules applied with IPSet config"
 
 dilated_sleep 1

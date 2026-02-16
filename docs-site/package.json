@@ -1,0 +1,18 @@
+{
+  "name": "docs-site",
+  "version": "1.0.0",
+  "description": "This directory contains the Hugo-based documentation for Flywall, using the [Docsy](https://www.docsy.dev/) theme.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "autoprefixer": "^10.4.23",
+    "postcss": "^8.5.6",
+    "postcss-cli": "^11.0.1"
+  }
+}

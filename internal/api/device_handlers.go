@@ -1,8 +1,12 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
 	"encoding/json"
 	"net/http"
+	"runtime"
+	"time"
 
 	"grimm.is/flywall/internal/ctlplane"
 )
@@ -66,6 +70,10 @@ func (s *Server) handleUpdateDeviceIdentity(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Mitigate race condition
+	runtime.Gosched()
+	time.Sleep(10 * time.Millisecond)
+
 	WriteJSON(w, http.StatusOK, identity)
 }
 
@@ -107,6 +115,10 @@ func (s *Server) handleLinkMAC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Mitigate race condition
+	runtime.Gosched()
+	time.Sleep(10 * time.Millisecond)
+
 	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
@@ -145,6 +157,10 @@ func (s *Server) handleUnlinkMAC(w http.ResponseWriter, r *http.Request) {
 		WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// Mitigate race condition
+	runtime.Gosched()
+	time.Sleep(10 * time.Millisecond)
 
 	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }

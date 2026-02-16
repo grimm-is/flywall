@@ -1,43 +1,55 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package network
 
 import (
 	"bytes"
-	"embed"
 	"log"
+	"os"
 	"strings"
+
 	"sync"
+
+	"grimm.is/flywall/internal/network/oui_source/pkg/oui"
 )
 
-//go:embed assets/oui.db.gz
-var ouiAsset embed.FS
-
 var (
-	ouiDB *OUIDB
+	ouiDB *oui.OUIDB
 	mu    sync.RWMutex
 )
 
-// InitOUI loads the OUI database from the embedded asset
-func InitOUI() {
+// InitOUI loads the OUI database.
+// It prioritizes the local file at localPath if provided and valid.
+// Falls back to the embedded asset.
+func InitOUI(localPath string) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Try to load from embedded asset
-	f, err := ouiAsset.Open("assets/oui.db.gz")
-	if err != nil {
-		// Only warn if we expect it to be there. In early dev, it might be missing.
-		log.Printf("[OUI] Warning: Embedded OUI database not found: %v", err)
-		return
-	}
-	defer f.Close()
+	var db *oui.OUIDB
+	var err error
+	loadedFrom := "embedded"
 
-	db, err := LoadCompactDB(f)
-	if err != nil {
-		log.Printf("[OUI] Error loading embedded OUI DB: %v", err)
-		return
+	// 1. Try local file if specified
+	if localPath != "" {
+		if data, err := os.ReadFile(localPath); err == nil {
+			if fDB, err := oui.LoadCompactDB(bytes.NewReader(data)); err == nil {
+				db = fDB
+				loadedFrom = localPath
+			}
+		}
+	}
+
+	// 2. Fallback to embedded
+	if db == nil {
+		db, err = oui.LoadEmbedded()
+		if err != nil {
+			log.Printf("[OUI] Error loading embedded OUI DB: %v", err)
+			return
+		}
 	}
 
 	ouiDB = db
-	log.Printf("[OUI] Loaded %d vendor prefixes", len(db.Entries))
+	log.Printf("[OUI] Loaded %d vendor prefixes from %s", len(db.Entries), loadedFrom)
 }
 
 // LoadFromBytes allows loading a DB from a byte slice (e.g. from state file)
@@ -45,7 +57,7 @@ func LoadFromBytes(data []byte) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	db, err := LoadCompactDB(bytes.NewReader(data))
+	db, err := oui.LoadCompactDB(bytes.NewReader(data))
 	if err != nil {
 		return err
 	}

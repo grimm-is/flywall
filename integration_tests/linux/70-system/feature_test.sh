@@ -40,7 +40,7 @@ cleanup() {
         kill $CTL_PID 2>/dev/null
     fi
     rm -f $CTL_SOCKET 2>/dev/null
-    rm -f /tmp/api.log 2>/dev/null
+    rm -f /tmp/api_$$.log 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -65,10 +65,13 @@ wait_for_interfaces eth1 eth2 || {
 FIREWALL_CONFIG="$MOUNT_PATH/tests/test-vm.hcl"
 start_ctl "$FIREWALL_CONFIG"
 
+# Pick random port
+API_PORT=$TEST_API_PORT
+
 # Start API Server
 export FLYWALL_UI_DIST="$UI_DIR"
 export FLYWALL_NO_SANDBOX=1
-start_api -listen :8080
+start_api -listen :$API_PORT
 
 diag "Services started (CTL: $CTL_PID, API: $API_PID)"
 
@@ -106,15 +109,29 @@ http_get() {
 }
 
 # 5. Check API Status
-http_get http://localhost:8080/api/status | grep "online" >/dev/null 2>&1
-ok $? "API /api/status returns online"
+# Retry status check up to 5 times
+MAX_RETRIES=5
+for i in $(seq 1 $MAX_RETRIES); do
+    if http_get http://127.0.0.1:$API_PORT/api/status | grep "online" >/dev/null 2>&1; then
+        ok 0 "API /api/status returns online"
+        break
+    else
+        if [ $i -eq $MAX_RETRIES ]; then
+            diag "API Status Response: $(http_get http://127.0.0.1:$API_PORT/api/status)"
+            ok 1 "API /api/status returns online"
+        fi
+        dilated_sleep 1
+    fi
+done
 
 # 6. Check API Config
-http_get http://localhost:8080/api/config | grep "ip_forwarding" >/dev/null 2>&1
+http_get http://127.0.0.1:$API_PORT/api/config | grep "ip_forwarding" >/dev/null 2>&1
 ok $? "API /api/config returns config JSON"
 
 # 7. Check SPA Serving
-curl_out=$(http_get http://localhost:8080/)
+diag "Fetching SPA index from http://127.0.0.1:$API_PORT/ ..."
+curl_out=$(curl -v -s http://127.0.0.1:$API_PORT/ 2>&1)
+diag "Curl output: $curl_out"
 echo "$curl_out" | grep -i "flywall\|firewall\|dashboard" >/dev/null 2>&1
 if [ $? -eq 0 ]; then
     ok 0 "API serves SPA index.html"
@@ -127,7 +144,7 @@ else
 fi
 
 # 8. Check Prometheus Metrics
-http_get http://localhost:8080/metrics | grep "# HELP" >/dev/null 2>&1
+http_get http://127.0.0.1:$API_PORT/metrics | grep "# HELP" >/dev/null 2>&1
 ok $? "API /metrics returns Prometheus metrics"
 
 # Cleanup

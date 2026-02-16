@@ -1,9 +1,13 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package vpn
 
 import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"grimm.is/flywall/internal/config"
 )
 
 // WireGuardAPIManager defines the interface needed by the API handler.
@@ -227,7 +231,7 @@ func (h *WireGuardAPIHandler) handleAddPeer(w http.ResponseWriter, r *http.Reque
 	peer := WireGuardPeer{
 		Name:                req.Name,
 		PublicKey:           req.PublicKey,
-		PresharedKey:        req.PresharedKey,
+		PresharedKey:        config.SecureString(req.PresharedKey),
 		Endpoint:            req.Endpoint,
 		AllowedIPs:          req.AllowedIPs,
 		PersistentKeepalive: req.PersistentKeepalive,

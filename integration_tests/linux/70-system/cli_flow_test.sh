@@ -8,8 +8,9 @@ set -x
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/../common.sh"
 FLYWALL="$APP_BIN"
-PID_FILE="/var/run/flywall.pid"
-LOG_FILE="/var/log/flywall/flywall.log"
+PID_FILE="$RUN_DIR/flywall.pid"
+# Pick random port
+API_PORT=$TEST_API_PORT
 
 echo "TAP version 13"
 echo "1..7"
@@ -17,10 +18,10 @@ echo "1..7"
 # Clean previous run
 rm -f $PID_FILE
 
-export FLYWALL_LOG_FILE=stdout
+
 
 # Generate minimal valid config
-CONFIG_FILE="/tmp/test_config.hcl"
+CONFIG_FILE="/tmp/test_config_$$.hcl"
 cat > "$CONFIG_FILE" <<EOF
 schema_version = "1.0"
 ip_forwarding = false
@@ -33,14 +34,16 @@ interface "lo" {
 
 api {
   enabled = true
-  listen = ":8080"
-  disable_sandbox = true
+  listen = ":$API_PORT"
 }
 EOF
 
 # 1. Start daemon
 echo "# Running start command..."
 # Use generated configuration
+export FLYWALL_NO_SANDBOX=1
+export FLYWALL_RUN_DIR="$RUN_DIR"
+unset FLYWALL_SKIP_API
 if $FLYWALL start --config "$CONFIG_FILE"; then
     echo "ok 1 - flywall start command succeeded"
 else
@@ -65,7 +68,7 @@ else
         cat "$LOG_FILE" | sed 's/^/# /'
     else
         echo "# Log file not found at $LOG_FILE"
-        find /var/log -name "flywall.log" | sed 's/^/# /'
+        find /opt/flywall/var/log -name "flywall.log" | sed 's/^/# /'
     fi
     exit 1
 fi
@@ -80,13 +83,21 @@ else
 fi
 
 # 4. Check API started (poll for log entry, max 10s)
-if [ ! -f "$LOG_FILE" ]; then
-    LOG_FILE=$(find /var/log -name "flywall.log" | head -1)
+if [ -z "$LOG_FILE" ]; then
+    if [ -n "$FLYWALL_LOG_FILE" ] && [ "$FLYWALL_LOG_FILE" != "stdout" ]; then
+        LOG_FILE="$FLYWALL_LOG_FILE"
+    elif [ -n "$FLYWALL_LOG_DIR" ] && [ -f "$FLYWALL_LOG_DIR/flywall.log" ]; then
+        LOG_FILE="$FLYWALL_LOG_DIR/flywall.log"
+    elif [ -f "/mnt/worker/log/flywall.log" ]; then
+        LOG_FILE="/mnt/worker/log/flywall.log"
+    else
+        LOG_FILE=$(find "$WORK_DIR" -name "flywall.log" 2>/dev/null | head -1)
+    fi
 fi
 
 WAITED=0
 while [ $WAITED -lt 100 ]; do
-    if [ -f "$LOG_FILE" ] && grep -q "Spawning API server" "$LOG_FILE"; then
+    if [ -f "$LOG_FILE" ] && grep -qE "Spawning API server|Starting API server" "$LOG_FILE"; then
         echo "# API server spawning logged (waited ${WAITED}00ms)"
         break
     fi
@@ -105,8 +116,8 @@ WAITED=0
 while [ $WAITED -lt 50 ]; do
     if grep -q "Starting API server on" "$LOG_FILE"; then
         # Check if port is actually bound (log is printed before Bind)
-        if netstat -lnt | grep -q ":8080"; then
-            echo "ok 4 - API server bound port 8080"
+        if netstat -lnt | grep -q ":$API_PORT"; then
+            echo "ok 4 - API server bound port $API_PORT"
             break
         fi
     fi
@@ -116,7 +127,8 @@ done
 
 # 4.5 Verify 'flywall test-api' detects running instance
 echo "# Testing 'flywall test-api' status message..."
-API_OUTPUT=$(timeout 5 $FLYWALL test-api 2>&1 || true)
+# Use same port as daemon to force conflict
+API_OUTPUT=$(timeout 5 $FLYWALL test-api -listen ":$API_PORT" 2>&1 || true)
 # Check for various messages indicating API is already running
 if echo "$API_OUTPUT" | grep -q "Flywall API is already running\|Waiting for previous API instance\|API server is already running\|address already in use"; then
     echo "ok 5 - flywall test-api detects running instance"

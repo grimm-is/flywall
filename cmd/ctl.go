@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
@@ -14,8 +16,11 @@ import (
 	"syscall"
 	"time"
 
+	"grimm.is/flywall/internal/install"
+
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/clock"
+	fwcloud "grimm.is/flywall/internal/cloud"
 	"grimm.is/flywall/internal/config"
 	fw "grimm.is/flywall/internal/firewall"
 	"grimm.is/flywall/internal/host"
@@ -29,10 +34,10 @@ import (
 var Printer = i18n.NewCLIPrinter()
 
 // RunCtl runs the privileged control plane daemon with automatic restart on panic.
-func RunCtl(configFile string, testMode bool, stateDir string, dryRun bool, listeners map[string]interface{}) error {
+func RunCtl(configFile string, testMode bool, stateDir, logDir, runDir, shareDir string, dryRun bool, listeners map[string]interface{}) error {
 	// Loop to restart on panic
 	for {
-		err := runCtlOnce(configFile, testMode, stateDir, dryRun, listeners)
+		err := runCtlOnce(configFile, testMode, stateDir, logDir, runDir, shareDir, dryRun, listeners)
 		if err != nil && strings.HasPrefix(err.Error(), "PANIC:") {
 			logging.Error(fmt.Sprintf("Daemon crashed with panic: %v", err))
 			logging.Info("Restarting daemon in 1 second...")
@@ -44,16 +49,26 @@ func RunCtl(configFile string, testMode bool, stateDir string, dryRun bool, list
 }
 
 // runCtlOnce contains the actual execution logic
-func runCtlOnce(configFile string, testMode bool, stateDir string, dryRun bool, listeners map[string]interface{}) (err error) {
-	rtCfg := NewCtlRuntimeConfig(configFile, testMode, stateDir, dryRun, listeners)
+func runCtlOnce(configFile string, testMode bool, stateDir, logDir, runDir, shareDir string, dryRun bool, listeners map[string]interface{}) (err error) {
+	rtCfg := NewCtlRuntimeConfig(configFile, testMode, stateDir, logDir, runDir, shareDir, dryRun, listeners)
 
-	// Propagate stateDir to environment so brand.GetStateDir() works correctly
+	// Propagate stateDir to environment so install.GetStateDir() works correctly
 	// for both this process and child processes (API, Proxy)
 	if rtCfg.StateDir != "" {
 		envVar := brand.ConfigEnvPrefix + "_STATE_DIR"
-		if os.Getenv(envVar) == "" {
-			os.Setenv(envVar, rtCfg.StateDir)
-		}
+		os.Setenv(envVar, rtCfg.StateDir)
+	}
+	if rtCfg.LogDir != "" {
+		envVar := brand.ConfigEnvPrefix + "_LOG_DIR"
+		os.Setenv(envVar, rtCfg.LogDir)
+	}
+	if rtCfg.RunDir != "" {
+		envVar := brand.ConfigEnvPrefix + "_RUN_DIR"
+		os.Setenv(envVar, rtCfg.RunDir)
+	}
+	if rtCfg.ShareDir != "" {
+		envVar := brand.ConfigEnvPrefix + "_SHARE_DIR"
+		os.Setenv(envVar, rtCfg.ShareDir)
 	}
 
 	// Dry-run mode: generate rules and exit before any daemon setup
@@ -91,7 +106,7 @@ func runCtlOnce(configFile string, testMode bool, stateDir string, dryRun bool, 
 	initializeCtlLogging()
 
 	// Ensure state directory exists
-	if err := os.MkdirAll(brand.GetStateDir(), 0755); err != nil {
+	if err := os.MkdirAll(install.GetStateDir(), 0755); err != nil {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}
 
@@ -190,7 +205,7 @@ func runCtlOnce(configFile string, testMode bool, stateDir string, dryRun bool, 
 	defer services.Shutdown()
 
 	// Configure HA (must be after core services for callbacks)
-	haStop := configureHA(cfg, services)
+	haStop := configureHA(cfg, services, replicator)
 	defer haStop()
 
 	// Test mode: run and exit early, only validating core configuration
@@ -209,11 +224,66 @@ func runCtlOnce(configFile string, testMode bool, stateDir string, dryRun bool, 
 	}
 	services.ctlServer.SetDisarmFunc(monitorsCancel)
 
+	// Inject forgiving result if any
+	if rtCfg.ForgivingResult != nil {
+		services.ctlServer.SetForgivingResult(rtCfg.ForgivingResult)
+	}
+
 	// Initialize device management
 	initializeDeviceServices(ctx, cfg, services)
 
 	// Initialize learning service
 	initializeLearningService(cfg, services)
+
+	// Initialize Cloud Client
+	if cfg.Cloud != nil && cfg.Cloud.Enabled {
+		// Use default cloud URL if not specified
+		hubAddr := cfg.Cloud.HubAddress
+		if hubAddr == "" {
+			hubAddr = brand.DefaultCloudURL
+		}
+
+		// Allow override via env var for testing
+		if envURL := os.Getenv("FLYWALL_CLOUD_URL"); envURL != "" {
+			hubAddr = envURL
+		}
+
+		logging.Info(fmt.Sprintf("Initializing Cloud Client (Hub: %s)", hubAddr))
+
+		deviceID := cfg.Cloud.DeviceID
+		if deviceID == "" {
+			deviceID = host.GetDeviceID()
+		}
+
+		certFile := cfg.Cloud.CertFile
+		if certFile == "" {
+			certFile = filepath.Join(install.GetStateDir(), "cloud", "device.crt")
+		}
+
+		keyFile := cfg.Cloud.KeyFile
+		if keyFile == "" {
+			keyFile = filepath.Join(install.GetStateDir(), "cloud", "device.key")
+		}
+
+		cloudClient := fwcloud.NewClient(hubAddr, deviceID, certFile, keyFile)
+
+		// Start in background
+		go func() {
+			// Connect with backoff
+			if err := cloudClient.Connect(ctx); err != nil {
+				logging.Error(fmt.Sprintf("Cloud connection failed: %v", err))
+				return
+			}
+
+			// Start tunnel
+			if err := cloudClient.StartTunnel(ctx); err != nil {
+				logging.Error(fmt.Sprintf("Cloud tunnel error: %v", err))
+			}
+		}()
+
+		// Register with services for cleanup if needed
+		// services.cloudClient = cloudClient
+	}
 
 	// Firewall integrity monitoring
 	if cfg.Features != nil && cfg.Features.IntegrityMonitoring && services.fwMgr != nil {
@@ -228,12 +298,17 @@ func runCtlOnce(configFile string, testMode bool, stateDir string, dryRun bool, 
 	}
 
 	monitorLogger := logging.WithComponent("monitor")
-	monitor.Start(monitorLogger, cfg.Routes, nil, false)
+	monitorSvc := monitor.NewService(monitorLogger, cfg.Routes)
+	monitorSvc.Start()
+	services.ctlServer.SetMonitorService(monitorSvc)
+	defer monitorSvc.Stop()
 
 	logging.Info("Control plane running. Waiting for commands...")
 
 	// Spawn API Server (skip if FLYWALL_SKIP_API is set - used by tests that run their own test-api)
-	skipAPI := os.Getenv("FLYWALL_SKIP_API") == "1"
+	skipAPIVar := os.Getenv("FLYWALL_SKIP_API")
+	logging.Info(fmt.Sprintf("DEBUG: FLYWALL_SKIP_API=%q", skipAPIVar))
+	skipAPI := skipAPIVar == "1"
 	if !skipAPI && (cfg.API == nil || cfg.API.Enabled) {
 		exe, err := os.Executable()
 		if err == nil {
@@ -279,7 +354,7 @@ func runDryRun(configFile string) error {
 
 	dryRunLogger := logging.WithComponent("firewall")
 	fwMgr := fw.NewManagerWithConn(nil, dryRunLogger, "")
-	rules, err := fwMgr.GenerateRules(fw.FromGlobalConfig(result.Config))
+	rules, err := fwMgr.GenerateRules(fw.FromGlobalConfig(result.Config), nil)
 	if err != nil {
 		return fmt.Errorf("dry-run generation failed: %w", err)
 	}
@@ -305,45 +380,29 @@ func spawnAPI(ctx context.Context, exe string, cfg *config.Config, wg *sync.Wait
 
 		args := []string{"_api-server"}
 
-		socketPath := filepath.Join(brand.GetRunDir(), "api", "api.sock")
+		socketPath := filepath.Join(install.GetRunDir(), "api", "api.sock")
 		dir := filepath.Dir(socketPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			logging.Error(fmt.Sprintf("Failed to create socket directory: %v", err))
 		}
-		// Chown to nobody (65534) if running as root
+		var unprivUser string = "nobody"
+		// Chown to unprivileged user if running as root
 		if os.Geteuid() == 0 {
-			// Best effort lookup
-			uid, gid := 65534, 65534
-			if u, err := user.Lookup("nobody"); err == nil {
-				if id, err := strconv.Atoi(u.Uid); err == nil {
-					uid = id
-				}
-				if id, err := strconv.Atoi(u.Gid); err == nil {
-					gid = id
-				}
-			}
+			var uid, gid int
+			unprivUser, uid, gid = getUnprivilegedUser()
 			if err := os.Chown(dir, uid, gid); err != nil {
 				logging.Error(fmt.Sprintf("Failed to chown socket directory: %v", err))
 			}
 		}
 		args = append(args, "-listen", socketPath)
 
-		// Check for flags
-		if cfg.API != nil {
-			// Ignore cfg.API.Listen for backend (proxy handles it)
-
-			// Only root processes can change user
-			if os.Geteuid() == 0 {
-				args = append(args, "-user", "nobody")
-			}
-		} else {
-			// minimal defaults
-			if os.Geteuid() == 0 {
-				args = append(args, "-user", "nobody")
-			}
+		// Only root processes can change user
+		if os.Geteuid() == 0 {
+			args = append(args, "-user", unprivUser)
 		}
 
 		cmd := exec.Command(exe, args...)
+
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
@@ -441,7 +500,7 @@ func spawnAPI(ctx context.Context, exe string, cfg *config.Config, wg *sync.Wait
 	}
 }
 
-var clockAnchorFile = filepath.Join(brand.GetStateDir(), "clock_anchor")
+var clockAnchorFile = filepath.Join(install.GetStateDir(), "clock_anchor")
 
 // initClockAnchor loads the clock anchor from persistent storage and checks system time sanity.
 // If system time is unreasonable (before 2023), it logs a warning.
@@ -516,7 +575,7 @@ func spawnProxy(ctx context.Context, exe string, cfg *config.Config, wg *sync.Wa
 					tlsKey = cfg.Web.TLSKey
 				} else {
 					// Auto-generate self-signed certs
-					certDir := filepath.Join(brand.GetStateDir(), "certs")
+					certDir := filepath.Join(install.GetStateDir(), "certs")
 					os.MkdirAll(certDir, 0700)
 					tlsCert = filepath.Join(certDir, "server.crt")
 					tlsKey = filepath.Join(certDir, "server.key")
@@ -535,6 +594,15 @@ func spawnProxy(ctx context.Context, exe string, cfg *config.Config, wg *sync.Wa
 				if cfg.API.TLSCert != "" && cfg.API.TLSKey != "" {
 					tlsCert = cfg.API.TLSCert
 					tlsKey = cfg.API.TLSKey
+				} else {
+					// Auto-generate self-signed certs (Legacy API mode)
+					certDir := filepath.Join(install.GetStateDir(), "certs")
+					os.MkdirAll(certDir, 0700)
+					tlsCert = filepath.Join(certDir, "server.crt")
+					tlsKey = filepath.Join(certDir, "server.key")
+					if _, err := tls.EnsureCertificate(tlsCert, tlsKey, 365); err != nil {
+						logging.Error(fmt.Sprintf("Failed to generate TLS certificates (Legacy): %v", err))
+					}
 				}
 			} else if cfg.API.Listen != "" {
 				listenPort = cfg.API.Listen
@@ -542,7 +610,7 @@ func spawnProxy(ctx context.Context, exe string, cfg *config.Config, wg *sync.Wa
 		}
 
 		// Explicitly use Unix socket path
-		targetSock := filepath.Join(brand.GetRunDir(), "api", "api.sock")
+		targetSock := filepath.Join(install.GetRunDir(), "api", "api.sock")
 		// No need to chown here, spawnAPI does it, but we ensure existence
 		if err := os.MkdirAll(filepath.Dir(targetSock), 0755); err != nil {
 			logging.Error(fmt.Sprintf("Failed to create socket directory: %v", err))
@@ -555,13 +623,19 @@ func spawnProxy(ctx context.Context, exe string, cfg *config.Config, wg *sync.Wa
 			args = append(args, "-tls-cert", tlsCert, "-tls-key", tlsKey)
 		}
 
-		// Drop privileges to nobody (if root)
+		// Drop privileges to unprivileged user (if root)
 		if os.Geteuid() == 0 {
-			args = append(args, "-user", "nobody")
+			username, _, _ := getUnprivilegedUser()
+			args = append(args, "-user", username)
 			// Skip chroot when sandbox is disabled (dev/demo mode)
 			if cfg.API != nil && cfg.API.DisableSandbox {
 				args = append(args, "-no-chroot")
 			}
+		}
+
+		// Disable sandbox on non-Linux platforms (e.g. Darwin) or in test mode
+		if runtime.GOOS != "linux" || os.Getenv("FLYWALL_NO_SANDBOX") == "1" || os.Getenv("FLYWALL_TEST_MODE") != "" {
+			args = append(args, "-no-chroot")
 		}
 
 		cmd := exec.Command(exe, args...)
@@ -569,20 +643,12 @@ func spawnProxy(ctx context.Context, exe string, cfg *config.Config, wg *sync.Wa
 		cmd.Stderr = os.Stderr
 
 		// Build clean environment
-		// We must explicitly ensure FLYWALL_UPGRADE_STANDBY is NOT passed to child
-		// to prevent recursion loops where 'flywall api' thinks it's an upgrade standby.
 		newEnv := make([]string, 0, len(os.Environ()))
 		for _, e := range os.Environ() {
 			if !strings.HasPrefix(e, "FLYWALL_UPGRADE_STANDBY=") {
 				newEnv = append(newEnv, e)
 			}
 		}
-
-		// Disable sandbox on non-Linux platforms (e.g. Darwin)
-		if runtime.GOOS != "linux" || os.Getenv("FLYWALL_NO_SANDBOX") == "1" {
-			args = append(args, "-no-chroot")
-		}
-
 		cmd.Env = newEnv
 
 		logging.Info(fmt.Sprintf("Spawning Proxy: %v", args))
@@ -619,4 +685,86 @@ func spawnProxy(ctx context.Context, exe string, cfg *config.Config, wg *sync.Wa
 
 		time.Sleep(1 * time.Second)
 	}
+}
+
+// spawnAgent runs the Flywall Agent
+func spawnAgent(ctx context.Context, exe string, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	failCount := 0
+	logging.Info("spawnAgent: Starting Agent loop")
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		args := []string{"agent"}
+		cmd := exec.Command(exe, args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		// Clean env
+		newEnv := make([]string, 0, len(os.Environ()))
+		for _, e := range os.Environ() {
+			if !strings.HasPrefix(e, "FLYWALL_UPGRADE_STANDBY=") {
+				newEnv = append(newEnv, e)
+			}
+		}
+		cmd.Env = newEnv
+
+		logging.Info("Spawning Agent...")
+
+		if err := cmd.Start(); err != nil {
+			logging.Error(fmt.Sprintf("Failed to start Agent: %v", err))
+			failCount++
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second * time.Duration(failCount)):
+				continue
+			}
+		}
+
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+
+		select {
+		case <-ctx.Done():
+			if cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+			<-done
+			return
+		case err := <-done:
+			if err != nil {
+				logging.Error(fmt.Sprintf("Agent exited with error: %v", err))
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
+}
+
+// getUnprivilegedUser determines the unprivileged user to run as.
+// It prefers "flywall", falling back to "nobody".
+// Returns the username, uid, and gid.
+func getUnprivilegedUser() (string, int, int) {
+	// Try flywall
+	if u, err := user.Lookup("flywall"); err == nil {
+		uid, _ := strconv.Atoi(u.Uid)
+		gid, _ := strconv.Atoi(u.Gid)
+		return "flywall", uid, gid
+	}
+
+	// Fallback to nobody
+	if u, err := user.Lookup("nobody"); err == nil {
+		uid, _ := strconv.Atoi(u.Uid)
+		gid, _ := strconv.Atoi(u.Gid)
+		return "nobody", uid, gid
+	}
+
+	// Default fallback (standard nobody ID)
+	return "nobody", 65534, 65534
 }

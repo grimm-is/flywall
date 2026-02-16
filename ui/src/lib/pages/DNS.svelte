@@ -8,7 +8,6 @@
   import {
     Card,
     Button,
-    Modal,
     Input,
     Badge,
     Spinner,
@@ -16,22 +15,16 @@
     Toggle,
     Select,
   } from "$lib/components";
+  import ServeCard from "$lib/components/ServeCard.svelte";
+  import ServeCreateCard from "$lib/components/ServeCreateCard.svelte";
+  import ForwarderCreateCard from "$lib/components/dns/ForwarderCreateCard.svelte";
+  import BlocklistCard from "$lib/components/dns/BlocklistCard.svelte";
+  import HostCard from "$lib/components/dns/HostCard.svelte";
   import { t } from "svelte-i18n";
 
   let loading = $state(false);
-  let showAddForwarderModal = $state(false);
-  let showServeModal = $state(false);
-  let newForwarder = $state("");
-  let editingServe = $state<any>(null);
-
-  // Serve Config
-  let serveZone = $state("");
-  let serveLocalDomain = $state("");
-  let serveExpandHosts = $state(false);
-  let serveDhcp = $state(false);
-  let serveCache = $state(false);
-  let serveCacheSize = $state(10000);
-  let serveLogging = $state(false);
+  let isAddingForwarder = $state(false);
+  let isAddingServe = $state(false);
 
   const dnsConfig = $derived(
     $config?.dns ||
@@ -60,71 +53,46 @@
     }
   }
 
-  function openAddServe() {
-    editingServe = null;
-    serveZone = "lan";
-    serveLocalDomain = "lan";
-    serveExpandHosts = true;
-    serveDhcp = true;
-    serveCache = true;
-    serveCacheSize = 10000;
-    serveLogging = false;
-    showServeModal = true;
+  function toggleAddServe() {
+    isAddingServe = !isAddingServe;
   }
 
-  function editServe(serve: any) {
-    editingServe = serve;
-    serveZone = serve.zone;
-    serveLocalDomain = serve.local_domain || "";
-    serveExpandHosts = serve.expand_hosts || false;
-    serveDhcp = serve.dhcp_integration || false;
-    serveCache = serve.cache_enabled || false;
-    serveCacheSize = serve.cache_size || 10000;
-    serveLogging = serve.query_logging || false;
-    showServeModal = true;
-  }
-
-  async function saveServe() {
-    if (!serveZone) return;
-
+  async function handleAddServe(event: CustomEvent) {
     loading = true;
     try {
-      const serveData = {
-        zone: serveZone,
-        local_domain: serveLocalDomain,
-        expand_hosts: serveExpandHosts,
-        dhcp_integration: serveDhcp,
-        cache_enabled: serveCache,
-        cache_size: Number(serveCacheSize),
-        query_logging: serveLogging,
-      };
-
-      let updatedServe: any[];
-      const currentServes = dnsConfig.serve || [];
-
-      if (editingServe) {
-        updatedServe = currentServes.map((s: any) =>
-          s.zone === editingServe.zone ? { ...s, ...serveData } : s,
-        );
-      } else {
-        updatedServe = [...currentServes, serveData];
-      }
-
+      const serveData = event.detail;
+      const updatedServe = [...(dnsConfig.serve || []), serveData];
       await api.updateDNS({
-        dns: {
-          ...dnsConfig,
-          serve: updatedServe,
-        },
+        dns: { ...dnsConfig, serve: updatedServe },
       });
-      showServeModal = false;
-    } catch (e) {
-      console.error("Failed to save serve config:", e);
+      isAddingServe = false;
+    } catch (e: any) {
+      console.error("Failed to add serve:", e);
     } finally {
       loading = false;
     }
   }
 
-  async function deleteServe(zoneName: string) {
+  async function handleUpdateServe(event: CustomEvent) {
+    loading = true;
+    try {
+      const serveData = event.detail;
+      const currentServes = dnsConfig.serve || [];
+      const updatedServe = currentServes.map((s: any) =>
+        s.zone === serveData.zone ? { ...s, ...serveData } : s,
+      );
+      await api.updateDNS({
+        dns: { ...dnsConfig, serve: updatedServe },
+      });
+    } catch (e: any) {
+      console.error("Failed to update serve:", e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function handleDeleteServe(event: CustomEvent) {
+    const zoneName = event.detail;
     if (
       !confirm(
         $t("common.delete_confirm_item", {
@@ -140,21 +108,18 @@
       const updatedServe = currentServes.filter(
         (s: any) => s.zone !== zoneName,
       );
-
       await api.updateDNS({
-        dns: {
-          ...dnsConfig,
-          serve: updatedServe,
-        },
+        dns: { ...dnsConfig, serve: updatedServe },
       });
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to delete serve config:", e);
     } finally {
       loading = false;
     }
   }
 
-  async function addForwarder() {
+  async function handleAddForwarder(event: CustomEvent) {
+    const newForwarder = event.detail;
     if (!newForwarder) return;
 
     loading = true;
@@ -166,8 +131,7 @@
           forwarders: [...(dnsConfig.forwarders || []), newForwarder],
         },
       });
-      showAddForwarderModal = false;
-      newForwarder = "";
+      isAddingForwarder = false;
     } catch (e) {
       console.error("Failed to add forwarder:", e);
     } finally {
@@ -193,65 +157,45 @@
   }
 
   // Blocklist management
-  let showBlocklistModal = $state(false);
-  let editingBlocklist = $state<any>(null);
-  let blocklistName = $state("");
-  let blocklistUrl = $state("");
-  let blocklistFormat = $state("domains");
-  let blocklistEnabled = $state(true);
-  let blocklistRefresh = $state(24);
+  let isAddingBlocklist = $state(false);
+  let editingBlocklistIndex = $state<number | null>(null);
 
   function openAddBlocklist() {
-    editingBlocklist = null;
-    blocklistName = "";
-    blocklistUrl = "";
-    blocklistFormat = "domains";
-    blocklistEnabled = true;
-    blocklistRefresh = 24;
-    showBlocklistModal = true;
+    editingBlocklistIndex = null;
+    isAddingBlocklist = true;
   }
 
-  function openEditBlocklist(blocklist: any) {
-    editingBlocklist = blocklist;
-    blocklistName = blocklist.name || "";
-    blocklistUrl = blocklist.url || "";
-    blocklistFormat = blocklist.format || "domains";
-    blocklistEnabled = blocklist.enabled !== false;
-    blocklistRefresh = blocklist.refresh_hours || 24;
-    showBlocklistModal = true;
+  function openEditBlocklist(index: number) {
+    editingBlocklistIndex = index;
+    isAddingBlocklist = true;
   }
 
-  async function saveBlocklist() {
-    if (!blocklistName || !blocklistUrl) return;
+  function closeBlocklistForm() {
+    isAddingBlocklist = false;
+    editingBlocklistIndex = null;
+  }
+
+  async function handleSaveBlocklist(event: CustomEvent) {
+    const newBlocklist = event.detail;
+    if (!newBlocklist.name || !newBlocklist.url) return;
 
     loading = true;
     try {
-      const newBlocklist = {
-        name: blocklistName,
-        url: blocklistUrl,
-        format: blocklistFormat,
-        enabled: blocklistEnabled,
-        refresh_hours: blocklistRefresh,
-      };
-
-      let updatedBlocklists: any[];
       const currentBlocklists = dnsConfig.blocklists || [];
+      let updatedBlocklists: any[];
 
-      if (editingBlocklist) {
-        updatedBlocklists = currentBlocklists.map((b: any) =>
-          b.name === editingBlocklist.name ? newBlocklist : b,
+      if (editingBlocklistIndex !== null) {
+        updatedBlocklists = currentBlocklists.map((b: any, i: number) =>
+          i === editingBlocklistIndex ? newBlocklist : b,
         );
       } else {
         updatedBlocklists = [...currentBlocklists, newBlocklist];
       }
 
       await api.updateDNS({
-        dns: {
-          ...dnsConfig,
-          blocklists: updatedBlocklists,
-        },
+        dns: { ...dnsConfig, blocklists: updatedBlocklists },
       });
-      showBlocklistModal = false;
+      closeBlocklistForm();
     } catch (e: any) {
       alert(`Failed to save blocklist: ${e.message || e}`);
       console.error("Failed to save blocklist:", e);
@@ -301,57 +245,46 @@
     }
   }
 
-  // Local hosts management
-  let showHostModal = $state(false);
-  let editingHost = $state<any>(null);
-  let hostIp = $state("");
-  let hostHostnames = $state("");
+  // Local Host management
+  let isAddingHost = $state(false);
+  let editingHostIndex = $state<number | null>(null);
 
   function openAddHost() {
-    editingHost = null;
-    hostIp = "";
-    hostHostnames = "";
-    showHostModal = true;
+    editingHostIndex = null;
+    isAddingHost = true;
   }
 
-  function openEditHost(host: any) {
-    editingHost = host;
-    hostIp = host.ip || "";
-    hostHostnames = (host.hostnames || []).join(", ");
-    showHostModal = true;
+  function openEditHost(index: number) {
+    editingHostIndex = index;
+    isAddingHost = true;
   }
 
-  async function saveHost() {
-    if (!hostIp || !hostHostnames) return;
+  function closeHostForm() {
+    isAddingHost = false;
+    editingHostIndex = null;
+  }
+
+  async function handleSaveHost(event: CustomEvent) {
+    const newHost = event.detail;
+    if (!newHost.ip || !newHost.hostnames?.length) return;
 
     loading = true;
     try {
-      const newHost = {
-        ip: hostIp,
-        hostnames: hostHostnames
-          .split(",")
-          .map((h: string) => h.trim())
-          .filter(Boolean),
-      };
-
-      let updatedHosts: any[];
       const currentHosts = dnsConfig.hosts || [];
+      let updatedHosts: any[];
 
-      if (editingHost) {
-        updatedHosts = currentHosts.map((h: any) =>
-          h.ip === editingHost.ip ? newHost : h,
+      if (editingHostIndex !== null) {
+        updatedHosts = currentHosts.map((h: any, i: number) =>
+          i === editingHostIndex ? newHost : h,
         );
       } else {
         updatedHosts = [...currentHosts, newHost];
       }
 
       await api.updateDNS({
-        dns: {
-          ...dnsConfig,
-          hosts: updatedHosts,
-        },
+        dns: { ...dnsConfig, hosts: updatedHosts },
       });
-      showHostModal = false;
+      closeHostForm();
     } catch (e: any) {
       alert(`Failed to save host: ${e.message || e}`);
       console.error("Failed to save host:", e);
@@ -426,10 +359,26 @@
   <div class="section">
     <div class="section-header">
       <h3>{$t("dns.upstream_forwarders")}</h3>
-      <Button variant="outline" onclick={() => (showAddForwarderModal = true)}>
-        + {$t("common.add_item", { values: { item: $t("item.forwarder") } })}
+      <Button
+        variant="outline"
+        onclick={() => (isAddingForwarder = !isAddingForwarder)}
+      >
+        {isAddingForwarder
+          ? "Cancel"
+          : "+ " +
+            $t("common.add_item", { values: { item: $t("item.forwarder") } })}
       </Button>
     </div>
+
+    {#if isAddingForwarder}
+      <div class="mb-4">
+        <ForwarderCreateCard
+          {loading}
+          on:save={handleAddForwarder}
+          on:cancel={() => (isAddingForwarder = false)}
+        />
+      </div>
+    {/if}
 
     {#if dnsConfig.forwarders?.length > 0}
       <div class="forwarders-list">
@@ -461,47 +410,35 @@
     <div class="section">
       <div class="section-header">
         <h3>{$t("dns.zone_serving")}</h3>
-        <Button variant="outline" onclick={openAddServe}>
+        <Button
+          variant={isAddingServe ? "default" : "outline"}
+          onclick={toggleAddServe}
+        >
           + {$t("common.add_item", { values: { item: $t("item.config") } })}
         </Button>
       </div>
 
+      {#if isAddingServe}
+        <div class="mb-4">
+          <ServeCreateCard
+            {loading}
+            on:save={handleAddServe}
+            on:cancel={() => (isAddingServe = false)}
+          />
+        </div>
+      {/if}
+
       {#if dnsConfig.serve?.length > 0}
         <div class="serve-list">
           {#each dnsConfig.serve as serve}
-            <Card>
-              <div class="serve-item">
-                <div class="serve-info">
-                  <span class="zone-badge">{serve.zone}</span>
-                  <div class="serve-details">
-                    {#if serve.local_domain}
-                      <Badge variant="outline"
-                        >{$t("dns.domain")}: {serve.local_domain}</Badge
-                      >
-                    {/if}
-                    {#if serve.cache_enabled}
-                      <Badge variant="secondary"
-                        >{$t("dns.cache")}: {serve.cache_size}</Badge
-                      >
-                    {/if}
-                    {#if serve.dhcp_integration}
-                      <Badge variant="secondary">{$t("dns.dhcp_linked")}</Badge>
-                    {/if}
-                  </div>
-                </div>
-                <div class="serve-actions">
-                  <Button variant="ghost" onclick={() => editServe(serve)}>
-                    <Icon name="edit" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onclick={() => deleteServe(serve.zone)}
-                  >
-                    <Icon name="delete" />
-                  </Button>
-                </div>
-              </div>
-            </Card>
+            <div style="width: 100%">
+              <ServeCard
+                {serve}
+                {loading}
+                on:save={handleUpdateServe}
+                on:delete={handleDeleteServe}
+              />
+            </div>
           {/each}
         </div>
       {:else}
@@ -560,6 +497,19 @@
         </Button>
       </div>
 
+      {#if isAddingBlocklist}
+        <div class="mb-4">
+          <BlocklistCard
+            blocklist={editingBlocklistIndex !== null
+              ? dnsConfig.blocklists[editingBlocklistIndex]
+              : null}
+            {loading}
+            on:save={handleSaveBlocklist}
+            on:cancel={closeBlocklistForm}
+          />
+        </div>
+      {/if}
+
       {#if dnsConfig.blocklists?.length > 0}
         <div class="blocklist-list">
           {#each dnsConfig.blocklists as blocklist}
@@ -593,7 +543,10 @@
                   <Button
                     variant="ghost"
                     size="sm"
-                    onclick={() => openEditBlocklist(blocklist)}
+                    onclick={() =>
+                      openEditBlocklist(
+                        dnsConfig.blocklists.indexOf(blocklist),
+                      )}
                   >
                     <Icon name="edit" />
                   </Button>
@@ -629,6 +582,19 @@
         </Button>
       </div>
 
+      {#if isAddingHost}
+        <div class="mb-4">
+          <HostCard
+            host={editingHostIndex !== null
+              ? dnsConfig.hosts[editingHostIndex]
+              : null}
+            {loading}
+            on:save={handleSaveHost}
+            on:cancel={closeHostForm}
+          />
+        </div>
+      {/if}
+
       {#if dnsConfig.hosts?.length > 0}
         <div class="hosts-list">
           {#each dnsConfig.hosts as host}
@@ -644,7 +610,7 @@
                   <Button
                     variant="ghost"
                     size="sm"
-                    onclick={() => openEditHost(host)}
+                    onclick={() => openEditHost(dnsConfig.hosts.indexOf(host))}
                   >
                     <Icon name="edit" />
                   </Button>
@@ -670,203 +636,6 @@
     </div>
   {/if}
 </div>
-
-<!-- Add Forwarder Modal -->
-<Modal
-  bind:open={showAddForwarderModal}
-  title={$t("common.add_item", { values: { item: $t("item.forwarder") } })}
->
-  <div class="form-stack">
-    <Input
-      id="forwarder-ip"
-      label={$t("dns.server_ip")}
-      bind:value={newForwarder}
-      placeholder={$t("dns.server_ip_placeholder")}
-      required
-    />
-
-    <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showAddForwarderModal = false)}
-        >{$t("common.cancel")}</Button
-      >
-      <Button onclick={addForwarder} disabled={loading || !newForwarder}>
-        {#if loading}<Spinner size="sm" />{/if}
-        {$t("common.add")}
-      </Button>
-    </div>
-  </div>
-</Modal>
-
-<!-- Add/Edit Serve Modal -->
-<Modal
-  bind:open={showServeModal}
-  title={editingServe
-    ? $t("common.edit_item", { values: { item: $t("item.config") } })
-    : $t("common.add_item", { values: { item: $t("item.config") } })}
->
-  <div class="form-stack">
-    <div class="grid grid-cols-2 gap-4">
-      <Input
-        id="serve-zone"
-        label={$t("dns.zone_name")}
-        bind:value={serveZone}
-        placeholder={$t("dns.zone_name_placeholder")}
-        required
-        disabled={!!editingServe}
-      />
-      <Input
-        id="serve-domain"
-        label={$t("dns.local_domain")}
-        bind:value={serveLocalDomain}
-        placeholder={$t("dns.local_domain_placeholder")}
-      />
-    </div>
-
-    <div class="p-4 bg-secondary/10 rounded-lg space-y-4">
-      <h3 class="text-sm font-medium text-foreground">
-        {$t("dns.integration")}
-      </h3>
-      <Toggle label={$t("dhcp.integration")} bind:checked={serveDhcp} />
-      <p class="text-xs text-muted-foreground pb-2">
-        {$t("dns.integration_desc")}
-      </p>
-
-      <Toggle label={$t("dns.expand_hosts")} bind:checked={serveExpandHosts} />
-      <p class="text-xs text-muted-foreground">{$t("dns.expand_hosts_desc")}</p>
-    </div>
-
-    <div class="p-4 bg-secondary/10 rounded-lg space-y-4">
-      <div class="flex items-center justify-between">
-        <h3 class="text-sm font-medium text-foreground">{$t("dns.caching")}</h3>
-        <Toggle label="" bind:checked={serveCache} />
-      </div>
-
-      {#if serveCache}
-        <Input
-          id="serve-cache-size"
-          label={$t("dns.cache_size")}
-          type="number"
-          bind:value={serveCacheSize}
-        />
-      {/if}
-    </div>
-
-    <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showServeModal = false)}
-        >{$t("common.cancel")}</Button
-      >
-      <Button onclick={saveServe} disabled={loading || !serveZone}>
-        {#if loading}<Spinner size="sm" />{/if}
-        {editingServe
-          ? $t("common.save_changes")
-          : $t("common.add_item", { values: { item: $t("item.config") } })}
-      </Button>
-    </div>
-  </div>
-</Modal>
-
-<!-- Blocklist Modal -->
-<Modal
-  bind:open={showBlocklistModal}
-  title={editingBlocklist
-    ? $t("common.edit_item", { values: { item: $t("item.blocklist") } })
-    : $t("common.add_item", { values: { item: $t("item.blocklist") } })}
->
-  <div class="form-stack">
-    <Input
-      id="blocklist-name"
-      label={$t("common.name")}
-      bind:value={blocklistName}
-      placeholder="e.g., ads, malware, tracking"
-      required
-      disabled={!!editingBlocklist}
-    />
-
-    <Input
-      id="blocklist-url"
-      label={$t("dns.blocklist_url")}
-      bind:value={blocklistUrl}
-      placeholder="https://example.com/blocklist.txt"
-      required
-    />
-
-    <div class="grid grid-cols-2 gap-4">
-      <Select
-        id="blocklist-format"
-        label={$t("dns.blocklist_format")}
-        bind:value={blocklistFormat}
-        options={[
-          { value: "domains", label: "Domain list (one per line)" },
-          { value: "hosts", label: "Hosts file format" },
-          { value: "adblock", label: "AdBlock/uBlock format" },
-        ]}
-      />
-      <Input
-        id="blocklist-refresh"
-        label={$t("dns.refresh_hours")}
-        type="number"
-        bind:value={blocklistRefresh}
-        placeholder="24"
-      />
-    </div>
-
-    <Toggle label={$t("common.enabled")} bind:checked={blocklistEnabled} />
-
-    <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showBlocklistModal = false)}
-        >{$t("common.cancel")}</Button
-      >
-      <Button
-        onclick={saveBlocklist}
-        disabled={loading || !blocklistName || !blocklistUrl}
-      >
-        {#if loading}<Spinner size="sm" />{/if}
-        {$t("common.save")}
-      </Button>
-    </div>
-  </div>
-</Modal>
-
-<!-- Host Modal -->
-<Modal
-  bind:open={showHostModal}
-  title={editingHost
-    ? $t("common.edit_item", { values: { item: $t("item.host") } })
-    : $t("common.add_item", { values: { item: $t("item.host") } })}
->
-  <div class="form-stack">
-    <Input
-      id="host-ip"
-      label={$t("dns.host_ip")}
-      bind:value={hostIp}
-      placeholder="192.168.1.100"
-      required
-      disabled={!!editingHost}
-    />
-
-    <Input
-      id="host-hostnames"
-      label={$t("dns.hostnames")}
-      bind:value={hostHostnames}
-      placeholder="myserver, myserver.lan, myserver.local"
-      required
-    />
-    <p class="text-xs text-muted-foreground">{$t("dns.hostnames_hint")}</p>
-
-    <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showHostModal = false)}
-        >{$t("common.cancel")}</Button
-      >
-      <Button
-        onclick={saveHost}
-        disabled={loading || !hostIp || !hostHostnames}
-      >
-        {#if loading}<Spinner size="sm" />{/if}
-        {$t("common.save")}
-      </Button>
-    </div>
-  </div>
-</Modal>
 
 <style>
   .dns-page {

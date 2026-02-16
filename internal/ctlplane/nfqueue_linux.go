@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 
 package ctlplane
@@ -28,9 +30,15 @@ type NFQueueReader struct {
 	mu          sync.RWMutex
 
 	// VerdictFunc is called for each packet to determine accept/drop.
-	// The function should return true for ACCEPT, false for DROP.
+	// The function should return a Verdict struct:
+	// - Type: VerdictDrop, VerdictAccept, or VerdictAcceptWithMark
+	// - Mark: conntrack mark value when Type is VerdictAcceptWithMark
 	// This is called from the packet processing goroutine, so it must be fast.
-	VerdictFunc func(entry NFLogEntry) bool
+	VerdictFunc func(entry NFLogEntry) Verdict
+
+	workerCount int
+	packetChan  chan packetJob
+	wg          sync.WaitGroup
 
 	// Stats
 	packetsProcessed uint64
@@ -40,18 +48,24 @@ type NFQueueReader struct {
 	statsMu          sync.RWMutex
 }
 
+type packetJob struct {
+	id    uint32
+	entry NFLogEntry
+}
+
 // NewNFQueueReader creates a new inline packet queue reader.
 // queueNum should match the nftables "queue num X" rule.
 func NewNFQueueReader(queueNum uint16) *NFQueueReader {
 	return &NFQueueReader{
 		group:       queueNum,
-		maxQueueLen: 1024, // Reasonable default
+		maxQueueLen: 1024,
+		workerCount: 4, // Parallel verdict processing
 	}
 }
 
 // SetVerdictFunc sets the callback that determines packet fate.
 // This must be set before calling Start().
-func (r *NFQueueReader) SetVerdictFunc(fn func(entry NFLogEntry) bool) {
+func (r *NFQueueReader) SetVerdictFunc(fn func(entry NFLogEntry) Verdict) {
 	r.VerdictFunc = fn
 }
 
@@ -79,6 +93,13 @@ func (r *NFQueueReader) Start() error {
 	r.cancel = cancel
 	r.running = true
 
+	// Initialize worker pool
+	r.packetChan = make(chan packetJob, r.maxQueueLen)
+	for i := 0; i < r.workerCount; i++ {
+		r.wg.Add(1)
+		go r.workerLoop()
+	}
+
 	// Register callback for queued packets
 	err = nf.RegisterWithErrorFunc(ctx,
 		func(attrs nfqueue.Attribute) int {
@@ -97,34 +118,82 @@ func (r *NFQueueReader) Start() error {
 		return fmt.Errorf("failed to register nfqueue callback: %w", err)
 	}
 
-	log.Printf("[NFQUEUE] Listening on queue %d (inline mode)", r.group)
+	log.Printf("[NFQUEUE] Listening on queue %d (inline mode, %d workers)", r.group, r.workerCount)
 	return nil
 }
 
-// handlePacket processes a queued packet and returns a verdict.
+// handlePacket processes a queued packet and dispatches it to workers.
 func (r *NFQueueReader) handlePacket(attrs nfqueue.Attribute) {
 	r.statsMu.Lock()
 	r.packetsProcessed++
 	r.statsMu.Unlock()
 
 	// Parse packet to extract flow info
+	// Must copy data from attrs because netlink reuses buffer
 	entry := r.parseAttributes(attrs)
 
-	// Get verdict from callback
-	accept := r.VerdictFunc(entry)
+	job := packetJob{
+		id:    *attrs.PacketID,
+		entry: entry,
+	}
+
+	// Non-blocking send to prevent stalling netlink receiver
+	select {
+	case r.packetChan <- job:
+		// Queued successfully
+	default:
+		// Queue full: Fail-Open to prevent network outage
+		// We still log the drop from a "learning" perspective, but allow traffic
+		log.Printf("[NFQUEUE] Worker queue full (backpressure), fail-open for packet %d", job.id)
+		r.queue.SetVerdict(job.id, nfqueue.NfAccept)
+
+		r.statsMu.Lock()
+		r.verdictErrors++ // repurposing as "overflows/fail-open"
+		r.statsMu.Unlock()
+	}
+}
+
+func (r *NFQueueReader) workerLoop() {
+	defer r.wg.Done()
+
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case job := <-r.packetChan:
+			r.processJob(job)
+		}
+	}
+}
+
+func (r *NFQueueReader) processJob(job packetJob) {
+	// Get verdict from callback (can be slow, db access etc)
+	verdict := r.VerdictFunc(job.entry)
 
 	// Set verdict
-	packetID := *attrs.PacketID
 	var err error
-	if accept {
-		err = r.queue.SetVerdict(packetID, nfqueue.NfAccept)
+	switch verdict.Type {
+	case VerdictAccept:
+		err = r.queue.SetVerdict(job.id, nfqueue.NfAccept)
 		r.statsMu.Lock()
 		r.packetsAccepted++
 		r.statsMu.Unlock()
-	} else {
-		err = r.queue.SetVerdict(packetID, nfqueue.NfDrop)
+	case VerdictAcceptWithMark:
+		// Set verdict with conntrack mark
+		err = r.queue.SetVerdictWithConnMark(job.id, int(verdict.Mark), nfqueue.NfAccept)
+		r.statsMu.Lock()
+		r.packetsAccepted++
+		r.statsMu.Unlock()
+	case VerdictDrop:
+		err = r.queue.SetVerdict(job.id, nfqueue.NfDrop)
 		r.statsMu.Lock()
 		r.packetsDropped++
+		r.statsMu.Unlock()
+	default:
+		// Default to accept for safety
+		err = r.queue.SetVerdict(job.id, nfqueue.NfAccept)
+		r.statsMu.Lock()
+		r.packetsAccepted++
 		r.statsMu.Unlock()
 	}
 
@@ -132,7 +201,7 @@ func (r *NFQueueReader) handlePacket(attrs nfqueue.Attribute) {
 		r.statsMu.Lock()
 		r.verdictErrors++
 		r.statsMu.Unlock()
-		log.Printf("[NFQUEUE] Failed to set verdict for packet %d: %v", packetID, err)
+		log.Printf("[NFQUEUE] Failed to set verdict for packet %d: %v", job.id, err)
 	}
 }
 
@@ -274,6 +343,7 @@ func (r *NFQueueReader) Stop() {
 	if r.queue != nil {
 		r.queue.Close()
 	}
+	r.wg.Wait()
 }
 
 // IsRunning returns whether the reader is currently active.
@@ -305,16 +375,20 @@ func (r *NFQueueReader) GetStats() NFQueueStats {
 }
 
 // DefaultLearningVerdictFunc creates a verdict function that uses the learning engine.
-// Returns true (ACCEPT) if learning mode is enabled or flow is already allowed.
-func DefaultLearningVerdictFunc(isLearningMode func() bool, processPacket func(pkt NFLogEntry) (bool, error)) func(NFLogEntry) bool {
-	return func(entry NFLogEntry) bool {
+// Returns VerdictAccept if learning mode is enabled or flow is already allowed.
+// Returns VerdictDrop if the flow should be blocked.
+func DefaultLearningVerdictFunc(isLearningMode func() bool, processPacket func(pkt NFLogEntry) (bool, error)) func(NFLogEntry) Verdict {
+	return func(entry NFLogEntry) Verdict {
 		// Call the learning engine's ProcessPacket
-		verdict, err := processPacket(entry)
+		accept, err := processPacket(entry)
 		if err != nil {
 			log.Printf("[NFQUEUE] Error processing packet: %v", err)
 			// Fail-open: accept on error to avoid blocking legitimate traffic
-			return true
+			return Verdict{Type: VerdictAccept}
 		}
-		return verdict
+		if accept {
+			return Verdict{Type: VerdictAccept}
+		}
+		return Verdict{Type: VerdictDrop}
 	}
 }

@@ -1,0 +1,82 @@
+{
+    "lists": [
+        {
+            "name": "firehol_level1",
+            "url": "https://iplists.firehol.org/files/firehol_level1.netset",
+            "description": "Attacks, malware, during the last 48 hours",
+            "category": "attacks"
+        },
+        {
+            "name": "firehol_level2",
+            "url": "https://iplists.firehol.org/files/firehol_level2.netset",
+            "description": "Attacks, malware, spyware, during the last 48 hours",
+            "category": "attacks"
+        },
+        {
+            "name": "firehol_level3",
+            "url": "https://iplists.firehol.org/files/firehol_level3.netset",
+            "description": "Attacks, during the last 30 days",
+            "category": "attacks"
+        },
+        {
+            "name": "spamhaus_drop",
+            "url": "https://iplists.firehol.org/files/spamhaus_drop.netset",
+            "description": "Spamhaus Don't Route Or Peer list",
+            "category": "spam"
+        },
+        {
+            "name": "spamhaus_edrop",
+            "url": "https://iplists.firehol.org/files/spamhaus_edrop.netset",
+            "description": "Spamhaus Extended DROP list",
+            "category": "spam"
+        },
+        {
+            "name": "dshield",
+            "url": "https://iplists.firehol.org/files/dshield.netset",
+            "description": "DShield top attacking IPs",
+            "category": "attacks"
+        },
+        {
+            "name": "blocklist_de",
+            "url": "https://iplists.firehol.org/files/blocklist_de.ipset",
+            "description": "Blocklist.de all attacks",
+            "category": "attacks"
+        },
+        {
+            "name": "et_compromised",
+            "url": "https://iplists.firehol.org/files/et_compromised.ipset",
+            "description": "Emerging Threats compromised IPs",
+            "category": "compromised"
+        },
+        {
+            "name": "feodo",
+            "url": "https://iplists.firehol.org/files/feodo.ipset",
+            "description": "Feodo Tracker botnet C&C servers",
+            "category": "botnet"
+        },
+        {
+            "name": "binarydefense",
+            "url": "https://iplists.firehol.org/files/binarydefense.ipset",
+            "description": "Binary Defense malicious IPs",
+            "category": "attacks"
+        },
+        {
+            "name": "sslbl",
+            "url": "https://iplists.firehol.org/files/sslbl.ipset",
+            "description": "Abuse.ch SSL Blacklist",
+            "category": "malware"
+        },
+        {
+            "name": "tor_exits",
+            "url": "https://iplists.firehol.org/files/tor_exits.ipset",
+            "description": "TOR exit nodes",
+            "category": "anonymizers"
+        },
+        {
+            "name": "fullbogons",
+            "url": "https://iplists.firehol.org/files/fullbogons.netset",
+            "description": "Full bogons - unallocated IPv4 space",
+            "category": "bogons"
+        }
+    ]
+}

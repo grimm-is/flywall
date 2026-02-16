@@ -1,0 +1,103 @@
+baseURL = "https://docs.flywall.dev/"
+title = "Flywall Documentation"
+languageCode = "en-us"
+defaultContentLanguage = "en"
+
+# Theme is imported via Hugo modules below
+
+# Enable Git info for "last modified" dates
+enableGitInfo = true
+
+# Language settings
+[languages]
+  [languages.en]
+    languageName = "English"
+    weight = 1
+
+# Docsy theme configuration
+[params]
+  copyright = "Flywall Authors"
+  privacy_policy = ""
+
+  # GitHub repository configuration
+  github_repo = "https://github.com/grimm-is/flywall"
+  github_project_repo = "https://github.com/grimm-is/flywall"
+  github_branch = "main"
+
+  # Enable Lunr.js search
+  offlineSearch = true
+
+  # UI customization
+  [params.ui]
+    sidebar_menu_compact = true
+    sidebar_menu_foldable = true
+    sidebar_cache_limit = 10
+    breadcrumb_disable = false
+    sidebar_search_disable = false
+    navbar_logo = true
+    footer_about_enable = true
+
+  # Links in footer
+  [[params.links.user]]
+    name = "GitHub"
+    url = "https://github.com/grimm-is/flywall"
+    icon = "fab fa-github"
+    desc = "Development takes place here!"
+
+  [[params.links.developer]]
+    name = "Developer Docs"
+    url = "/docs/development/"
+    icon = "fa fa-code"
+    desc = "Contribute to Flywall"
+
+# Syntax highlighting
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true
+  [markup.highlight]
+    style = "tango"
+    lineNos = false
+
+# Navigation menu
+[menu]
+  [[menu.main]]
+    name = "Documentation"
+    weight = 10
+    url = "/docs/"
+  [[menu.main]]
+    name = "Features"
+    weight = 20
+    url = "/docs/features/"
+  [[menu.main]]
+    name = "GitHub"
+    weight = 50
+    url = "https://github.com/grimm-is/flywall"
+    pre = "<i class='fab fa-github'></i>"
+
+# Hugo module imports
+[module]
+  proxy = "direct"
+
+  [[module.imports]]
+    path = "github.com/google/docsy"
+    disable = false
+
+  [[module.imports]]
+    path = "github.com/google/docsy/dependencies"
+    disable = false
+
+# Taxonomies
+[taxonomies]
+  tag = "tags"
+  category = "categories"
+
+# Output formats
+[outputs]
+  home = ["HTML"]
+  section = ["HTML"]
+
+# Security (for Hugo >= 0.91)
+[security]
+  [security.funcs]
+    getenv = ["^HUGO_", "^CI$"]

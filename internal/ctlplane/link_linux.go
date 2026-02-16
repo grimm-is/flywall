@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 // +build linux
 
@@ -10,9 +12,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/safchain/ethtool"
 	"github.com/vishvananda/netlink"
+	"grimm.is/flywall/internal/errors"
+	"grimm.is/flywall/internal/netutil"
 )
 
 // LinkManager provides L1/L2 link layer operations including hardware info,
@@ -25,7 +30,7 @@ type LinkManager struct {
 func NewLinkManager() (*LinkManager, error) {
 	h, err := ethtool.NewEthtool()
 	if err != nil {
-		return nil, fmt.Errorf("failed to open ethtool handle: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to open ethtool handle")
 	}
 	return &LinkManager{handle: h}, nil
 }
@@ -155,7 +160,7 @@ type DriverInfo struct {
 func (em *LinkManager) GetDriverInfo(iface string) (*DriverInfo, error) {
 	info, err := em.handle.DriverInfo(iface)
 	if err != nil {
-		return nil, fmt.Errorf("ethtool DriverInfo failed for %s: %w", iface, err)
+		return nil, errors.Wrapf(err, errors.KindInternal, "ethtool DriverInfo failed for %s", iface)
 	}
 
 	return &DriverInfo{
@@ -170,7 +175,7 @@ func (em *LinkManager) GetDriverInfo(iface string) (*DriverInfo, error) {
 func (em *LinkManager) GetStats(iface string) (map[string]uint64, error) {
 	stats, err := em.handle.Stats(iface)
 	if err != nil {
-		return nil, fmt.Errorf("ethtool Stats failed for %s: %w", iface, err)
+		return nil, errors.Wrapf(err, errors.KindInternal, "ethtool Stats failed for %s", iface)
 	}
 	return stats, nil
 }
@@ -179,7 +184,7 @@ func (em *LinkManager) GetStats(iface string) (map[string]uint64, error) {
 func (em *LinkManager) GetOffloads(iface string) (*InterfaceOffloads, error) {
 	features, err := em.handle.Features(iface)
 	if err != nil {
-		return nil, fmt.Errorf("ethtool Features failed for %s: %w", iface, err)
+		return nil, errors.Wrapf(err, errors.KindInternal, "ethtool Features failed for %s", iface)
 	}
 
 	offloads := &InterfaceOffloads{}
@@ -247,7 +252,7 @@ func (em *LinkManager) GetOffloads(iface string) (*InterfaceOffloads, error) {
 func (em *LinkManager) GetRingBuffer(iface string) (*RingBufferSettings, error) {
 	ring, err := em.handle.GetRing(iface)
 	if err != nil {
-		return nil, fmt.Errorf("ethtool GetRing failed for %s: %w", iface, err)
+		return nil, errors.Wrapf(err, errors.KindInternal, "ethtool GetRing failed for %s", iface)
 	}
 
 	return &RingBufferSettings{
@@ -262,7 +267,7 @@ func (em *LinkManager) GetRingBuffer(iface string) (*RingBufferSettings, error) 
 func (em *LinkManager) GetCoalesce(iface string) (*CoalesceSettings, error) {
 	coal, err := em.handle.GetCoalesce(iface)
 	if err != nil {
-		return nil, fmt.Errorf("ethtool GetCoalesce failed for %s: %w", iface, err)
+		return nil, errors.Wrapf(err, errors.KindInternal, "ethtool GetCoalesce failed for %s", iface)
 	}
 
 	return &CoalesceSettings{
@@ -392,7 +397,7 @@ func ReadVLANInfo(iface string) (parent string, vlanID int, err error) {
 			return parent, vlanID, nil
 		}
 	}
-	return "", 0, fmt.Errorf("VLAN info not found for %s", iface)
+	return "", 0, errors.Errorf(errors.KindNotFound, "VLAN info not found for %s", iface)
 }
 
 // GetInterfaceType determines the type of interface.
@@ -480,16 +485,16 @@ func GetLinkSpeedString(name string) string {
 // Returns the created VLAN interface name (e.g., "eth0.100").
 func (lm *LinkManager) CreateVLAN(args *CreateVLANArgs) (string, error) {
 	if args.ParentInterface == "" {
-		return "", fmt.Errorf("parent interface is required")
+		return "", errors.New(errors.KindValidation, "parent interface is required")
 	}
 	if args.VLANID < 1 || args.VLANID > 4094 {
-		return "", fmt.Errorf("VLAN ID must be between 1 and 4094")
+		return "", errors.New(errors.KindValidation, "VLAN ID must be between 1 and 4094")
 	}
 
 	// Get parent link
 	parent, err := netlink.LinkByName(args.ParentInterface)
 	if err != nil {
-		return "", fmt.Errorf("parent interface not found: %w", err)
+		return "", errors.Wrap(err, errors.KindNotFound, "parent interface not found")
 	}
 
 	vlanName := fmt.Sprintf("%s.%d", args.ParentInterface, args.VLANID)
@@ -504,12 +509,12 @@ func (lm *LinkManager) CreateVLAN(args *CreateVLANArgs) (string, error) {
 	}
 
 	if err := netlink.LinkAdd(vlan); err != nil {
-		return "", fmt.Errorf("failed to create VLAN: %w", err)
+		return "", errors.Wrap(err, errors.KindInternal, "failed to create VLAN")
 	}
 
 	// Bring up the VLAN interface
 	if err := netlink.LinkSetUp(vlan); err != nil {
-		return "", fmt.Errorf("VLAN created but failed to bring up: %w", err)
+		return "", errors.Wrap(err, errors.KindInternal, "VLAN created but failed to bring up")
 	}
 
 	log.Printf("[Link] Created VLAN %s on %s", vlanName, args.ParentInterface)
@@ -520,11 +525,11 @@ func (lm *LinkManager) CreateVLAN(args *CreateVLANArgs) (string, error) {
 func (lm *LinkManager) DeleteVLAN(name string) error {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
-		return fmt.Errorf("VLAN interface not found: %w", err)
+		return errors.Wrap(err, errors.KindNotFound, "VLAN interface not found")
 	}
 
 	if err := netlink.LinkDel(link); err != nil {
-		return fmt.Errorf("failed to delete VLAN: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to delete VLAN")
 	}
 
 	log.Printf("[Link] Deleted VLAN %s", name)
@@ -535,10 +540,10 @@ func (lm *LinkManager) DeleteVLAN(name string) error {
 // Uses *CreateBondArgs from types.go, but only uses L2 fields (Name, Mode, Interfaces).
 func (lm *LinkManager) CreateBond(args *CreateBondArgs) error {
 	if args.Name == "" {
-		return fmt.Errorf("bond name is required")
+		return errors.New(errors.KindValidation, "bond name is required")
 	}
 	if len(args.Interfaces) < 1 {
-		return fmt.Errorf("at least one member interface is required")
+		return errors.New(errors.KindValidation, "at least one member interface is required")
 	}
 
 	// Map bond mode string to netlink constant
@@ -560,12 +565,42 @@ func (lm *LinkManager) CreateBond(args *CreateBondArgs) error {
 		mode = netlink.BOND_MODE_BALANCE_ALB
 	}
 
-	// Create bond interface
-	bond := netlink.NewLinkBond(netlink.LinkAttrs{Name: args.Name})
-	bond.Mode = mode
+	// Robustly ensure interface doesn't exist (clean up zombies)
+	// Retry loop for deletion
+	for i := 0; i < 3; i++ {
+		if oldLink, err := netlink.LinkByName(args.Name); err == nil {
+			log.Printf("[Link] Interface %s exists, deleting (attempt %d)", args.Name, i+1)
+			if err := netlink.LinkDel(oldLink); err != nil {
+				log.Printf("[Link] Check: Failed to delete %s: %v", args.Name, err)
+			}
+			// Small wait for kernel cleanup
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			// Link doesn't exist, we are good to go
+			break
+		}
+	}
+
+	// Create new bond
+	bond := netlink.NewLinkBond(netlink.LinkAttrs{
+		Name: args.Name,
+	})
+
+	if args.Mode != "" {
+		bond.Mode = mode
+	}
 
 	if err := netlink.LinkAdd(bond); err != nil {
-		return fmt.Errorf("failed to create bond: %w", err)
+		// If we still get file exists, it's sticky. Try one last desperate delete.
+		if strings.Contains(err.Error(), "file exists") {
+			log.Printf("[Link] 'File exists' error on creation. Attempting final cleanup for %s", args.Name)
+			if l, e := netlink.LinkByName(args.Name); e == nil {
+				_ = netlink.LinkDel(l)
+				time.Sleep(200 * time.Millisecond)
+				return netlink.LinkAdd(bond)
+			}
+		}
+		return errors.Wrap(err, errors.KindInternal, "failed to create bond")
 	}
 
 	// Add member interfaces to bond
@@ -588,7 +623,7 @@ func (lm *LinkManager) CreateBond(args *CreateBondArgs) error {
 
 	// Bring up the bond
 	if err := netlink.LinkSetUp(bond); err != nil {
-		return fmt.Errorf("bond created but failed to bring up: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "bond created but failed to bring up")
 	}
 
 	log.Printf("[Link] Created bond %s with mode %s", args.Name, args.Mode)
@@ -599,11 +634,11 @@ func (lm *LinkManager) CreateBond(args *CreateBondArgs) error {
 func (lm *LinkManager) DeleteBond(name string) error {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
-		return fmt.Errorf("bond not found: %w", err)
+		return errors.Wrap(err, errors.KindNotFound, "bond not found")
 	}
 
 	if err := netlink.LinkDel(link); err != nil {
-		return fmt.Errorf("failed to delete bond: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to delete bond")
 	}
 
 	log.Printf("[Link] Deleted bond %s", name)
@@ -614,7 +649,7 @@ func (lm *LinkManager) DeleteBond(name string) error {
 func (lm *LinkManager) SetLinkUp(name string) error {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
-		return fmt.Errorf("interface not found: %w", err)
+		return errors.Wrap(err, errors.KindNotFound, "interface not found")
 	}
 	return netlink.LinkSetUp(link)
 }
@@ -623,7 +658,7 @@ func (lm *LinkManager) SetLinkUp(name string) error {
 func (lm *LinkManager) SetLinkDown(name string) error {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
-		return fmt.Errorf("interface not found: %w", err)
+		return errors.Wrap(err, errors.KindNotFound, "interface not found")
 	}
 	return netlink.LinkSetDown(link)
 }
@@ -632,7 +667,7 @@ func (lm *LinkManager) SetLinkDown(name string) error {
 func (lm *LinkManager) SetMTU(name string, mtu int) error {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
-		return fmt.Errorf("interface not found: %w", err)
+		return errors.Wrap(err, errors.KindNotFound, "interface not found")
 	}
 	return netlink.LinkSetMTU(link, mtu)
 }
@@ -641,7 +676,7 @@ func (lm *LinkManager) SetMTU(name string, mtu int) error {
 func (lm *LinkManager) GetMAC(name string) (string, error) {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
-		return "", fmt.Errorf("interface not found: %w", err)
+		return "", errors.Wrap(err, errors.KindNotFound, "interface not found")
 	}
 	return link.Attrs().HardwareAddr.String(), nil
 }
@@ -650,7 +685,7 @@ func (lm *LinkManager) GetMAC(name string) (string, error) {
 func (lm *LinkManager) GetMTU(name string) (int, error) {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
-		return 0, fmt.Errorf("interface not found: %w", err)
+		return 0, errors.Wrap(err, errors.KindNotFound, "interface not found")
 	}
 	return link.Attrs().MTU, nil
 }
@@ -665,7 +700,7 @@ func (lm *LinkManager) GetMTU(name string) (int, error) {
 func (lm *LinkManager) SetHardwareAddr(name string, mac []byte) error {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
-		return fmt.Errorf("interface %s not found: %w", name, err)
+		return errors.Wrapf(err, errors.KindNotFound, "interface %s not found", name)
 	}
 
 	// Check if interface is up
@@ -675,7 +710,7 @@ func (lm *LinkManager) SetHardwareAddr(name string, mac []byte) error {
 	// Interface must be down to change MAC (Linux requirement)
 	if wasUp {
 		if err := netlink.LinkSetDown(link); err != nil {
-			return fmt.Errorf("failed to bring down %s: %w", name, err)
+			return errors.Wrapf(err, errors.KindInternal, "failed to bring down %s", name)
 		}
 	}
 
@@ -685,17 +720,17 @@ func (lm *LinkManager) SetHardwareAddr(name string, mac []byte) error {
 		if wasUp {
 			_ = netlink.LinkSetUp(link)
 		}
-		return fmt.Errorf("failed to set MAC on %s: %w", name, err)
+		return errors.Wrapf(err, errors.KindInternal, "failed to set MAC on %s", name)
 	}
 
 	// Restore link state
 	if wasUp {
 		if err := netlink.LinkSetUp(link); err != nil {
-			return fmt.Errorf("MAC changed but failed to bring up %s: %w", name, err)
+			return errors.Wrapf(err, errors.KindInternal, "MAC changed but failed to bring up %s", name)
 		}
 	}
 
-	log.Printf("[Link] Set MAC address on %s to %s", name, FormatMAC(mac))
+	log.Printf("[Link] Set MAC address on %s to %s", name, netutil.FormatMAC(mac))
 	return nil
 }
 
@@ -703,57 +738,22 @@ func (lm *LinkManager) SetHardwareAddr(name string, mac []byte) error {
 func (lm *LinkManager) GetHardwareAddr(name string) ([]byte, error) {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
-		return nil, fmt.Errorf("interface %s not found: %w", name, err)
+		return nil, errors.Wrapf(err, errors.KindNotFound, "interface %s not found", name)
 	}
 	return link.Attrs().HardwareAddr, nil
 }
 
 // FormatMAC formats a MAC address byte slice as a colon-separated string.
 func FormatMAC(mac []byte) string {
-	if len(mac) != 6 {
-		return ""
-	}
-	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x",
-		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
+	return netutil.FormatMAC(mac)
 }
 
 // ParseMAC parses a MAC address string (colon or hyphen separated) to bytes.
 func ParseMAC(macStr string) ([]byte, error) {
-	// Normalize hyphens to colons
-	macStr = strings.ReplaceAll(macStr, "-", ":")
-	parts := strings.Split(macStr, ":")
-	if len(parts) != 6 {
-		return nil, fmt.Errorf("invalid MAC address format: %s", macStr)
-	}
-
-	mac := make([]byte, 6)
-	for i, part := range parts {
-		var b int
-		_, err := fmt.Sscanf(part, "%02x", &b)
-		if err != nil {
-			return nil, fmt.Errorf("invalid MAC address byte %s: %w", part, err)
-		}
-		mac[i] = byte(b)
-	}
-	return mac, nil
+	return netutil.ParseMAC(macStr)
 }
 
 // GenerateVirtualMAC generates a locally-administered MAC address based on interface name.
-// Uses the format 02:gc:ic:XX:XX:XX where XX:XX:XX is derived from the interface name hash.
-// Locally-administered MACs have bit 1 of the first octet set (02, 06, 0A, 0E, etc.).
 func GenerateVirtualMAC(ifaceName string) []byte {
-	// Simple hash of interface name
-	hash := uint32(0)
-	for _, c := range ifaceName {
-		hash = hash*31 + uint32(c)
-	}
-
-	return []byte{
-		0x02,             // Locally-administered, unicast
-		0x67,             // 'g' for flywall
-		0x63,             // 'c' for flywall
-		byte(hash >> 16), // Derived from interface name
-		byte(hash >> 8),
-		byte(hash),
-	}
+	return netutil.GenerateVirtualMAC(ifaceName)
 }

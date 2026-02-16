@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 
 package firewall
@@ -82,7 +84,7 @@ func TestBuildFilterTableScript_Validation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := BuildFilterTableScript(FromGlobalConfig(tt.cfg), tt.cfg.VPN, "testtable", "")
+			_, err := BuildFilterTableScript(FromGlobalConfig(tt.cfg), tt.cfg.VPN, "testtable", "", nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("BuildFilterTableScript() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -136,7 +138,7 @@ func TestSecurityDefaults(t *testing.T) {
 		},
 	}
 
-	sb, err := BuildFilterTableScript(FromGlobalConfig(cfg), cfg.VPN, "testtable", "")
+	sb, err := BuildFilterTableScript(FromGlobalConfig(cfg), cfg.VPN, "testtable", "", nil)
 	if err != nil {
 		t.Fatalf("BuildFilterTableScript failed: %v", err)
 	}

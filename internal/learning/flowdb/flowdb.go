@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package flowdb provides a dedicated SQL database layer for the learning engine.
 //
 // Unlike the bucket-based state.Store (which serializes objects as JSON blobs),
@@ -59,13 +61,13 @@ type Flow struct {
 	FirstSeen          time.Time `json:"first_seen"`
 	LastSeen           time.Time `json:"last_seen"`
 	Occurrences        int       `json:"occurrences"`
-	App                string    `json:"app,omitempty"`        // Identified Application (e.g. Netflix)
-	Vendor             string    `json:"vendor,omitempty"`     // Device Vendor (e.g. Apple)
-	DeviceID           string    `json:"device_id,omitempty"`  // ID of the linked device identity (ephemeral)
-	JA3Hash            string    `json:"ja3_hash,omitempty"`   // JA3 TLS client fingerprint (MD5 hash)
-	JA3Raw             string    `json:"ja3_raw,omitempty"`    // Raw JA3 string before hashing
-	JA3SHash           string    `json:"ja3s_hash,omitempty"`  // JA3S TLS server fingerprint (MD5 hash)
-	JA3SRaw            string    `json:"ja3s_raw,omitempty"`   // Raw JA3S string before hashing
+	App                string    `json:"app,omitempty"`       // Identified Application (e.g. Netflix)
+	Vendor             string    `json:"vendor,omitempty"`    // Device Vendor (e.g. Apple)
+	DeviceID           string    `json:"device_id,omitempty"` // ID of the linked device identity (ephemeral)
+	JA3Hash            string    `json:"ja3_hash,omitempty"`  // JA3 TLS client fingerprint (MD5 hash)
+	JA3Raw             string    `json:"ja3_raw,omitempty"`   // Raw JA3 string before hashing
+	JA3SHash           string    `json:"ja3s_hash,omitempty"` // JA3S TLS server fingerprint (MD5 hash)
+	JA3SRaw            string    `json:"ja3s_raw,omitempty"`  // Raw JA3S string before hashing
 }
 
 // DomainHint represents DNS context for a flow
@@ -94,6 +96,8 @@ type Stats struct {
 	ScrutinyFlows    int64 `json:"scrutiny_flows"`
 	TotalOccurrences int64 `json:"total_occurrences"`
 	TotalDomainHints int64 `json:"total_domain_hints"`
+	TCPFlows         int64 `json:"tcp_flows"`
+	UDPFlows         int64 `json:"udp_flows"`
 }
 
 // DB is the flow database interface
@@ -596,6 +600,26 @@ func (fdb *DB) GetStats() (*Stats, error) {
 			stats.AllowedFlows = count
 		case StateDenied:
 			stats.DeniedFlows = count
+		}
+	}
+
+	// Count by protocol
+	rowsProtos, err := fdb.db.Query(`
+		SELECT proto, COUNT(*)
+		FROM learned_flows GROUP BY proto
+	`)
+	if err == nil {
+		defer rowsProtos.Close()
+		for rowsProtos.Next() {
+			var proto string
+			var count int64
+			if err := rowsProtos.Scan(&proto, &count); err == nil {
+				if strings.ToUpper(proto) == "TCP" {
+					stats.TCPFlows = count
+				} else if strings.ToUpper(proto) == "UDP" {
+					stats.UDPFlows = count
+				}
+			}
 		}
 	}
 

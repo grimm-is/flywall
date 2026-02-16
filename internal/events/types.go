@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package events provides a unified pub/sub event bus for Flywall.
 // All observability data (DHCP, DNS, NFT, discovery) flows through this hub.
 package events

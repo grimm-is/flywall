@@ -57,8 +57,8 @@ MGMT_IP=""
 DRY_RUN=false
 ALPINE_VERSION="3.19"
 INSTALL_PREFIX=""
-STATE_DIR="/var/lib/flywall"
-LOG_DIR="/var/log/flywall"
+STATE_DIR="/opt/flywall/var/lib"
+LOG_DIR="/opt/flywall/var/log"
 SSH_KEY="" # New option
 CUSTOM_NETS_LIST=""
 
@@ -381,7 +381,7 @@ install_flywall() {
     log_info "Setting up Flywall..."
 
     # Create directories
-    pct exec "$vmid" -- mkdir -p "$STATE_DIR" "$LOG_DIR" /etc/flywall
+    pct exec "$vmid" -- mkdir -p "$STATE_DIR" "$LOG_DIR" /opt/flywall/etc
 }
 
 # Inject SSH key
@@ -417,8 +417,8 @@ create_service() {
 name="flywall"
 description="Flywall Firewall"
 command="'"${INSTALL_PREFIX:-/usr/sbin}"'/flywall"
-command_args="start --config /etc/flywall/flywall.hcl"
-pidfile="/var/run/flywall.pid"
+command_args="start --config /opt/flywall/etc/flywall.hcl"
+pidfile="/opt/flywall/var/run/flywall.pid"
 
 depend() {
     need net
@@ -660,7 +660,7 @@ dns_server {
         return
     fi
 
-    echo "$config" | pct exec "$vmid" -- tee /etc/flywall/flywall.hcl > /dev/null
+    echo "$config" | pct exec "$vmid" -- tee /opt/flywall/etc/flywall.hcl > /dev/null
 
     log_ok "Default configuration created"
 }
@@ -707,12 +707,12 @@ print_summary() {
         fi
     fi
     echo ""
-    echo "  Configuration:  /etc/flywall/flywall.hcl"
-    echo "  Logs:           /var/log/flywall/"
+    echo "  Configuration:  /opt/flywall/etc/flywall.hcl"
+    echo "  Logs:           /opt/flywall/var/log/"
     echo ""
     echo "  Inside container:"
     echo "    Start service:  rc-service flywall start"
-    echo "    View status:    flywall ctl /etc/flywall/flywall.hcl"
+    echo "    View status:    flywall ctl /opt/flywall/etc/flywall.hcl"
     echo ""
 }
 

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -207,7 +209,7 @@ func TestHandleStatus_MethodNotAllowed(t *testing.T) {
 // ==============================================================================
 
 func TestServerConfig_HasRequiredTimeouts(t *testing.T) {
-	const expectedReadHeaderTimeout = 5 * time.Second
+	const expectedReadHeaderTimeout = 10 * time.Second
 	const expectedReadTimeout = 15 * time.Second
 	const expectedWriteTimeout = 30 * time.Second
 	const expectedIdleTimeout = 60 * time.Second

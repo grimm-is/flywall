@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package ntp
 
 import (
@@ -43,7 +45,6 @@ type packet struct {
 	TxTimeFrac     uint32
 }
 
-// Service implements the NTP service
 type Service struct {
 	mu         sync.RWMutex
 	logger     *logging.Logger
@@ -55,14 +56,12 @@ type Service struct {
 	wg         sync.WaitGroup
 }
 
-// NewService creates a new NTP service
 func NewService(logger *logging.Logger) *Service {
 	return &Service{
 		logger: logger,
 	}
 }
 
-// SetUpgradeManager sets the upgrade manager
 func (s *Service) SetUpgradeManager(mgr *upgrade.Manager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -73,7 +72,6 @@ func (s *Service) Name() string {
 	return "NTP"
 }
 
-// Start starts the service
 func (s *Service) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -136,7 +134,6 @@ func (s *Service) startListener() error {
 	return nil
 }
 
-// serve handles incoming NTP packets
 func (s *Service) serve(conn net.PacketConn) {
 	defer s.wg.Done()
 	buf := make([]byte, 48) // NTP packet size
@@ -305,7 +302,6 @@ func (s *Service) syncTime() {
 	}
 }
 
-// Stop stops the service
 func (s *Service) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -323,7 +319,6 @@ func (s *Service) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Reload reloads the service
 func (s *Service) Reload(cfg *config.Config) (bool, error) {
 	s.mu.Lock()
 
@@ -349,7 +344,6 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 	return true, s.Start(context.Background())
 }
 
-// Status returns status
 func (s *Service) Status() services.ServiceStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

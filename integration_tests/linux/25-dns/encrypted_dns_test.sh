@@ -13,7 +13,7 @@ cleanup_on_exit
 
 log() { echo "[TEST] $1"; }
 
-CONFIG_FILE="/tmp/encrypted_dns.hcl"
+CONFIG_FILE="/tmp/encrypted_dns_$$.hcl"
 
 # Create dummy cert for DoT verification if needed (not strictly needed just to test connection)
 # But we need a config.
@@ -56,11 +56,11 @@ wait_for_port 53 10 || fail "DNS server failed to bind port 53"
 # Mock DoT upstream using netcat to catch connection
 # We'll run nc in background listening on 8853
 log "Starting mock DoT listener on 8853..."
-MOCK_LOG="/tmp/mock_dot.log"
+MOCK_LOG="/tmp/mock_dot_$$.log"
 nc -l -k -p 8853 > "$MOCK_LOG" 2>&1 &
 NC_PID=$!
 # Add to cleanup
-cleanup_pids="$cleanup_pids $NC_PID"
+track_pid $NC_PID
 
 # Send a query to Flywall
 log "Sending DNS query to Flywall (should forward to DoT)..."

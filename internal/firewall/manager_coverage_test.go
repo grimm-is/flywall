@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 
 package firewall
@@ -40,7 +42,7 @@ func TestManager_SafeApply_Success(t *testing.T) {
 		Zones: []config.Zone{
 			{Name: "wan", Action: "drop"},
 			{Name: "lan", Action: "accept"},
-			{Name: "mgmt", Action: "accept", Interfaces: []string{"lo"}},
+			{Name: "mgmt", Action: "accept", Matches: []config.RuleMatch{{Interface: "lo"}}},
 		},
 		Policies: []config.Policy{
 			{Name: "lan-to-wan", From: "lan", To: "wan", Action: "accept"},
@@ -122,7 +124,7 @@ func TestManager_AtomicApply_Failure(t *testing.T) {
 	// 2. Apply initial valid config
 	initialCfg := &config.Config{
 		Zones: []config.Zone{
-			{Name: "mgmt", Action: "accept", Interfaces: []string{"lo"}},
+			{Name: "mgmt", Action: "accept", Matches: []config.RuleMatch{{Interface: "lo"}}},
 		},
 		Policies: []config.Policy{
 			{Name: "mgmt-access", From: "mgmt", To: "mgmt", Action: "accept"},
@@ -145,7 +147,7 @@ func TestManager_AtomicApply_Failure(t *testing.T) {
 	// This proves that we don't apply incomplete configs.
 	invalidCfg := &config.Config{
 		Zones: []config.Zone{
-			{Name: "broken", Action: "accept", Interfaces: []string{"nonexistent0"}}, // nft might accept this if it assumes interface might appear later?
+			{Name: "broken", Action: "accept", Matches: []config.RuleMatch{{Interface: "nonexistent0"}}}, // nft might accept this if it assumes interface might appear later?
 			// Actually interface names are strings.
 			// Let's try to inject invalid syntax via a field that is passed raw?
 			// Protocol "invalidprotocol"
@@ -254,8 +256,8 @@ func TestManager_AddDynamicNATRule(t *testing.T) {
 	// First apply a base config to initialize baseConfig
 	baseCfg := &config.Config{
 		Zones: []config.Zone{
-			{Name: "wan", Interfaces: []string{"eth0"}},
-			{Name: "lan", Interfaces: []string{"eth1"}},
+			{Name: "wan", Matches: []config.RuleMatch{{Interface: "eth0"}}},
+			{Name: "lan", Matches: []config.RuleMatch{{Interface: "eth1"}}},
 		},
 		NAT: []config.NATRule{
 			{Name: "masq", Type: "masquerade", OutInterface: "eth0"},
@@ -321,7 +323,7 @@ func TestManager_RemoveDynamicNATRule(t *testing.T) {
 	// Setup base config
 	baseCfg := &config.Config{
 		Zones: []config.Zone{
-			{Name: "wan", Interfaces: []string{"eth0"}},
+			{Name: "wan", Matches: []config.RuleMatch{{Interface: "eth0"}}},
 		},
 	}
 

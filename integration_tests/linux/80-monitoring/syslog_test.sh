@@ -39,7 +39,9 @@ interface "lo" {
 }
 
 zone "lan" {
-  interfaces = ["lo"]
+  match {
+    interface = "lo"
+  }
 }
 
 syslog {

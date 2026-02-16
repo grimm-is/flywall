@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 // +build linux
 
@@ -68,6 +70,7 @@ func (m *MockStateStore) CurrentVersion() uint64                                
 func (m *MockStateStore) CreateSnapshot() (*state.Snapshot, error)               { return nil, nil }
 func (m *MockStateStore) RestoreSnapshot(snapshot *state.Snapshot) error         { return nil }
 func (m *MockStateStore) Close() error                                           { return nil }
+func (m *MockStateStore) ApplyReplicatedChange(change state.Change) error        { return nil }
 
 // MockCommandRunner is defined in mocks.go
 

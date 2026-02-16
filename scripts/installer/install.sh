@@ -91,20 +91,20 @@ cp "$SOURCE_DIR/flywall" "$MOUNTPOINT/usr/local/bin/flywall"
 chmod +x "$MOUNTPOINT/usr/local/bin/flywall"
 
 echo "🔧 Installing UI..."
-mkdir -p "$MOUNTPOINT/var/lib/flywall/ui"
+mkdir -p "$MOUNTPOINT/opt/flywall/var/lib/ui"
 if [ -d "$SOURCE_DIR/ui" ]; then
-    cp -r "$SOURCE_DIR/ui"/* "$MOUNTPOINT/var/lib/flywall/ui/"
+    cp -r "$SOURCE_DIR/ui"/* "$MOUNTPOINT/opt/flywall/var/lib/ui/"
 else
     echo "⚠️ UI directory not found in source, skipping."
 fi
 
 echo "🔧 Installing Configuration..."
-mkdir -p "$MOUNTPOINT/etc/flywall"
+mkdir -p "$MOUNTPOINT/opt/flywall/etc"
 if [ -f "$SOURCE_DIR/config.hcl" ]; then
-    cp "$SOURCE_DIR/config.hcl" "$MOUNTPOINT/etc/flywall/flywall.hcl"
+    cp "$SOURCE_DIR/config.hcl" "$MOUNTPOINT/opt/flywall/etc/flywall.hcl"
 else
     # Create default
-    echo 'ip_forwarding = true' > "$MOUNTPOINT/etc/flywall/flywall.hcl"
+    echo 'ip_forwarding = true' > "$MOUNTPOINT/opt/flywall/etc/flywall.hcl"
 fi
 
 echo "🔧 Installing Services..."

@@ -1,9 +1,12 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package dhcp
 
 import (
-	"grimm.is/flywall/internal/config"
 	"net"
 	"testing"
+
+	"grimm.is/flywall/internal/config"
 )
 
 func TestLeaseStore_Allocate(t *testing.T) {
@@ -80,5 +83,54 @@ func TestLeaseStore_Allocate(t *testing.T) {
 	_, err = store.Allocate("00:11:22:33:44:06")
 	if err == nil {
 		t.Errorf("Expected error on pool exhaustion, got success")
+	}
+
+	// 6. Test Subnet Validation
+	_, subnet, _ := net.ParseCIDR("192.168.1.0/24")
+	store.Subnet = subnet
+
+	// Allocation within subnet should work (re-using mac1)
+	_, err = store.Allocate(mac1)
+	if err != nil {
+		t.Errorf("Allocation within subnet failed: %v", err)
+	}
+
+	// Change subnet to something else
+	_, otherSubnet, _ := net.ParseCIDR("10.0.0.0/8")
+	store.Subnet = otherSubnet
+	_, err = store.Allocate(mac1)
+	if err == nil {
+		t.Errorf("Expected error for out-of-subnet allocation, got success")
+	}
+
+	// 7. Test Subnet Shrinking (Existing lease outside new subnet)
+	// Reset store leases for isolation
+	store.Leases = make(map[string]net.IP)
+	store.TakenIPs = make(map[string]string)
+	ipOutside := net.ParseIP("192.168.1.200").To4()
+	store.Leases[mac1] = ipOutside
+	store.TakenIPs[ipOutside.String()] = mac1
+
+	_, smallSubnet, _ := net.ParseCIDR("192.168.1.0/25") // .0 - .127
+	store.Subnet = smallSubnet
+
+	// Allocation should detect ipOutside is invalid, remove it, and allocate new IP in range
+	newIP, err := store.Allocate(mac1)
+	if err != nil {
+		t.Errorf("Failed to re-allocate after subnet shrink: %v", err)
+	}
+	if newIP.Equal(ipOutside) {
+		t.Errorf("Should have allocated new IP, but kept %v which is outside subnet", ipOutside)
+	}
+	if !smallSubnet.Contains(newIP) {
+		t.Errorf("New IP %v is not in subnet %v", newIP, smallSubnet)
+	}
+
+	// 8. Test Reservation Outside Subnet
+	macOut := "00:11:22:33:44:BB"
+	store.Reservations[macOut] = config.DHCPReservation{MAC: macOut, IP: "192.168.1.250"}
+	_, err = store.Allocate(macOut)
+	if err == nil {
+		t.Errorf("Expected error for reservation outside subnet, got success")
 	}
 }

@@ -1,12 +1,18 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/pmezard/go-difflib/difflib"
 	"grimm.is/flywall/internal/config"
+	"grimm.is/flywall/internal/logging"
 	"grimm.is/flywall/internal/vpn"
 )
 
@@ -22,7 +28,7 @@ func (s *Server) checkPendingStatus() bool {
 		return false
 	}
 
-	running, err := s.client.GetConfig()
+	running, err := s.client.GetRunningConfig()
 	if err != nil {
 		// If we can't reach control plane, assume no pending changes to avoid UI noise
 		return false
@@ -100,12 +106,123 @@ func (s *Server) applyConfigUpdate(w http.ResponseWriter, r *http.Request, updat
 	return true
 }
 
-// handleGetPolicies returns firewall policies
+// handleUpdateConfig updates the entire configuration (Staged)
+func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	var newCfg config.Config
+	if !BindJSONLenient(w, r, &newCfg) {
+		return
+	}
+
+	if s.applyConfigUpdate(w, r, func(cfg *config.Config) {
+		*cfg = newCfg
+	}) {
+		SuccessResponse(w)
+	}
+}
+
 // handleGetPolicies returns firewall policies
 func (s *Server) handleGetPolicies(w http.ResponseWriter, r *http.Request) {
 	if cfg := s.GetConfigSnapshot(w, r); cfg != nil {
-		HandleGetData(w, cfg.Policies)
+		projected := projectZonePolicies(cfg)
+		HandleGetData(w, projected)
 	}
+}
+
+// projectZonePolicies merges implicit zone configuration into the policy list
+func projectZonePolicies(cfg *config.Config) []config.Policy {
+	// Start with a shallow copy of explicit policies
+	// We need to copy the slice to safely append new policies
+	// Usage of pointers in the slice means we must be careful not to mutate existing rules in-place
+	// if we want to preserve the original config state (though this is just for JSON output).
+	policies := make([]config.Policy, len(cfg.Policies))
+	copy(policies, cfg.Policies)
+
+	// Index existing policies by From->To for merging
+	// Using pointer to element in the new slice to allow appending rules
+	policyMap := make(map[string]*config.Policy)
+	for i := range policies {
+		key := policies[i].From + "->" + policies[i].To
+		policyMap[key] = &policies[i]
+	}
+
+	for _, zone := range cfg.Zones {
+		var rules []config.PolicyRule
+
+		if zone.Management != nil {
+			// 1. Management Access (Input Chain: Zone -> Firewall)
+			mgmt := []struct {
+				Service string
+				Enabled bool
+				Name    string
+			}{
+				{"ssh", zone.Management.SSH, "SSH Access"},
+				{"web", zone.Management.Web, "Web Access"},
+				{"api", zone.Management.API, "API Access"},
+				{"icmp", zone.Management.ICMP, "ICMP (Ping)"},
+				{"snmp", zone.Management.SNMP, "SNMP Queries"},
+				{"syslog", zone.Management.Syslog, "Syslog"},
+			}
+
+			for _, m := range mgmt {
+				if m.Enabled {
+					rules = append(rules, config.PolicyRule{
+						Name:    fmt.Sprintf("Implicit %s", m.Name),
+						Service: m.Service,
+						Action:  "accept",
+						Comment: "Managed via Zone Management",
+						Origin:  "implicit_zone_config",
+					})
+				}
+			}
+		}
+
+		// 2. Zone Services (Struct fields)
+		if zone.Services != nil {
+			svcs := []struct {
+				Service string
+				Enabled bool
+				Name    string
+			}{
+				{"dhcp", zone.Services.DHCP, "DHCP Server Access"},
+				{"dns", zone.Services.DNS, "DNS Server Access"},
+				{"ntp", zone.Services.NTP, "NTP Server Access"},
+			}
+
+			for _, s := range svcs {
+				if s.Enabled {
+					rules = append(rules, config.PolicyRule{
+						Name:    fmt.Sprintf("Implicit %s", s.Name),
+						Service: s.Service,
+						Action:  "accept",
+						Comment: "Managed via Zone Services",
+						Origin:  "implicit_zone_config",
+					})
+				}
+			}
+		}
+
+		if len(rules) > 0 {
+			key := zone.Name + "->firewall"
+			if pol, exists := policyMap[key]; exists {
+				// Append to existing policy
+				pol.Rules = append(pol.Rules, rules...)
+			} else {
+				// Create new synthetic policy
+				newPol := config.Policy{
+					From:        zone.Name,
+					To:          "firewall",
+					Name:        fmt.Sprintf("Zone %s Services", zone.Name),
+					Description: "Implicit rules derived from Zone settings",
+					Origin:      "implicit_zone_config",
+					Rules:       rules,
+				}
+				policies = append(policies, newPol)
+				policyMap[key] = &policies[len(policies)-1]
+			}
+		}
+	}
+
+	return policies
 }
 
 // handleUpdatePolicies updates firewall policies
@@ -483,12 +600,33 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	// Support source=running to get raw running config without status
 	if r.URL.Query().Get("source") == "running" {
 		if s.client != nil {
-			cfg, err := s.client.GetConfig()
-			if err != nil {
-				WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())
-				return
+			type runConfRes struct {
+				cfg *config.Config
+				err error
 			}
-			WriteJSON(w, http.StatusOK, cfg)
+			ch := make(chan runConfRes, 1)
+			go func() {
+				c, e := s.client.GetRunningConfig()
+				ch <- runConfRes{c, e}
+			}()
+
+			select {
+			case res := <-ch:
+				if res.err != nil {
+					logging.Error(fmt.Sprintf("GetRunningConfig failed: %v", res.err))
+					WriteErrorCtx(w, r, http.StatusInternalServerError, res.err.Error())
+					return
+				}
+				if res.cfg == nil {
+					logging.Error("GetRunningConfig returned nil config")
+					WriteErrorCtx(w, r, http.StatusInternalServerError, "Running config is nil")
+					return
+				}
+				WriteJSON(w, http.StatusOK, res.cfg)
+			case <-time.After(5 * time.Second):
+				logging.Error("CRITICAL: GetRunningConfig timed out (running)")
+				WriteErrorCtx(w, r, http.StatusGatewayTimeout, "timeout waiting for control plane")
+			}
 		} else {
 			WriteJSON(w, http.StatusOK, s.Config)
 		}
@@ -502,14 +640,42 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	if s.client != nil {
 		// Get running config to compute status
-		running, err := s.client.GetConfig()
+
+		type runConfRes struct {
+			cfg *config.Config
+			err error
+		}
+		ch := make(chan runConfRes, 1)
+		go func() {
+			c, e := s.client.GetRunningConfig()
+			ch <- runConfRes{c, e}
+		}()
+
+		var running *config.Config
+		var err error
+		select {
+		case res := <-ch:
+			running, err = res.cfg, res.err
+		case <-time.After(5 * time.Second):
+			fmt.Fprintf(os.Stderr, "CRITICAL: GetRunningConfig timed out\n")
+			err = fmt.Errorf("timeout waiting for control plane")
+		}
 		if err != nil {
+			logging.Error("GetRunningConfig failed: " + err.Error())
 			// Can't reach control plane - return staged without status
 			WriteJSON(w, http.StatusOK, staged)
 			return
 		}
+		if running == nil {
+			logging.Error("GetRunningConfig returned nil")
+			// Can't reach control plane - return staged without status
+			WriteJSON(w, http.StatusOK, staged)
+			return
+		}
+		logging.Info("GetRunningConfig success, building status...")
 		// Return config with _status fields for each item
 		configWithStatus := BuildConfigWithStatus(staged, running)
+		logging.Info("Writing JSON response...")
 		WriteJSON(w, http.StatusOK, configWithStatus)
 	} else {
 		// No client - return raw config
@@ -525,7 +691,7 @@ func (s *Server) handleGetConfigDiff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Get Running Config
-	runningCfg, err := s.client.GetConfig()
+	runningCfg, err := s.client.GetRunningConfig()
 	if err != nil {
 		WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to fetch running config: "+err.Error())
 		return
@@ -563,14 +729,62 @@ func (s *Server) handleDiscardConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := s.client.GetConfig()
-	if err != nil {
-		WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to fetch running config: "+err.Error())
+	// 1. Tell control plane to discard its staged changes too
+	// Wrap in timeout to prevent RPC hangs
+	type discardRes struct {
+		err error
+	}
+	discardCh := make(chan discardRes, 1)
+	go func() {
+		discardCh <- discardRes{err: s.client.DiscardConfig()}
+	}()
+
+	select {
+	case res := <-discardCh:
+		if res.err != nil {
+			msg := "Failed to discard staged config: " + res.err.Error()
+			WriteErrorCtx(w, r, http.StatusInternalServerError, msg)
+			return
+		}
+	case <-time.After(10 * time.Second):
+		WriteErrorCtx(w, r, http.StatusGatewayTimeout, "Control plane RPC timed out during discard")
 		return
 	}
 
-	// Overwrite staged config
+	// 2. Refresh local config from control plane (which is now back to running config)
+	type configRes struct {
+		cfg *config.Config
+		err error
+	}
+	configCh := make(chan configRes, 1)
+	go func() {
+		cfg, err := s.client.GetConfig()
+		configCh <- configRes{cfg, err}
+	}()
+
+	var cfg *config.Config
+	var err error
+	select {
+	case res := <-configCh:
+		cfg, err = res.cfg, res.err
+	case <-time.After(5 * time.Second):
+		msg := "Control plane RPC timed out during config reload"
+		WriteErrorCtx(w, r, http.StatusGatewayTimeout, msg)
+		return
+	}
+
+	if err != nil {
+		WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to reload config: "+err.Error())
+		return
+	}
+
+	s.configMu.Lock()
 	s.Config = cfg
+	s.configMu.Unlock()
+
+	// Notify UI
+	go s.broadcastPendingStatus()
+
 	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
@@ -585,7 +799,7 @@ func (s *Server) handlePendingStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get Running Config
-	runningCfg, err := s.client.GetConfig()
+	runningCfg, err := s.client.GetRunningConfig()
 	if err != nil {
 		WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"has_changes": false,
@@ -603,4 +817,20 @@ func (s *Server) handlePendingStatus(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"has_changes": hasChanges,
 	})
+}
+
+// handleConfigSalvage returns details about configuration salvage if normal load failed
+func (s *Server) handleConfigSalvage(w http.ResponseWriter, r *http.Request) {
+	if s.client == nil {
+		WriteErrorCtx(w, r, http.StatusServiceUnavailable, "Control plane not connected")
+		return
+	}
+
+	res, err := s.client.GetForgivingResult()
+	if err != nil {
+		WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to fetch salvage result: "+err.Error())
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, res)
 }

@@ -12,7 +12,7 @@ require_root
 require_binary
 cleanup_on_exit
 
-CONFIG_FILE="/tmp/wg_keys.hcl"
+CONFIG_FILE="/tmp/wg_keys_$$.hcl"
 
 # Use a fixed placeholder key (valid base64)
 PRIV_KEY="cGxhY2Vob2xkZXJrZXl0ZXN0MTIzNDU2Nzg5MGFi"

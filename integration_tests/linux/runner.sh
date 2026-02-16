@@ -243,11 +243,11 @@ cleanup_environment() {
     fi
 
     # Clean up sockets and temp files
-    rm -f /var/run/flywall-ctl.sock
+    rm -f /var/run/flywall/ctl.sock
     rm -f /tmp/test_*
 
     # Clear crash state to prevent Safe Mode triggering from previous tests
-    rm -f /var/lib/flywall/crash.state
+    rm -f /opt/flywall/var/lib/crash.state
 }
 
 # Create results directory if not exists (already done above)

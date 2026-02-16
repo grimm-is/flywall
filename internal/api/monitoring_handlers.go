@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"grimm.is/flywall/internal/brand"
+	"grimm.is/flywall/internal/ctlplane"
 	"grimm.is/flywall/internal/health"
 	"grimm.is/flywall/internal/metrics"
 )
@@ -173,59 +176,87 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	// Use RPC client if available for control plane status
 	if s.client != nil {
-		// 1. Basic Status
-		status, err := s.client.GetStatus()
-		if err == nil {
-			info.Uptime = status.Uptime
-			info.FirewallActive = status.FirewallActive
+		type rpcResult struct {
+			status   *ctlplane.Status
+			sysStats *ctlplane.SystemStats
+			ifaces   []ctlplane.InterfaceStatus
+			monitors []ctlplane.MonitorResult
+			blocked  int64
+			err      error
 		}
 
-		// 2. System Stats (CPU/Mem)
-		sysStats, err := s.client.GetSystemStats()
-		if err == nil {
-			info.CPULoad = sysStats.CPUUsage
-			if sysStats.MemoryTotal > 0 {
-				info.MemUsage = float64(sysStats.MemoryUsed) / float64(sysStats.MemoryTotal) * 100
+		// Perform RPC calls in a goroutine with timeout
+		ch := make(chan rpcResult, 1)
+		go func() {
+			res := rpcResult{}
+			// 1. Basic Status
+			res.status, _ = s.client.GetStatus()
+			// 2. System Stats
+			res.sysStats, _ = s.client.GetSystemStats()
+			// 3. Interfaces (for WAN IP)
+			res.ifaces, _ = s.client.GetInterfaces()
+			// 4. Blocked Count
+			if ips, err := s.client.GetIPSetElements("blocked_ips"); err == nil {
+				res.blocked = int64(len(ips))
 			}
-		}
+			// 5. Monitors
+			res.monitors, _ = s.client.GetMonitors()
+			ch <- res
+		}()
 
-		// 3. WAN IP
-		var wanIfaceName string
-		s.configMu.RLock()
-		if s.Config != nil {
-			for _, iface := range s.Config.Interfaces {
-				if strings.ToUpper(iface.Zone) == "WAN" {
-					wanIfaceName = iface.Name
-					break
+		select {
+		case res := <-ch:
+			if res.status != nil {
+				info.Uptime = res.status.Uptime
+				info.FirewallActive = res.status.FirewallActive
+			}
+			if res.sysStats != nil {
+				info.CPULoad = res.sysStats.CPUUsage
+				if res.sysStats.MemoryTotal > 0 {
+					info.MemUsage = float64(res.sysStats.MemoryUsed) / float64(res.sysStats.MemoryTotal) * 100
 				}
 			}
-		}
-		s.configMu.RUnlock()
-
-		if wanIfaceName != "" {
-			ifaces, err := s.client.GetInterfaces()
-			if err == nil {
-				for _, iface := range ifaces {
-					if iface.Name == wanIfaceName {
-						if len(iface.IPv4Addrs) > 0 {
-							info.WanIP = iface.IPv4Addrs[0]
+			if res.monitors != nil {
+				info.Monitors = res.monitors
+			}
+			if res.ifaces != nil {
+				var wanIfaceName string
+				s.configMu.RLock()
+				if s.Config != nil {
+					for _, iface := range s.Config.Interfaces {
+						if strings.ToUpper(iface.Zone) == "WAN" {
+							wanIfaceName = iface.Name
+							break
 						}
-						break
+					}
+				}
+				s.configMu.RUnlock()
+
+				if wanIfaceName != "" {
+					for _, iface := range res.ifaces {
+						if iface.Name == wanIfaceName {
+							if len(iface.IPv4Addrs) > 0 {
+								info.WanIP = iface.IPv4Addrs[0]
+							}
+							break
+						}
+					}
+				} else {
+					for _, iface := range res.ifaces {
+						if iface.Name == "eth0" || iface.Name == "wan" {
+							if len(iface.IPv4Addrs) > 0 {
+								info.WanIP = iface.IPv4Addrs[0]
+							}
+							break
+						}
 					}
 				}
 			}
-		} else {
-			ifaces, err := s.client.GetInterfaces()
-			if err == nil {
-				for _, iface := range ifaces {
-					if iface.Name == "eth0" || iface.Name == "wan" {
-						if len(iface.IPv4Addrs) > 0 {
-							info.WanIP = iface.IPv4Addrs[0]
-						}
-						break
-					}
-				}
-			}
+			info.BlockedCount = res.blocked
+
+		case <-time.After(3 * time.Second):
+			// Log timeout and return partial info
+			fmt.Println("Warning: RPC timeout in handleStatus")
 		}
 	}
 
@@ -250,6 +281,7 @@ type ServerInfo struct {
 	BlockedCount    int64   `json:"blocked_count"`              // Total blocked packets (last 24h/session)
 	CPULoad         float64 `json:"cpu_load"`                   // CPU Usage %
 	MemUsage        float64 `json:"mem_usage"`                  // Memory Usage %
+	Monitors        []ctlplane.MonitorResult `json:"monitors,omitempty"` // Connectivity monitors
 }
 
 // handleHealth returns the overall health status.
@@ -374,5 +406,15 @@ func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stats := s.collector.GetInterfaceStats()
+	WriteJSON(w, http.StatusOK, stats)
+}
+
+// handleVPNStatus returns WireGuard peer statistics
+func (s *Server) handleVPNStatus(w http.ResponseWriter, r *http.Request) {
+	stats := s.collector.GetVPNStats()
+	if stats == nil {
+		// Return empty object if nil (e.g. collector not started)
+		stats = make(map[string]map[string]*metrics.PeerStats)
+	}
 	WriteJSON(w, http.StatusOK, stats)
 }

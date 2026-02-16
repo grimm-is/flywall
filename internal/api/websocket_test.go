@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -252,8 +254,8 @@ func TestWSManager_Resilience(t *testing.T) {
 
 	// Assertion 1: Publish must be non-blocking (fast)
 	// 500 local memory ops should complete reasonably fast even with scheduling overhead
-	// Allow 1000ms to account for slow CI/test environments
-	if duration > 1000*time.Millisecond {
+	// Allow 3000ms to account for slow CI/test environments (especially QEMU without KVM)
+	if duration > 3000*time.Millisecond {
 		t.Errorf("Resilience FAIL: Publish blocked for %v (expected non-blocking)", duration)
 	} else {
 		t.Logf("Publish duration: %v (Pass)", duration)

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build darwin || simulator
 // +build darwin simulator
 
@@ -27,7 +29,7 @@ type SimKernel struct {
 	FlowTable  map[string]*Flow    // 5-tuple key -> Flow
 	RuleStats  map[string]*Counter // RuleID -> Counter
 	BlockedIPs map[string]bool     // IP -> blocked
-	
+
 	// Rule Engine
 	Engine *engine.RuleEngine
 
@@ -57,7 +59,7 @@ func (s *SimKernel) Now() time.Time {
 func (s *SimKernel) LoadConfig(cfg *config.Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	s.Engine = engine.NewRuleEngine(cfg)
 }
 
@@ -195,14 +197,14 @@ func (s *SimKernel) InjectPacket(packet gopacket.Packet) bool {
 	// We map Interfaces in LoadConfig via Engine.InterfaceToZone.
 	// gopacket doesn't give us Interface.
 	// We assume "eth0" (WAN) for now.
-	
+
 	pktInfo := engine.Packet{
-		SrcIP:    srcIP,
-		DstIP:    dstIP,
-		Protocol: protocol,
+		SrcIP:       srcIP,
+		DstIP:       dstIP,
+		Protocol:    protocol,
 		InInterface: "eth0", // Assumption for MVP: Traffic enters WAN
 	}
-	
+
 	if protocol == "tcp" || protocol == "udp" {
 		pktInfo.SrcPort = int(srcPort)
 		pktInfo.DstPort = int(dstPort)
@@ -210,11 +212,11 @@ func (s *SimKernel) InjectPacket(packet gopacket.Packet) bool {
 
 	var verdict engine.Verdict = engine.VerdictAccept
 	var ruleID string
-	
+
 	if s.Engine != nil {
 		verdict, ruleID = s.Engine.Evaluate(pktInfo)
 	}
-	
+
 	// Update Rule Stats
 	if ruleID != "" {
 		if s.RuleStats[ruleID] == nil {

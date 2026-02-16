@@ -34,11 +34,15 @@ interface "eth0" {
 }
 
 zone "lan" {
-  interfaces = ["lo"]
+  match {
+    interface = "lo"
+  }
 }
 
 zone "wan" {
-  interfaces = ["eth0"]
+  match {
+    interface = "eth0"
+  }
 }
 
 # UID routing: route user 65534 (nobody) via eth0 uplink
@@ -87,4 +91,3 @@ fi
 
 rm -f "$TEST_CONFIG"
 exit 0
-

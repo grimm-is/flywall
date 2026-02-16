@@ -69,6 +69,6 @@ if ssh "$REMOTE_HOST" "/usr/sbin/flywall ctl upgrade --checksum $CHECKSUM"; then
     log_ok "Deployment complete."
 else
     log_error "Upgrade failed. The new binary is still at /usr/sbin/flywall_new"
-    log_error "Check remote logs: ssh $REMOTE_HOST 'cat /var/log/flywall/flywall.log'"
+    log_error "Check remote logs: ssh $REMOTE_HOST 'cat /opt/flywall/var/log/flywall.log'"
     exit 1
 fi

@@ -1,7 +1,10 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package events
 
 import (
 	"database/sql"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -58,10 +61,11 @@ func TestHub_GlobalSubscription(t *testing.T) {
 		case <-ch:
 			received++
 		case <-time.After(100 * time.Millisecond):
-			break
+			goto done
 		}
 	}
 
+done:
 	if received != 3 {
 		t.Errorf("expected 3 events, got %d", received)
 	}
@@ -157,7 +161,8 @@ done:
 }
 
 func TestAggregator_Schema(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+	dbFile := filepath.Join(t.TempDir(), "test.db")
+	db, err := sql.Open("sqlite", dbFile)
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
@@ -182,7 +187,8 @@ func TestAggregator_Schema(t *testing.T) {
 }
 
 func TestAggregator_WriteAndQuery(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+	dbFile := filepath.Join(t.TempDir(), "test.db")
+	db, err := sql.Open("sqlite", dbFile)
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
@@ -205,16 +211,22 @@ func TestAggregator_WriteAndQuery(t *testing.T) {
 	hub.EmitNFTCounter("rule-1", 200, 2000)
 	hub.EmitNFTCounter("rule-2", 50, 500)
 
-	// Wait for flush
-	time.Sleep(100 * time.Millisecond)
+	// Wait for flush (poll with timeout)
+	var points []TimeSeriesPoint
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		points, err = agg.GetRecentStats("rule-1", 5*time.Minute)
+		if err == nil && len(points) == 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 
-	// Query recent stats
-	points, err := agg.GetRecentStats("rule-1", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
 
 	if len(points) != 2 {
-		t.Errorf("expected 2 points for rule-1, got %d", len(points))
+		t.Errorf("expected 2 points for rule-1, got %d (after polling)", len(points))
 	}
 }

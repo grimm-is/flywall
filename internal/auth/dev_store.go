@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package auth provides user authentication and session management.
 // This file contains the AuthStore interface and DevStore implementation.
 package auth

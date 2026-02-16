@@ -109,7 +109,7 @@
 
   .theme-option.active {
     background-color: var(--color-primary);
-    color: white;
+    color: var(--color-primaryForeground);
   }
 
   .theme-icon {

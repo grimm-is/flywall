@@ -1,6 +1,10 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package tui
 
 import (
+	"fmt"
+
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -39,18 +43,33 @@ func NewHistoryModel(backend Backend) HistoryModel {
 
 func (m HistoryModel) Init() tea.Cmd {
 	return func() tea.Msg {
-		// Mock history data
-		return []checkpointItem{
-			{title: "v45 (Current)", desc: "2023-10-27 10:00:00 - admin - Enable DHCP on LAN"},
-			{title: "v44", desc: "2023-10-26 14:30:00 - admin - Add DMZ zone"},
-			{title: "v43", desc: "2023-10-25 09:15:00 - system - Automatic Backup"},
+		backups, err := m.Backend.ListBackups()
+		if err != nil {
+			return BackendError{Err: err}
 		}
+
+		var items []checkpointItem
+		for _, b := range backups {
+			items = append(items, checkpointItem{
+				title: fmt.Sprintf("v%d", b.Version),
+				desc:  fmt.Sprintf("%s - %s", b.Timestamp, b.Description),
+			})
+		}
+
+		if len(items) == 0 {
+			items = append(items, checkpointItem{title: "No History", desc: "No configuration backups found"})
+		}
+
+		return items
 	}
 }
 
 func (m HistoryModel) Update(msg tea.Msg) (HistoryModel, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
+	case BackendError:
+		return m, nil
+
 	case []checkpointItem:
 		items := make([]list.Item, len(msg))
 		for i, it := range msg {
@@ -58,6 +77,33 @@ func (m HistoryModel) Update(msg tea.Msg) (HistoryModel, tea.Cmd) {
 		}
 		cmd = m.List.SetItems(items)
 		return m, cmd
+
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "r":
+			// Restore selected backup
+			item := m.List.SelectedItem()
+			if item == nil {
+				return m, nil
+			}
+			checkpoint, ok := item.(checkpointItem)
+			if !ok {
+				return m, nil
+			}
+
+			// Extract version from title (e.g. "v45")
+			var version int
+			fmt.Sscanf(checkpoint.title, "v%d", &version)
+
+			return m, func() tea.Msg {
+				err := m.Backend.RestoreBackup(version)
+				if err != nil {
+					return BackendError{Err: err}
+				}
+				// Success! Refresh list
+				return m.Init()()
+			}
+		}
 
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width

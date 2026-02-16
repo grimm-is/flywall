@@ -33,7 +33,9 @@ zone "wan" {
 }
 
 zone "lan" {
-  interfaces = ["lo"]
+  match {
+    interface = "lo"
+  }
 }
 
 # External threat intel IPSet (simulated with static entries)

@@ -1,6 +1,6 @@
 /**
  * Screenshot Anonymizer
- * 
+ *
  * Replaces sensitive network and device data in the visible DOM
  * for safe screenshot sharing. All replacements are deterministic
  * (same input -> same output) for visual consistency.

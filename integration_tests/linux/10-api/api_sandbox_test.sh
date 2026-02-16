@@ -11,6 +11,9 @@ TEST_TIMEOUT=30
 # Source common functions
 . "$(dirname "$0")/../common.sh"
 
+# Load log helpers for TAP-safe output
+. "$(dirname "$0")/../lib/log_helpers.sh"
+
 require_root
 require_binary
 
@@ -45,11 +48,15 @@ schema_version = "1.0"
 ip_forwarding = true
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 interface "veth-lan" {
@@ -85,7 +92,7 @@ ok $? "Test topology created"
 
 # Test 2: Start firewall
 diag "Starting firewall with API sandbox config..."
-$APP_BIN ctl "$TEST_CONFIG" > /tmp/api_sandbox_ctl.log 2>&1 &
+$APP_BIN ctl "$TEST_CONFIG" > /tmp/api_sandbox_ctl_$$.log 2>&1 &
 CTL_PID=$!
 track_pid $CTL_PID
 
@@ -95,7 +102,7 @@ while [ ! -S "$CTL_SOCKET" ]; do
     count=$((count + 1))
     if [ $count -ge 15 ]; then
         diag "Timeout - log:"
-        cat /tmp/api_sandbox_ctl.log | head -20
+        cat /tmp/api_sandbox_ctl_$$.log | head -20
         ok 1 "Firewall started"
         exit 1
     fi

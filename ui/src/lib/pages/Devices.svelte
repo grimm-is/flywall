@@ -7,21 +7,14 @@
   import Table from "$lib/components/Table.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import Badge from "$lib/components/Badge.svelte";
-  import Modal from "$lib/components/Modal.svelte";
   import Input from "$lib/components/Input.svelte";
-  import Select from "$lib/components/Select.svelte";
   import Button from "$lib/components/Button.svelte";
-  import SearchBar from "$lib/components/SearchBar.svelte";
+  import DeviceEditCard from "$lib/components/DeviceEditCard.svelte";
 
   // --- State ---
   let searchQuery = "";
-  let showEditModal = false;
-  let editingIdentity: any = null;
-
-  // --- Form State ---
-  let editAlias = "";
-  let editOwner = "";
-  let editGroupId = "";
+  let editingIdentityIndex: number | null = null;
+  let loading = false;
 
   // --- Derived ---
   // Filter identities
@@ -50,29 +43,20 @@
   ];
 
   // --- Actions ---
-  function openEdit(identity: any) {
-    editingIdentity = identity;
-    editAlias = identity.alias;
-    editOwner = identity.owner;
-    editGroupId = identity.groupId;
-    showEditModal = true;
+  function openEdit(index: number) {
+    editingIdentityIndex = index;
   }
 
-  async function saveIdentity() {
-    if (!editingIdentity) return;
-
+  async function handleSaveDevice(event: CustomEvent) {
+    loading = true;
     try {
-      await api.updateIdentity({
-        id: editingIdentity.id,
-        alias: editAlias,
-        owner: editOwner,
-        group_id: editGroupId,
-        tags: editingIdentity.tags, // Preserve tags
-      });
-      showEditModal = false;
+      await api.updateIdentity(event.detail);
+      editingIdentityIndex = null;
     } catch (e) {
       console.error(e);
       alert("Failed to update identity");
+    } finally {
+      loading = false;
     }
   }
 
@@ -117,124 +101,93 @@
       data={filteredIdentities}
     >
       {#snippet children(row: any, i: number)}
-        <!-- Device Name & Status -->
-        <td class="col-device">
-          <div class="device-cell">
-            <div class="status-indicator" class:online={row.online}></div>
-            <div class="device-info">
-              <span class="device-name">
-                {row.alias || row.hostnames[0] || "Unknown Device"}
-              </span>
-              <span class="device-sub">
-                {#if row.owner}
-                  <Icon name="person" size={12} /> {row.owner}
-                {:else if row.vendors.length > 0}
-                  {row.vendors[0]}
-                {:else}
-                  Generic Device
-                {/if}
-              </span>
-            </div>
-          </div>
-        </td>
-
-        <!-- Group -->
-        <td class="col-group">
-          {#if row.groupName}
-            <Badge variant="secondary">
-              {row.groupName}
-            </Badge>
-          {:else}
-            <span class="text-muted">-</span>
-          {/if}
-        </td>
-
-        <!-- Network (IPs) -->
-        <td class="col-network">
-          <div class="network-info">
-            {#each row.ips as ip}
-              <span class="ip-tag">{ip}</span>
-            {/each}
-            {#if row.ips.length === 0}
-              <span class="text-muted text-sm">No IP</span>
-            {/if}
-          </div>
-        </td>
-
-        <!-- Details (MACs) -->
-        <td class="col-details">
-          <div class="mac-list">
-            {#each row.macs as mac}
-              <div class="mac-item">
-                <span class="mac-text">{mac}</span>
-                {#if row.macs.length > 1}
-                  <button
-                    class="unlink-btn"
-                    title="Unlink MAC"
-                    on:click|stopPropagation={() => unlinkMAC(mac)}
-                  >
-                    <Icon name="link_off" size={12} />
-                  </button>
-                {/if}
+        {#if editingIdentityIndex === i}
+          <!-- Inline Edit Card -->
+          <td colspan="5">
+            <DeviceEditCard
+              identity={row}
+              {groupOptions}
+              {loading}
+              on:save={handleSaveDevice}
+              on:cancel={() => (editingIdentityIndex = null)}
+            />
+          </td>
+        {:else}
+          <!-- Device Name & Status -->
+          <td class="col-device">
+            <div class="device-cell">
+              <div class="status-indicator" class:online={row.online}></div>
+              <div class="device-info">
+                <span class="device-name">
+                  {row.alias || row.hostnames[0] || "Unknown Device"}
+                </span>
+                <span class="device-sub">
+                  {#if row.owner}
+                    <Icon name="person" size={12} /> {row.owner}
+                  {:else if row.vendors.length > 0}
+                    {row.vendors[0]}
+                  {:else}
+                    Generic Device
+                  {/if}
+                </span>
               </div>
-            {/each}
-          </div>
-        </td>
+            </div>
+          </td>
 
-        <!-- Actions -->
-        <td class="col-actions">
-          <Button size="sm" variant="outline" onclick={() => openEdit(row)}>
-            Edit
-          </Button>
-        </td>
+          <!-- Group -->
+          <td class="col-group">
+            {#if row.groupName}
+              <Badge variant="secondary">
+                {row.groupName}
+              </Badge>
+            {:else}
+              <span class="text-muted">-</span>
+            {/if}
+          </td>
+
+          <!-- Network (IPs) -->
+          <td class="col-network">
+            <div class="network-info">
+              {#each row.ips as ip}
+                <span class="ip-tag">{ip}</span>
+              {/each}
+              {#if row.ips.length === 0}
+                <span class="text-muted text-sm">No IP</span>
+              {/if}
+            </div>
+          </td>
+
+          <!-- Details (MACs) -->
+          <td class="col-details">
+            <div class="mac-list">
+              {#each row.macs as mac}
+                <div class="mac-item">
+                  <span class="mac-text">{mac}</span>
+                  {#if row.macs.length > 1}
+                    <button
+                      class="unlink-btn"
+                      title="Unlink MAC"
+                      on:click|stopPropagation={() => unlinkMAC(mac)}
+                    >
+                      <Icon name="link_off" size={12} />
+                    </button>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          </td>
+
+          <!-- Actions -->
+          <td class="col-actions">
+            <Button size="sm" variant="outline" onclick={() => openEdit(i)}>
+              Edit
+            </Button>
+          </td>
+        {/if}
       {/snippet}
     </Table>
   </Card>
 </div>
-
-<!-- Edit Modal -->
-{#if showEditModal}
-  <Modal title="Edit Device" bind:open={showEditModal}>
-    <div class="form-grid">
-      <div class="form-group">
-        <label for="alias">Alias / Name</label>
-        <Input
-          id="alias"
-          bind:value={editAlias}
-          placeholder="e.g. Dad's Laptop"
-        />
-        <span class="help">Friendly name for this device.</span>
-      </div>
-
-      <div class="form-group">
-        <label for="owner">Owner</label>
-        <Input id="owner" bind:value={editOwner} placeholder="e.g. John Doe" />
-        <span class="help">Who owns this device?</span>
-      </div>
-
-      <div class="form-group">
-        <label for="group">Group</label>
-        <Select id="group" bind:value={editGroupId} options={groupOptions} />
-        <span class="help">Assign to a group for policy enforcement.</span>
-      </div>
-
-      <div class="mac-info">
-        <strong>Linked Hardware Addresses:</strong>
-        <ul>
-          {#each editingIdentity.macs as mac}
-            <li>{mac}</li>
-          {/each}
-        </ul>
-      </div>
-      <div class="modal-footer">
-        <Button variant="ghost" onclick={() => (showEditModal = false)}>
-          Cancel
-        </Button>
-        <Button variant="default" onclick={saveIdentity}>Save Changes</Button>
-      </div>
-    </div>
-  </Modal>
-{/if}
 
 <style>
   .devices-page {

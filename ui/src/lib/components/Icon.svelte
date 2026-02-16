@@ -42,15 +42,50 @@
     check: "check_circle",
     warning: "warning",
     error: "error",
+    "alert-circle": "error", // Map alert-circle to error icon
 
     // Common actions
     plus: "add",
     minus: "remove",
     delete: "delete",
+    trash: "delete", // Alias for common trash icon
     edit: "edit",
     "arrow-left-right": "swap_horiz",
     "arrow-right": "arrow_forward",
     "arrow-left": "arrow_back",
+    "chevron-up": "expand_less",
+    "chevron-down": "expand_more",
+
+    // Services
+    web: "public",
+    ssh: "terminal",
+    api: "api",
+    icmp: "network_check",
+    dhcp: "settings_ethernet",
+    dns: "dns",
+    ntp: "schedule",
+
+    // Zone Types
+    home: "home",
+    cloud: "cloud",
+    domain: "domain",
+
+    // Dashboard / System
+    power: "power_settings_new",
+    power_off: "power_off",
+    shield: "shield",
+    restart_alt: "restart_alt",
+    logs: "article",
+    refresh: "refresh",
+    monitoring: "analytics",
+    hub: "hub",
+    lan: "lan",
+    vpn_key: "vpn_key",
+    settings: "settings",
+    menu: "menu",
+    logout: "logout",
+    router: "router",
+    search: "search",
   };
 
   const iconName = $derived(iconMap[name] || name);

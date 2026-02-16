@@ -37,7 +37,7 @@ def set_nested(data, key, value):
         if part not in data or not isinstance(data[part], dict):
             data[part] = {}
         data = data[part]
-    
+
     # Only set if not already present
     last_key = parts[-1]
     if last_key not in data:
@@ -63,18 +63,18 @@ def process_frontend():
                 en_data = json.load(f)
         except:
             pass
-    
+
     # Helper to create pseudo-translation in same structure
     de_data = {}
-    
+
     # Process keys
     for key in keys:
         # Check if key (flat or nested) already exists in EN
         existing_val = get_nested(en_data, key)
-        
+
         # Determine display name (fallback if new)
         display = key.split(".")[-1].replace("_", " ").title()
-        
+
         if existing_val is None:
             # Add to EN if totally missing
             set_nested(en_data, key, display)
@@ -89,7 +89,7 @@ def process_frontend():
     # Write EN back (sorted)
     with open(en_path, "w") as f:
         json.dump(en_data, f, indent=4, sort_keys=True)
-    
+
     # Write DE (sorted)
     with open(de_path, "w") as f:
         json.dump(de_data, f, indent=4, sort_keys=True)

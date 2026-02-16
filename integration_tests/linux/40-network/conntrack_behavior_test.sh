@@ -49,11 +49,15 @@ schema_version = "1.0"
 ip_forwarding = true
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 interface "veth-lan" {
@@ -97,7 +101,7 @@ setup_test_topology
 ok $? "Test topology created"
 
 # Test 2: Apply firewall rules
-apply_firewall_rules "$TEST_CONFIG" /tmp/conntrack_behavior.log
+apply_firewall_rules "$TEST_CONFIG" /tmp/conntrack_behavior_$$.log
 ok $? "Firewall rules applied"
 
 dilated_sleep 1
@@ -128,16 +132,18 @@ dilated_sleep 1
 ok 0 "TCP server started on WAN"
 
 # Test 6: LAN initiates connection to WAN - should work
+# Test 6: LAN initiates connection to WAN - should work
 diag "Testing LAN->WAN connection (establishes conntrack)..."
-result=$(run_client sh -c "echo 'GET / HTTP/1.0\r\n\r\n' | nc -w 3 10.99.99.100 8080 2>/dev/null | head -1")
-if echo "$result" | grep -q "200"; then
-    ok 0 "LAN->WAN connection successful"
+
+# Try simple TCP connect first (reliability)
+if run_client nc -z -w 3 10.99.99.100 8080 2>/dev/null; then
+     ok 0 "LAN->WAN connection successful (port reachable)"
 else
-    if run_client nc -z -w 2 10.99.99.100 8080 2>/dev/null; then
-        ok 0 "LAN->WAN connection successful (port reachable)"
-    else
-        ok 1 "LAN->WAN connection successful (got $result)"
-    fi
+     # Debug output
+     diag "Port check failed. Trying full request..."
+     result=$(run_client sh -c "echo 'GET / HTTP/1.0\r\n\r\n' | nc -w 3 10.99.99.100 8080 2>/dev/null")
+     diag "Result: $result"
+     ok 1 "LAN->WAN connection failed"
 fi
 
 # Test 7: Verify conntrack entry was created

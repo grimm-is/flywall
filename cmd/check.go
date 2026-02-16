@@ -1,13 +1,17 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"text/tabwriter"
 
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/firewall"
+	"grimm.is/flywall/internal/install"
 	"grimm.is/flywall/internal/network"
 )
 
@@ -15,7 +19,7 @@ import (
 func RunCheck(configFile string, verbose bool) error {
 	// Parse with default options
 	if len(configFile) == 0 {
-		return fmt.Errorf("usage: %s check [-v] <config-file>\nExample: %s check -v /etc/flywall/flywall.hcl", brand.BinaryName, brand.BinaryName)
+		return fmt.Errorf("usage: %s check [-v] <config-file>\nExample: %s check -v %s", brand.BinaryName, brand.BinaryName, filepath.Join(install.DefaultConfigDir, brand.ConfigFileName))
 	}
 
 	result, err := config.LoadFileWithOptions(configFile, config.DefaultLoadOptions())
@@ -24,6 +28,7 @@ func RunCheck(configFile string, verbose bool) error {
 	}
 
 	cfg := result.Config
+
 	Printer.Printf("Configuration valid!\n")
 	Printer.Printf("Schema Version: %s\n", cfg.SchemaVersion)
 	Printer.Printf("Interfaces: %d\n", len(cfg.Interfaces))
@@ -74,7 +79,7 @@ func RunCheck(configFile string, verbose bool) error {
 		// Use a temporary cache dir for dry run
 		fm, err := firewall.NewManager(nil, "/tmp/flywall-dryrun")
 		if err == nil {
-			script, err := fm.GenerateRules(firewall.FromGlobalConfig(cfg))
+			script, err := fm.GenerateRules(firewall.FromGlobalConfig(cfg), nil)
 			if err != nil {
 				Printer.Printf("Error generating firewall rules: %v\n", err)
 			} else {
@@ -112,8 +117,8 @@ func printSummary(cfg *config.Config) {
 		} else {
 			// Reverse lookup zone from zone definitions
 			for _, z := range cfg.Zones {
-				for _, zi := range z.Interfaces {
-					if zi == iface.Name {
+				for _, m := range z.Matches {
+					if m.Interface == iface.Name {
 						zone = z.Name
 						break
 					}
@@ -126,10 +131,15 @@ func printSummary(cfg *config.Config) {
 	Printer.Fprintln(w)
 	w.Flush()
 
-	// Zones
-	Printer.Fprintln(w, "ZONE\tINTERFACES")
+	Printer.Fprintln(w, "ZONE\tMATCHES")
 	for _, z := range cfg.Zones {
-		ifaces := fmt.Sprintf("%v", z.Interfaces)
+		var matchStrs []string
+		for _, m := range z.Matches {
+			if m.Interface != "" {
+				matchStrs = append(matchStrs, m.Interface)
+			}
+		}
+		ifaces := fmt.Sprintf("%v", matchStrs)
 		Printer.Fprintf(w, "%s\t%s\n", z.Name, ifaces)
 	}
 	Printer.Fprintln(w)

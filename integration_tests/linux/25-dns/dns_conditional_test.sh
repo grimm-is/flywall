@@ -16,7 +16,7 @@ if ! command -v dig >/dev/null 2>&1; then
     exit 0
 fi
 
-CONFIG_FILE="/tmp/dns_conditional.hcl"
+CONFIG_FILE="/tmp/dns_conditional_$$.hcl"
 
 # Create test config with conditional forwarding
 cat > "$CONFIG_FILE" <<EOF
@@ -28,7 +28,9 @@ interface "lo" {
 }
 
 zone "local" {
-    interfaces = ["lo"]
+    match {
+        interface = "lo"
+    }
     services {
         dns = true
     }

@@ -13,7 +13,7 @@ Edit `internal/config/config.go`:
 ```go
 type Config struct {
     // ... existing fields ...
-    
+
     // MyNewSetting enables the new feature
     MyNewSetting bool `hcl:"my_new_setting,optional"`
 }
@@ -33,11 +33,11 @@ Edit `internal/config/validate.go`:
 ```go
 func (c *Config) Validate() error {
     // ... existing validation ...
-    
+
     if c.MyNewSetting && c.SomeOtherField == "" {
         return fmt.Errorf("my_new_setting requires some_other_field")
     }
-    
+
     return nil
 }
 ```

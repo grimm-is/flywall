@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package events adapters wire existing Flywall event sources to the EventHub.
 // This provides a unified event stream for UI, stats, and learning engine.
 package events

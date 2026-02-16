@@ -1,6 +1,9 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
+	"grimm.is/flywall/internal/install"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,14 +15,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"grimm.is/flywall/internal/brand"
+	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/ctlplane"
 	"grimm.is/flywall/internal/firewall"
 )
 
-// handleSystemReboot triggers a system reboot
+// handleReboot triggers a system reboot
 // POST /api/system/reboot
-func (s *Server) handleSystemReboot(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -33,6 +36,11 @@ func (s *Server) handleSystemReboot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.client == nil {
+		WriteErrorCtx(w, r, http.StatusServiceUnavailable, "Control plane not connected")
+		return
+	}
+
 	msg, err := s.client.SystemReboot(req.Force)
 	if err != nil {
 		WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to reboot system: "+err.Error())
@@ -43,6 +51,32 @@ func (s *Server) handleSystemReboot(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"message": msg,
 	})
+}
+
+// handleRestore imports a configuration from JSON
+// POST /api/system/restore
+func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
+	// Parse the uploaded config
+	var cfg config.Config
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		WriteErrorCtx(w, r, http.StatusBadRequest, "Invalid configuration: "+err.Error())
+		return
+	}
+
+	// Apply the config
+	if s.client != nil {
+		if err := s.client.ApplyConfig(&cfg); err != nil {
+			WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to apply config: "+err.Error())
+			return
+		}
+	} else {
+		// Update in-memory config
+		s.configMu.Lock()
+		*s.Config = cfg
+		s.configMu.Unlock()
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
 // handleSystemUpgrade triggers a system upgrade via uploaded binary
@@ -305,10 +339,10 @@ func (s *Server) handleLeases(w http.ResponseWriter, r *http.Request) {
 
 // handlePublicCert serves the root CA certificate publicly
 func (s *Server) handlePublicCert(w http.ResponseWriter, r *http.Request) {
-	certPath := filepath.Join(brand.GetConfigDir(), "certs", "cert.pem")
+	certPath := filepath.Join(install.GetConfigDir(), "certs", "server.crt")
 	data, err := os.ReadFile(certPath)
 	if err != nil {
-		data, err = os.ReadFile("local/certs/cert.pem")
+		data, err = os.ReadFile("local/certs/server.crt")
 		if err != nil {
 			WriteErrorCtx(w, r, http.StatusNotFound, "Certificate not found")
 			return
@@ -383,4 +417,38 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	WriteJSON(w, http.StatusOK, services)
+}
+
+// handleRestartService restarts a specific service
+// POST /api/system/services/restart
+func (s *Server) handleRestartService(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		WriteErrorCtx(w, r, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var req struct {
+		Service string `json:"service"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		WriteErrorCtx(w, r, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.Service == "" {
+		WriteErrorCtx(w, r, http.StatusBadRequest, "Service name is required")
+		return
+	}
+
+	if s.client == nil {
+		WriteErrorCtx(w, r, http.StatusServiceUnavailable, "Control plane not connected")
+		return
+	}
+
+	if err := s.client.RestartService(req.Service); err != nil {
+		WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to restart service: "+err.Error())
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package state provides an abstract state storage system with change tracking.
 //
 // The state store provides:
@@ -21,15 +23,18 @@ package state
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"grimm.is/flywall/internal/clock"
 	"strings"
 	"sync"
 	"time"
+
+	"grimm.is/flywall/internal/clock"
 
 	sqlite "modernc.org/sqlite" // Pure Go SQLite driver
 )
@@ -200,6 +205,7 @@ var (
 	ErrBucketExists  = errors.New("bucket already exists")
 	ErrBucketMissing = errors.New("bucket does not exist")
 	ErrStoreClosed   = errors.New("store is closed")
+	ErrDivergence    = errors.New("replication divergence detected")
 )
 
 // ChangeType represents the type of state change.
@@ -220,11 +226,13 @@ type Change struct {
 	Type      ChangeType `json:"type"`
 	Timestamp time.Time  `json:"timestamp"`
 	Version   uint64     `json:"version"` // Monotonic version for conflict resolution
+	Hash      string     `json:"hash"`    // SHA-256 hash of this change + prev hash
 }
 
 // Snapshot represents a point-in-time snapshot of the entire store.
 type Snapshot struct {
 	Version   uint64            `json:"version"`
+	LastHash  string            `json:"last_hash"`
 	Timestamp time.Time         `json:"timestamp"`
 	Buckets   map[string]Bucket `json:"buckets"`
 }
@@ -264,6 +272,7 @@ type Store interface {
 	// Change tracking
 	Subscribe(ctx context.Context) <-chan Change
 	GetChangesSince(version uint64) ([]Change, error)
+	ApplyReplicatedChange(change Change) error
 	CurrentVersion() uint64
 
 	// Snapshot operations
@@ -276,11 +285,12 @@ type Store interface {
 
 // SQLiteStore implements Store using SQLite.
 type SQLiteStore struct {
-	db      *sql.DB
-	mu      sync.RWMutex
-	version uint64
-	closed  bool
-	clock   clock.Clock // Time source for testability
+	db       *sql.DB
+	mu       sync.RWMutex
+	version  uint64
+	lastHash string
+	closed   bool
+	clock    clock.Clock // Time source for testability
 
 	// Change subscribers
 	subMu       sync.RWMutex
@@ -328,6 +338,12 @@ func NewSQLiteStore(opts Options) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
+	// SQLite only supports one writer at a time. Using a single connection
+	// prevents the pool from returning connections with dirty transaction state
+	// after SQLITE_BUSY errors (which causes "cannot start a transaction
+	// within a transaction" on reuse). This is the standard Go+SQLite pattern.
+	db.SetMaxOpenConns(1)
+
 	// Test connection
 	if err := db.Ping(); err != nil {
 		db.Close()
@@ -366,8 +382,14 @@ func NewSQLiteStore(opts Options) (*SQLiteStore, error) {
 
 	// Initialize schema
 	if err := s.initSchema(); err != nil {
-		db.Close()
+		db.Close() // Keep original error handling for initSchema
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
+	}
+
+	// Migrate schema (for existing databases)
+	if err := s.migrateSchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate schema: %w", err)
 	}
 
 	// Load current version
@@ -413,7 +435,8 @@ func (s *SQLiteStore) initSchema() error {
 			value BLOB,
 			change_type TEXT NOT NULL,
 			version INTEGER NOT NULL,
-			timestamp DATETIME NOT NULL
+			timestamp DATETIME NOT NULL,
+			hash TEXT
 		);
 
 		-- Metadata
@@ -432,17 +455,148 @@ func (s *SQLiteStore) initSchema() error {
 	return err
 }
 
-// loadVersion loads the current version from the database.
-func (s *SQLiteStore) loadVersion() error {
-	var version sql.NullInt64
-	err := s.db.QueryRow("SELECT MAX(version) FROM changes").Scan(&version)
+// migrateSchema updates the database schema for existing databases.
+func (s *SQLiteStore) migrateSchema() error {
+	// Check if 'hash' column exists in 'changes' table
+	var count int
+	err := s.db.QueryRow(`
+		SELECT count(*)
+		FROM pragma_table_info('changes')
+		WHERE name = 'hash'
+	`).Scan(&count)
 	if err != nil {
 		return err
 	}
+
+	// If missing, add it
+	if count == 0 {
+		_, err = s.db.Exec(`ALTER TABLE changes ADD COLUMN hash TEXT`)
+		if err != nil {
+			return fmt.Errorf("failed to add hash column: %w", err)
+		}
+	}
+
+	return s.backfillHashes()
+}
+
+// backfillHashes computes and stores hashes for legacy changes.
+func (s *SQLiteStore) backfillHashes() error {
+	// Find changes with missing hashes
+	rows, err := s.db.Query(`
+		SELECT id, bucket, key, value, change_type, version, timestamp
+		FROM changes
+		WHERE hash IS NULL
+		ORDER BY version ASC
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	// We need to calculate hashes sequentially.
+	// Since we are backfilling, we might not have the "previous" hash in memory.
+	// We need to fetch the hash of the change immediately preceding the first one we process.
+	// However, simplistically, if we are backfilling, it's likely from the start or a contiguous block.
+
+	// Better approach: process all in a transaction to ensure consistency.
+	// But for large datasets, this might hold a lock too long.
+	// For now, let's just iterate and update.
+
+	var changes []Change
+	for rows.Next() {
+		var c Change
+		var changeType string
+		if err := rows.Scan(&c.ID, &c.Bucket, &c.Key, &c.Value, &changeType, &c.Version, &c.Timestamp); err != nil {
+			return err
+		}
+		c.Type = ChangeType(changeType)
+		changes = append(changes, c)
+	}
+	rows.Close()
+
+	if len(changes) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Get the hash of the change before the first one (if any)
+	var prevHash string
+	if changes[0].Version > 1 {
+		err := tx.QueryRow("SELECT hash FROM changes WHERE version < ? ORDER BY version DESC LIMIT 1", changes[0].Version).Scan(&prevHash)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+	}
+
+	for _, change := range changes {
+		// Calculate hash
+		change.Hash = s.computeHash(prevHash, change)
+
+		// Update DB
+		_, err := tx.Exec("UPDATE changes SET hash = ? WHERE id = ?", change.Hash, change.ID)
+		if err != nil {
+			return err
+		}
+
+		prevHash = change.Hash
+	}
+
+	return tx.Commit()
+}
+
+// loadVersion loads the current version and last hash from the database.
+func (s *SQLiteStore) loadVersion() error {
+	var version sql.NullInt64
+	var hash sql.NullString
+
+	// Get the latest change
+	err := s.db.QueryRow("SELECT version, hash FROM changes ORDER BY version DESC LIMIT 1").Scan(&version, &hash)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// No changes yet
+			s.version = 0
+			s.lastHash = ""
+			return nil
+		}
+		return err
+	}
+
 	if version.Valid {
 		s.version = uint64(version.Int64)
 	}
+	if hash.Valid {
+		s.lastHash = hash.String
+	}
 	return nil
+}
+
+// computeHash calculates the SHA-256 hash of a change.
+func (s *SQLiteStore) computeHash(prevHash string, c Change) string {
+	// Canonical string format: prevHash|bucket|key|value|type|version|timestamp_ns
+	// Note: value is byte slice, we use %x or just append bytes.
+	// Using %v for value might be ambiguous or slow for large blobs.
+	// Let's use specific fields.
+	h := sha256.New()
+	_, _ = h.Write([]byte(prevHash))
+	_, _ = h.Write([]byte("|"))
+	_, _ = h.Write([]byte(c.Bucket))
+	_, _ = h.Write([]byte("|"))
+	_, _ = h.Write([]byte(c.Key))
+	_, _ = h.Write([]byte("|"))
+	_, _ = h.Write(c.Value) // Raw bytes
+	_, _ = h.Write([]byte("|"))
+	_, _ = h.Write([]byte(c.Type))
+	_, _ = h.Write([]byte("|"))
+
+	// Version and Timestamp
+	_, _ = fmt.Fprintf(h, "%d|%d", c.Version, c.Timestamp.UnixNano())
+
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // cleanupLoop periodically removes expired entries and old changes.
@@ -599,6 +753,108 @@ func (s *SQLiteStore) SetWithTTL(bucket, key string, value []byte, ttl time.Dura
 	return s.setInternal(bucket, key, value, clock.Now().Add(ttl))
 }
 
+// ApplyReplicatedChange applies a change received from replication, preserving version and timestamp.
+func (s *SQLiteStore) ApplyReplicatedChange(change Change) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	// Update local version counter if the replicated version is newer
+	if change.Version > s.version {
+		s.version = change.Version
+	}
+
+	// Verify Merkle Hash
+	// The incoming change should chain from our last hash (if we are in sync).
+	// If we are catching up (gap in versions), this check will fail if the gap isn't filled.
+	// But `ApplyReplicatedChange` is usually called in sequence.
+	// If there's a gap, `replication.go` should handle it via sync.
+	// However, if we blindly apply a future version, verifyHash might verify against WRONG prevHash.
+	// Strict Merkle Chain requires strict sequence.
+	// If change.Version != s.version (which is updated above) ... wait.
+	// s.version was updated to change.Version.
+	// Actually, we should check sequence: change.Version == s.version + 1 (before update)?
+	// Or just trust the hash calculation using *current* s.lastHash.
+	// If we missed a change, s.lastHash will be old.
+	// calculatedHash = hash(s.lastHash + change).
+	// If that equals change.Hash, then we ARE in sequence!
+	// If we missed a change, s.lastHash would be different (from the missing change),
+	// so calculatedHash would not match change.Hash (which was computed with the true prevHash).
+	// So hash verification automagically enforces continuity!
+
+	expectedHash := s.computeHash(s.lastHash, change)
+	if expectedHash != change.Hash {
+		return fmt.Errorf("%w: expected %s, got %s", ErrDivergence, expectedHash, change.Hash)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Apply the change based on type
+	switch change.Type {
+	case ChangeInsert, ChangeUpdate:
+		// Check if keys exist for consistency (optional, but good for validation)
+		// For now, we blindly accept the primary's state (Last Write Wins via Version)
+
+		// Upsert with specific version/timestamp from primary
+		// We default expiresAt to NULL (zero time) unless we want to replicate TTLs?
+		// The Change struct doesn't strictly carry TTL/ExpiresAt, but Entry does.
+		// However, Replicator logic currently just passes Value.
+		// If we want to support TTL replication, Change needs ExpiresAt.
+		// But for now, let's assume no expiry or handle it if we add it to Change.
+		// Looking at Change struct: Key, Value, Type, Timestamp, Version. No ExpiresAt.
+		// So we'll clear ExpiresAt on replicated set, or keep existing?
+		// Usually replication overwrites, so clearing is safer or default to null.
+		// The `entries` table has `expires_at`.
+
+		_, err = tx.Exec(`
+			INSERT INTO entries (bucket, key, value, version, updated_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, NULL)
+			ON CONFLICT(bucket, key) DO UPDATE SET
+				value = excluded.value,
+				version = excluded.version,
+				updated_at = excluded.updated_at,
+				expires_at = excluded.expires_at
+		`, change.Bucket, change.Key, change.Value, change.Version, change.Timestamp)
+		if err != nil {
+			return err
+		}
+
+	case ChangeDelete:
+		_, err = tx.Exec(
+			"DELETE FROM entries WHERE bucket = ? AND key = ?",
+			change.Bucket, change.Key,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Record the change in our local log (so replicas of this replica get it?)
+	// If we are a replica, we still record changes so we can support cascading replication
+	// or just for local history.
+	// IMPORTANT: We use the *same* version/timestamp.
+	if err := s.recordChangeTx(tx, &change); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Update last hash
+	s.lastHash = change.Hash
+
+	s.notifySubscribers(change)
+	return nil
+}
+
 // setInternal handles the actual set operation.
 func (s *SQLiteStore) setInternal(bucket, key string, value []byte, expiresAt time.Time) error {
 	s.mu.Lock()
@@ -614,12 +870,28 @@ func (s *SQLiteStore) setInternal(bucket, key string, value []byte, expiresAt ti
 	version := s.version
 
 	// Start atomic transaction
-	tx, err := s.db.Begin()
-	if err != nil {
+	var tx *sql.Tx
+	var err error
+	for i := 0; i < 10; i++ {
+		tx, err = s.db.Begin()
+		if err == nil {
+			break
+		}
+		if strings.Contains(err.Error(), "locked") || strings.Contains(err.Error(), "busy") {
+			time.Sleep(10 * time.Millisecond * time.Duration(i+1))
+			continue
+		}
 		s.version--
 		return err
 	}
+	if tx == nil {
+		s.version--
+		return fmt.Errorf("failed to begin transaction after retries: %w", err)
+	}
 	defer tx.Rollback()
+	// Note: We compute this LATER after we construct the change, but before recordChangeTx.
+	// However, we need 'now' and 'version'.
+	// Moves calculation down.
 
 	// Check if this is an insert or update
 	var exists bool
@@ -668,6 +940,9 @@ func (s *SQLiteStore) setInternal(bucket, key string, value []byte, expiresAt ti
 		Version:   version,
 	}
 
+	// Compute Merkle Hash
+	change.Hash = s.computeHash(s.lastHash, change)
+
 	// recordChange now uses the transaction
 	if err := s.recordChangeTx(tx, &change); err != nil {
 		s.version--
@@ -678,6 +953,9 @@ func (s *SQLiteStore) setInternal(bucket, key string, value []byte, expiresAt ti
 		s.version--
 		return err
 	}
+
+	// Update last hash on success
+	s.lastHash = change.Hash
 
 	// Notify subscribers (after commit)
 	s.notifySubscribers(change)
@@ -699,9 +977,21 @@ func (s *SQLiteStore) Delete(bucket, key string) error {
 		return ErrStoreClosed
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
+	var tx *sql.Tx
+	var err error
+	for i := 0; i < 10; i++ {
+		tx, err = s.db.Begin()
+		if err == nil {
+			break
+		}
+		if strings.Contains(err.Error(), "locked") || strings.Contains(err.Error(), "busy") {
+			time.Sleep(10 * time.Millisecond * time.Duration(i+1))
+			continue
+		}
 		return err
+	}
+	if tx == nil {
+		return fmt.Errorf("failed to begin transaction after retries: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -729,6 +1019,9 @@ func (s *SQLiteStore) Delete(bucket, key string) error {
 		Version:   s.version,
 	}
 
+	// Compute Merkle Hash
+	change.Hash = s.computeHash(s.lastHash, change)
+
 	if err := s.recordChangeTx(tx, &change); err != nil {
 		s.version--
 		return err
@@ -738,6 +1031,9 @@ func (s *SQLiteStore) Delete(bucket, key string) error {
 		s.version--
 		return err
 	}
+
+	// Update last hash on success
+	s.lastHash = change.Hash
 
 	s.notifySubscribers(change)
 
@@ -848,9 +1144,9 @@ func (s *SQLiteStore) recordChange(change Change) error {
 // recordChangeTx writes a change to the change log using an existing transaction.
 func (s *SQLiteStore) recordChangeTx(tx *sql.Tx, change *Change) error {
 	result, err := tx.Exec(`
-		INSERT INTO changes (bucket, key, value, change_type, version, timestamp)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, change.Bucket, change.Key, change.Value, change.Type, change.Version, change.Timestamp)
+		INSERT INTO changes (bucket, key, value, change_type, version, timestamp, hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, change.Bucket, change.Key, change.Value, change.Type, change.Version, change.Timestamp, change.Hash)
 	if err != nil {
 		return err
 	}
@@ -908,7 +1204,7 @@ func (s *SQLiteStore) GetChangesSince(version uint64) ([]Change, error) {
 	}
 
 	rows, err := s.db.Query(`
-		SELECT id, bucket, key, value, change_type, version, timestamp
+		SELECT id, bucket, key, value, change_type, version, timestamp, hash
 		FROM changes
 		WHERE version > ?
 		ORDER BY version
@@ -922,10 +1218,14 @@ func (s *SQLiteStore) GetChangesSince(version uint64) ([]Change, error) {
 	for rows.Next() {
 		var c Change
 		var changeType string
-		if err := rows.Scan(&c.ID, &c.Bucket, &c.Key, &c.Value, &changeType, &c.Version, &c.Timestamp); err != nil {
+		var hash sql.NullString
+		if err := rows.Scan(&c.ID, &c.Bucket, &c.Key, &c.Value, &changeType, &c.Version, &c.Timestamp, &hash); err != nil {
 			return nil, err
 		}
 		c.Type = ChangeType(changeType)
+		if hash.Valid {
+			c.Hash = hash.String
+		}
 		changes = append(changes, c)
 	}
 	return changes, rows.Err()
@@ -949,6 +1249,7 @@ func (s *SQLiteStore) CreateSnapshot() (*Snapshot, error) {
 
 	snapshot := &Snapshot{
 		Version:   s.version,
+		LastHash:  s.lastHash,
 		Timestamp: clock.Now(),
 		Buckets:   make(map[string]Bucket),
 	}
@@ -1052,6 +1353,7 @@ func (s *SQLiteStore) RestoreSnapshot(snapshot *Snapshot) error {
 	}
 
 	s.version = snapshot.Version
+	s.lastHash = snapshot.LastHash
 	return nil
 }
 

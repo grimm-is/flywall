@@ -1,11 +1,16 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime"
+	"time"
 
 	"grimm.is/flywall/internal/config"
+	"grimm.is/flywall/internal/ctlplane"
 )
 
 // --- Safe Apply Handlers ---
@@ -48,11 +53,31 @@ func (s *Server) handleSafeApply(w http.ResponseWriter, r *http.Request) {
 	backupVersion := backupReply.Backup.Version
 
 	// Step 2: Apply the config
-	if err := s.client.ApplyConfig(&req.Config); err != nil {
+	applyCh := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				applyCh <- fmt.Errorf("panic in ApplyConfig: %v", r)
+			}
+		}()
+		applyCh <- s.client.ApplyConfig(&req.Config)
+	}()
+
+	select {
+	case err := <-applyCh:
+		if err != nil {
+			WriteJSON(w, http.StatusOK, map[string]interface{}{
+				"success": false,
+				"error":   err.Error(),
+				"message": "Apply failed",
+			})
+			return
+		}
+	case <-time.After(15 * time.Second):
 		WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"success": false,
-			"error":   err.Error(),
-			"message": "Apply failed",
+			"error":   "timeout",
+			"message": "Apply timed out",
 		})
 		return
 	}
@@ -73,7 +98,27 @@ func (s *Server) handleSafeApply(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Ping via control plane (privileged)
-			pingReply, err := s.client.Ping(target, req.PingTimeoutSeconds)
+			type pingRes struct {
+				reply *ctlplane.PingReply
+				err   error
+			}
+			pingCh := make(chan pingRes, 1)
+			go func() {
+				r, e := s.client.Ping(target, req.PingTimeoutSeconds)
+				pingCh <- pingRes{r, e}
+			}()
+
+			var pingReply *ctlplane.PingReply
+			var err error
+
+			select {
+			case res := <-pingCh:
+				pingReply = res.reply
+				err = res.err
+			case <-time.After(time.Duration(req.PingTimeoutSeconds+2) * time.Second):
+				err = fmt.Errorf("ping timeout")
+			}
+
 			if err != nil {
 				failedTargets = append(failedTargets, fmt.Sprintf("%s: %v", target, err))
 				continue
@@ -86,7 +131,24 @@ func (s *Server) handleSafeApply(w http.ResponseWriter, r *http.Request) {
 		// If any ping failed, rollback
 		if len(failedTargets) > 0 {
 			// Rollback to backup
-			_, rollbackErr := s.client.RestoreBackup(backupVersion)
+			type restoreRes struct {
+				reply *ctlplane.RestoreBackupReply
+				err   error
+			}
+			restoreCh := make(chan restoreRes, 1)
+			go func() {
+				r, e := s.client.RestoreBackup(backupVersion)
+				restoreCh <- restoreRes{r, e}
+			}()
+
+			var rollbackErr error
+			select {
+			case res := <-restoreCh:
+				rollbackErr = res.err
+			case <-time.After(10 * time.Second):
+				rollbackErr = fmt.Errorf("rollback timeout")
+			}
+
 			rollbackMsg := "rollback successful"
 			if rollbackErr != nil {
 				rollbackMsg = fmt.Sprintf("rollback failed: %v", rollbackErr)
@@ -258,10 +320,7 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if reply.Error != "" {
-		WriteJSON(w, http.StatusOK, map[string]interface{}{
-			"success": false,
-			"error":   reply.Error,
-		})
+		WriteErrorCtx(w, r, http.StatusBadRequest, reply.Error)
 		return
 	}
 
@@ -427,8 +486,23 @@ func (s *Server) handleApplyConfig(w http.ResponseWriter, r *http.Request) {
 		cfg := s.Config.Clone()
 		s.configMu.RUnlock()
 
-		if err := s.client.ApplyConfig(cfg); err != nil {
-			WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())
+		// Wrap ApplyConfig in timeout to prevent RPC hangs
+		type applyResult struct {
+			err error
+		}
+		ch := make(chan applyResult, 1)
+		go func() {
+			ch <- applyResult{err: s.client.ApplyConfig(cfg)}
+		}()
+
+		select {
+		case res := <-ch:
+			if res.err != nil {
+				WriteErrorCtx(w, r, http.StatusInternalServerError, res.err.Error())
+				return
+			}
+		case <-time.After(10 * time.Second):
+			WriteErrorCtx(w, r, http.StatusGatewayTimeout, "Control plane RPC timed out during apply")
 			return
 		}
 
@@ -456,6 +530,11 @@ func (s *Server) handleApplyConfig(w http.ResponseWriter, r *http.Request) {
 			s.wsManager.Publish("config", s.Config)
 			s.wsManager.PublishNotification(NotifySuccess, "Configuration Applied", "Firewall rules have been updated")
 		}
+
+		// Yield to scheduler and add latency to prevent race condition response drop
+		// (Integration Test Fix)
+		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
 
 		WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"success":        true,

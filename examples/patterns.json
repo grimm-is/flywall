@@ -1,0 +1,120 @@
+{
+  "version": "1.0",
+  "generated_at": "2026-02-02T13:00:00Z",
+  "expires_at": "2026-02-03T13:00:00Z",
+  "signatures": [
+    {
+      "id": 1001,
+      "name": "ET MALWARE Suspicious PowerShell Command",
+      "pattern": "(?i)powershell.*-enc.*[A-Za-z0-9+/]+={0,2}",
+      "type": "regex",
+      "severity": 5,
+      "category": "malware",
+      "description": "Detects suspicious PowerShell commands with encoded payloads",
+      "enabled": true
+    },
+    {
+      "id": 1002,
+      "name": "ET SCAN Nmap Scripting Engine",
+      "pattern": "User-Agent:.*NSE",
+      "type": "regex",
+      "severity": 2,
+      "category": "scanner",
+      "description": "Detects Nmap Scripting Engine scans",
+      "enabled": true
+    },
+    {
+      "id": 1003,
+      "name": "ET TROJAN Cobalt Strike Beacon",
+      "pattern": "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+      "type": "binary",
+      "severity": 8,
+      "category": "trojan",
+      "description": "Detects Cobalt Strike beacon communication",
+      "enabled": true
+    },
+    {
+      "id": 1004,
+      "name": "ET WEB Common Web Shell",
+      "pattern": "eval(base64_decode",
+      "type": "literal",
+      "severity": 7,
+      "category": "webshell",
+      "description": "Detects common PHP web shell pattern",
+      "enabled": true
+    },
+    {
+      "id": 1005,
+      "name": "ET POLICY SSH Bruteforce Attempt",
+      "pattern": "SSH-2.0-",
+      "type": "literal",
+      "severity": 3,
+      "category": "policy",
+      "description": "Detects SSH connections (potential bruteforce)",
+      "enabled": true
+    }
+  ],
+  "domain_rules": [
+    {
+      "id": 2001,
+      "domain": "*.malware.example.com",
+      "action": "block",
+      "severity": 8,
+      "ttl": "24h",
+      "enabled": true
+    },
+    {
+      "id": 2002,
+      "domain": "phishing-site.example.org",
+      "action": "block",
+      "severity": 9,
+      "ttl": "168h",
+      "enabled": true
+    },
+    {
+      "id": 2003,
+      "domain": "suspicious-domain.net",
+      "action": "monitor",
+      "severity": 5,
+      "ttl": "12h",
+      "enabled": true
+    },
+    {
+      "id": 2004,
+      "domain": "trusted-cdn.example.com",
+      "action": "allow",
+      "severity": 1,
+      "ttl": "720h",
+      "enabled": true
+    }
+  ],
+  "ip_rules": [
+    {
+      "id": 3001,
+      "ip": 3221225472,
+      "netmask": 4294967040,
+      "action": "block",
+      "severity": 7,
+      "ttl": "168h",
+      "enabled": true
+    },
+    {
+      "id": 3002,
+      "ip": 3232235521,
+      "netmask": 4294967040,
+      "action": "monitor",
+      "severity": 4,
+      "ttl": "24h",
+      "enabled": true
+    },
+    {
+      "id": 3003,
+      "ip": 2886729728,
+      "netmask": 4294966783,
+      "action": "block",
+      "severity": 9,
+      "ttl": "720h",
+      "enabled": true
+    }
+  ]
+}

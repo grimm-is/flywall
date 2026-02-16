@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -191,10 +193,13 @@ func (s *Server) detectZoneForIP(ip string, cfg *config.Config) string {
 
 	// Check if IP matches any interface's network
 	for _, zone := range cfg.Zones {
-		for _, ifaceName := range zone.Interfaces {
+		for _, m := range zone.Matches {
+			if m.Interface == "" {
+				continue
+			}
 			// Find interface config
 			for _, iface := range cfg.Interfaces {
-				if iface.Name == ifaceName {
+				if iface.Name == m.Interface {
 					// Parse interface IP/CIDR
 					for _, addr := range iface.IPv4 {
 						_, network, err := net.ParseCIDR(addr)

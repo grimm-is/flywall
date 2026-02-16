@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -5,8 +7,10 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
+	"math/rand/v2"
 	"mime"
 	"net"
 	"net/http"
@@ -15,6 +19,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	gorillaMux "github.com/gorilla/mux"
+	"grimm.is/flywall/internal/audit"
+	"grimm.is/flywall/internal/ebpf/interfaces"
+	"grimm.is/flywall/internal/install"
 
 	"grimm.is/flywall/internal/clock"
 
@@ -94,12 +103,17 @@ type Server struct {
 	wsManager       *WSManager         // Websocket manager
 	healthy         atomic.Bool        // Cached health status
 	adminCreationMu sync.Mutex         // Mutex to prevent race conditions in admin creation
+	auditLogger     *audit.Logger      // Enhanced audit logger
 
 	// ClearPath Policy Editor support
 	statsCollector *stats.Collector // Rule stats for sparklines
 	deviceLookup   DeviceLookup     // Device name resolution for UI pills
 
-	mux *http.ServeMux
+	// eBPF support
+	ebpfHandlers *EBPFHandlers // eBPF API handlers
+
+	mux        *http.ServeMux
+	httpServer *http.Server // Reference to underlying HTTP server for shutdown
 }
 
 // ServerOptions holds dependencies for the API server
@@ -129,7 +143,6 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	rateLimiter.StartCleanup(10*time.Minute, 1*time.Hour)
 
 	// Create common server structure
-	logger.Info("[DEBUG] NewServer initialized (Binary Updated Verify)")
 	s := &Server{
 		Config:        opts.Config,
 		Assets:        opts.Assets,
@@ -246,6 +259,7 @@ func (s *Server) initRoutes() {
 
 	// General Config
 	mux.Handle("GET /api/config", s.require(storage.PermReadConfig, s.requireControlPlane(s.handleConfig)))
+	mux.Handle("POST /api/config", s.require(storage.PermWriteConfig, s.requireControlPlane(s.handleUpdateConfig)))
 	mux.Handle("POST /api/config/apply", s.require(storage.PermWriteConfig, s.requireControlPlane(s.handleApplyConfig)))
 	mux.Handle("POST /api/config/safe-apply", s.require(storage.PermWriteConfig, s.requireControlPlane(s.handleSafeApply)))
 	mux.Handle("POST /api/config/confirm", s.require(storage.PermWriteConfig, s.requireControlPlane(s.handleConfirmApply)))
@@ -270,6 +284,10 @@ func (s *Server) initRoutes() {
 	mux.Handle("PUT /api/users/", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleUpdateUser)))
 	mux.Handle("DELETE /api/users/", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleDeleteUser)))
 
+	// Password Management
+	mux.Handle("PUT /api/auth/password", s.require(storage.PermAll, http.HandlerFunc(s.handleChangePassword)))
+	mux.Handle("PUT /api/users/{username}/password", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleAdminResetPassword)))
+
 	// Interface management
 	mux.Handle("GET /api/interfaces", s.require(storage.PermReadConfig, http.HandlerFunc(s.handleInterfaces))) // Using Config perms for now
 	mux.Handle("GET /api/interfaces/available", s.require(storage.PermReadConfig, http.HandlerFunc(s.handleAvailableInterfaces)))
@@ -284,6 +302,7 @@ func (s *Server) initRoutes() {
 	mux.Handle("GET /api/analytics/bandwidth", s.require(storage.PermReadConfig, http.HandlerFunc(analyticsHandlers.HandleGetBandwidth)))
 	mux.Handle("GET /api/analytics/top-talkers", s.require(storage.PermReadConfig, http.HandlerFunc(analyticsHandlers.HandleGetTopTalkers)))
 	mux.Handle("GET /api/analytics/flows", s.require(storage.PermReadConfig, http.HandlerFunc(analyticsHandlers.HandleGetHistoricalFlows)))
+	mux.Handle("GET /api/observatory/history", s.require(storage.PermReadConfig, http.HandlerFunc(s.handleObservatoryHistory)))
 
 	// Alerts
 	mux.Handle("GET /api/alerts/history", s.require(storage.PermReadConfig, http.HandlerFunc(s.HandleGetAlertHistory)))
@@ -347,20 +366,21 @@ func (s *Server) initRoutes() {
 
 	// Uplink Management
 	uplinkAPI := NewUplinkAPI(s.client)
-	mux.Handle("GET /api/uplinks/groups", s.require(storage.PermReadConfig, http.HandlerFunc(uplinkAPI.HandleGetGroups)))
-	mux.Handle("POST /api/uplinks/switch", s.require(storage.PermWriteConfig, http.HandlerFunc(uplinkAPI.HandleSwitch)))
-	mux.Handle("POST /api/uplinks/toggle", s.require(storage.PermWriteConfig, http.HandlerFunc(uplinkAPI.HandleToggle)))
-	mux.Handle("POST /api/uplinks/test", s.require(storage.PermWriteConfig, http.HandlerFunc(uplinkAPI.HandleTest)))
+	mux.Handle("GET /api/uplinks/groups", s.require(storage.PermReadConfig, s.requireControlPlane(http.HandlerFunc(uplinkAPI.HandleGetGroups))))
+	mux.Handle("POST /api/uplinks/switch", s.require(storage.PermWriteConfig, s.requireControlPlane(http.HandlerFunc(uplinkAPI.HandleSwitch))))
+	mux.Handle("POST /api/uplinks/toggle", s.require(storage.PermWriteConfig, s.requireControlPlane(http.HandlerFunc(uplinkAPI.HandleToggle))))
+	mux.Handle("POST /api/uplinks/test", s.require(storage.PermWriteConfig, s.requireControlPlane(http.HandlerFunc(uplinkAPI.HandleTest))))
 
 	// Flow Management
 	flowHandlers := NewFlowHandlers(s.client)
-	mux.Handle("GET /api/flows", s.require(storage.PermReadFirewall, http.HandlerFunc(flowHandlers.HandleGetFlows)))
-	mux.Handle("POST /api/flows/approve", s.require(storage.PermWriteFirewall, http.HandlerFunc(flowHandlers.HandleApprove)))
-	mux.Handle("POST /api/flows/deny", s.require(storage.PermWriteFirewall, http.HandlerFunc(flowHandlers.HandleDeny)))
-	mux.Handle("DELETE /api/flows", s.require(storage.PermWriteFirewall, http.HandlerFunc(flowHandlers.HandleDelete)))
+	mux.Handle("GET /api/flows", s.require(storage.PermReadFirewall, s.requireControlPlane(http.HandlerFunc(flowHandlers.HandleGetFlows))))
+	mux.Handle("POST /api/flows/approve", s.require(storage.PermWriteFirewall, s.requireControlPlane(http.HandlerFunc(flowHandlers.HandleApprove))))
+	mux.Handle("POST /api/flows/deny", s.require(storage.PermWriteFirewall, s.requireControlPlane(http.HandlerFunc(flowHandlers.HandleDeny))))
+	mux.Handle("DELETE /api/flows", s.require(storage.PermWriteFirewall, s.requireControlPlane(http.HandlerFunc(flowHandlers.HandleDelete))))
 
 	// System actions
 	mux.Handle("POST /api/system/reboot", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleReboot)))
+	mux.Handle("POST /api/system/services/restart", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleRestartService)))
 	mux.Handle("GET /api/system/backup", s.require(storage.PermAdminBackup, http.HandlerFunc(s.handleBackup)))
 	mux.Handle("POST /api/system/restore", s.require(storage.PermAdminBackup, http.HandlerFunc(s.handleRestore)))
 	mux.Handle("POST /api/system/wol", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleWakeOnLAN)))
@@ -403,6 +423,7 @@ func (s *Server) initRoutes() {
 	// Extended System Operations
 	mux.Handle("GET /api/system/stats", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleSystemStats)))
 	mux.Handle("GET /api/system/routes", s.require(storage.PermAdminSystem, http.HandlerFunc(s.handleSystemRoutes)))
+	mux.Handle("GET /api/vpn/status", s.require(storage.PermReadConfig, http.HandlerFunc(s.handleVPNStatus)))
 	mux.Handle("GET /api/replication/status", s.require(storage.PermReadConfig, http.HandlerFunc(s.handleReplicationStatus)))
 
 	// Import Wizard
@@ -421,6 +442,7 @@ func (s *Server) initRoutes() {
 	// IPSet management endpoints
 	mux.Handle("GET /api/ipsets", s.require(storage.PermReadFirewall, http.HandlerFunc(s.handleIPSetList)))
 	mux.Handle("/api/ipsets/", s.require(storage.PermReadFirewall, http.HandlerFunc(s.handleIPSetShow)))
+	mux.Handle("POST /api/ipsets/", s.require(storage.PermWriteFirewall, http.HandlerFunc(s.handleIPSetRefresh))) // Matches /api/ipsets/{name}/refresh
 	mux.Handle("GET /api/ipsets/cache/info", s.require(storage.PermReadFirewall, http.HandlerFunc(s.handleIPSetCacheInfo)))
 
 	// Learning Engine
@@ -445,6 +467,21 @@ func (s *Server) initRoutes() {
 	mux.Handle("GET /api/config/diff", s.require(storage.PermReadConfig, http.HandlerFunc(s.handleGetConfigDiff)))
 	mux.Handle("POST /api/config/discard", s.require(storage.PermWriteConfig, http.HandlerFunc(s.handleDiscardConfig)))
 	mux.Handle("GET /api/config/pending-status", s.require(storage.PermReadConfig, http.HandlerFunc(s.handlePendingStatus)))
+	mux.Handle("GET /api/config/salvage", s.require(storage.PermReadConfig, s.requireControlPlane(s.handleConfigSalvage)))
+
+	// eBPF endpoints (if available)
+	if s.ebpfHandlers != nil {
+		// Register eBPF routes using gorilla mux for path parameters
+		ebpfRouter := gorillaMux.NewRouter()
+		s.ebpfHandlers.RegisterRoutes(ebpfRouter)
+
+		// Wrap the router to handle authentication
+		mux.Handle("/api/ebpf/", s.require(storage.PermReadConfig, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Strip /api/ebpf prefix for the router
+			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/api/ebpf")
+			ebpfRouter.ServeHTTP(w, r)
+		})))
+	}
 
 	mux.Handle("/metrics", promhttp.Handler())
 
@@ -485,6 +522,7 @@ func (s *Server) requireControlPlane(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // spaHandler serves static files, falling back to index.html for client-side routing.
+// It supports Single Page Applications (SPAs) where routing is handled by the browser.
 //
 // Security Analysis (Path Traversal): SAFE
 // - Uses fs.FS interface which is confined to the embedded UI assets directory
@@ -570,6 +608,7 @@ func (s *Server) Start(addr string) error {
 		IdleTimeout:       cfg.IdleTimeout,
 		MaxHeaderBytes:    cfg.MaxHeaderBytes,
 	}
+	s.httpServer = server
 
 	// Start metrics collector
 	go s.collector.Start()
@@ -589,10 +628,10 @@ func (s *Server) Start(addr string) error {
 		tlsCert := s.Config.API.TLSCert
 		tlsKey := s.Config.API.TLSKey
 		if tlsCert == "" {
-			tlsCert = filepath.Join(brand.GetStateDir(), "certs", "server.crt")
+			tlsCert = filepath.Join(install.GetStateDir(), "certs", "server.crt")
 		}
 		if tlsKey == "" {
-			tlsKey = filepath.Join(brand.GetStateDir(), "certs", "server.key")
+			tlsKey = filepath.Join(install.GetStateDir(), "certs", "server.key")
 		}
 
 		// Auto-generate self-signed cert if missing
@@ -618,6 +657,7 @@ func (s *Server) Start(addr string) error {
 			IdleTimeout:       cfg.IdleTimeout,
 			MaxHeaderBytes:    cfg.MaxHeaderBytes,
 		}
+		s.httpServer = tlsServer
 
 		// Start HTTP redirect server (unless disabled)
 		if !s.Config.API.DisableHTTPRedirect {
@@ -677,6 +717,11 @@ func (s *Server) SetRuntimeService(r *runtime.DockerClient) {
 	s.runtime = r
 }
 
+// SetEBPFManager injects the eBPF manager and initializes handlers
+func (s *Server) SetEBPFManager(manager interfaces.Manager) {
+	s.ebpfHandlers = NewEBPFHandlers(manager)
+}
+
 // ServeListener starts the API server using an existing listener.
 // This is used during seamless upgrades when the listener is handed off.
 func (s *Server) ServeListener(listener net.Listener) error {
@@ -689,6 +734,7 @@ func (s *Server) ServeListener(listener net.Listener) error {
 		IdleTimeout:       cfg.IdleTimeout,
 		MaxHeaderBytes:    cfg.MaxHeaderBytes,
 	}
+	s.httpServer = server
 
 	go s.collector.Start()
 
@@ -703,6 +749,23 @@ func (s *Server) ServeListener(listener net.Listener) error {
 
 	logging.APILog("info", "API server starting on handed-off listener %s", listener.Addr())
 	return server.Serve(listener)
+}
+
+// Shutdown gracefully shuts down the API server without interrupting any active connections.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpServer != nil {
+		s.logger.Info("Shutting down API server gracefully...")
+		return s.httpServer.Shutdown(ctx)
+	}
+	return nil
+}
+
+// Close immediately closes the API server.
+func (s *Server) Close() error {
+	if s.httpServer != nil {
+		return s.httpServer.Close()
+	}
+	return nil
 }
 
 // loggingMiddleware logs all API requests
@@ -781,6 +844,14 @@ func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 
 // require checks for sufficient permission from EITHER an API Key OR a User Session.
+// It implements the "Unified Auth" strategy, allowing both automated agents (using keys)
+// and human users (using sessions) to access the same endpoints.
+//
+// Logic:
+// 1. Check Configuration Bypass (Dev/Testing only)
+// 2. Check API Key (Header: Authorization, ApiKey, or X-API-Key)
+// 3. Check User Session (Cookie)
+// 4. Fallback: Reject
 func (s *Server) require(perm storage.Permission, handler http.Handler) http.Handler {
 	// Chain: handler -> audit -> CSRF -> auth check
 	auditedHandler := s.auditMiddleware(handler)
@@ -792,8 +863,8 @@ func (s *Server) require(perm storage.Permission, handler http.Handler) http.Han
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Bypass auth if not required by configuration (replicates legacy behavior)
 
-		s.configMu.RLock()
 		// s.logger.Info("require middleware: checking bypass")
+		s.configMu.RLock()
 		if s.Config != nil && s.Config.API != nil && !s.Config.API.RequireAuth {
 			s.configMu.RUnlock()
 			s.logger.Info("require middleware: bypassing auth")
@@ -886,4 +957,56 @@ func (s *Server) permToRole(perm storage.Permission) string {
 
 	// Default/Read permissions require Viewer role (view)
 	return "view"
+}
+
+// Observatory History (Mock)
+func (s *Server) handleObservatoryHistory(w http.ResponseWriter, r *http.Request) {
+	// Mock 5 minutes of data (Snapshot array)
+	now := time.Now()
+	var history []map[string]any
+
+	// Create 300 snapshots (1 per second for 5 mins)
+	for i := 0; i < 300; i++ {
+		ts := now.Add(time.Duration(-300+i) * time.Second).UnixMilli()
+
+		// Mock some flows for this snapshot
+		flows := []map[string]any{
+			{
+				"id":        "flow-1",
+				"src_ip":    "192.168.1.50",
+				"dest_ip":   "8.8.8.8",
+				"dest_port": 53,
+				"protocol":  "UDP",
+				"bps":       1000 + rand.IntN(500),
+				"pps":       10 + rand.IntN(5),
+			},
+			{
+				"id":        "flow-2",
+				"src_ip":    "192.168.1.100",
+				"dest_ip":   "1.1.1.1",
+				"dest_port": 443,
+				"protocol":  "TCP",
+				"bps":       50000 + rand.IntN(20000),
+				"pps":       50 + rand.IntN(20),
+			},
+		}
+
+		totalBps := 0
+		totalPps := 0
+		for _, f := range flows {
+			totalBps += f["bps"].(int)
+			totalPps += f["pps"].(int)
+		}
+
+		snapshot := map[string]any{
+			"timestamp": ts,
+			"flows":     flows,
+			"total_bps": totalBps,
+			"total_pps": totalPps,
+		}
+		history = append(history, snapshot)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(history)
 }

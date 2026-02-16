@@ -9,33 +9,41 @@ Integration tests run in a QEMU VM with a real Linux kernel.
 ## Quick Start
 
 ```bash
-# Run all integration tests
-make test-int
+# Full Integration Test Run (Recommended before commit)
+# This runs all tests in parallel and takes < 1 minute.
+./flywall.sh test int
+```
 
 # Run a specific test file
-./scripts/run-int-test.sh t/10-api/api_auth_test.sh
+./flywall.sh test int integration_tests/linux/10-api/api_auth_test.sh
 
 # Run tests matching a pattern
-./scripts/run-int-test.sh t/30-firewall/
+./flywall.sh test int 30-firewall
 ```
 
 ## Test Organization
 
-Tests are in `t/` directory, organized by category:
+Tests are in `integration_tests/linux/` directory, organized by category:
 
 | Directory | Purpose |
 |-----------|---------|
-| `t/01-sanity/` | Basic connectivity, sanity checks |
-| `t/10-api/` | API authentication, CRUD operations |
-| `t/20-dhcp/` | DHCP server functionality |
-| `t/25-dns/` | DNS server functionality |
-| `t/30-firewall/` | Firewall rules, zones, policies |
-| `t/40-network/` | VLANs, bonds, NAT, routing |
-| `t/50-security/` | IPSets, learning engine, threat intel |
-| `t/60-vpn/` | WireGuard, Tailscale |
-| `t/70-system/` | Config, upgrade, lifecycle |
-| `t/80-monitoring/` | Metrics, nflog |
-| `t/90-cli/` | CLI commands |
+| `00-sanity/` | Basic connectivity, sanity checks |
+| `05-golang/` | Unit tests running in VM environment |
+| `10-api/` | API authentication, CRUD operations |
+| `12-profiling/` | Performance and resource profiling |
+| `20-dhcp/` | DHCP server functionality |
+| `25-dns/` | DNS server functionality |
+| `30-firewall/` | Firewall rules, zones, policies |
+| `40-network/` | VLANs, bonds, NAT, routing |
+| `50-security/` | IPSets, learning engine, threat intel |
+| `60-vpn/` | WireGuard, Tailscale |
+| `65-qos/` | Traffic shaping and QoS policies |
+| `70-system/` | Config, upgrade, lifecycle |
+| `80-monitoring/` | Metrics, nflog |
+| `80-upgrade/` | Dedicated upgrade and migration tests |
+| `90-cli/` | CLI commands |
+| `99-enforcement/` | Strict enforcement validation |
+| `99-scenarios/` | End-to-end user scenarios |
 
 ## Writing a New Test
 
@@ -87,7 +95,7 @@ exit 0
 
 ## Common Test Helpers
 
-From `t/common.sh`:
+From `integration_tests/linux/common.sh`:
 
 ```bash
 # Setup
@@ -115,20 +123,20 @@ api_post "/path" '{"json":true}'   # POST with auth
 ### 1. Run with Verbose Output
 
 ```bash
-VERBOSE=1 ./scripts/run-int-test.sh t/10-api/api_auth_test.sh
+./flywall.sh test int integration_tests/linux/10-api/api_auth_test.sh --verbose
 ```
 
 ### 2. Keep VM Running
 
 ```bash
 # Start VM manually
-make vm-start
+./flywall.sh vm start
 
 # SSH into VM
 ssh -p 2222 root@localhost
 
 # Run test manually inside VM
-/mnt/flywall/t/10-api/api_auth_test.sh
+/mnt/flywall/integration_tests/linux/10-api/api_auth_test.sh
 ```
 
 ### 3. Check Logs

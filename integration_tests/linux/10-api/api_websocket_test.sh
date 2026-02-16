@@ -11,7 +11,7 @@ require_root
 require_binary
 cleanup_on_exit
 
-CONFIG_FILE="/tmp/websocket.hcl"
+CONFIG_FILE="/tmp/websocket_$$.hcl"
 
 cat > "$CONFIG_FILE" <<EOF
 schema_version = "1.0"

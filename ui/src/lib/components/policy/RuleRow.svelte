@@ -8,6 +8,7 @@
   import Sparkline from "../Sparkline.svelte";
   import { t } from "svelte-i18n";
   import Icon from "../Icon.svelte";
+  import ZoneLink from "$lib/components/ZoneLink.svelte";
 
   // Types matching backend DTOs
   interface ResolvedAddress {
@@ -38,13 +39,13 @@
 
   // Heat color: green -> yellow -> red
   function getHeatColor(heat: number): string {
-    const hue = 120 - (heat * 120);
+    const hue = 120 - heat * 120;
     return `hsl(${hue}, 70%, 50%)`;
   }
 
   // Format packets per second
   function formatPps(pps: number | undefined): string {
-    if (!pps || pps <= 0) return '';
+    if (!pps || pps <= 0) return "";
     if (pps < 1000) return `${pps.toFixed(0)} pps`;
     if (pps < 1000000) return `${(pps / 1000).toFixed(1)}K pps`;
     return `${(pps / 1000000).toFixed(1)}M pps`;
@@ -68,6 +69,7 @@
     nft_syntax?: string;
     policy_from?: string;
     policy_to?: string;
+    origin?: string;
   }
 
   interface Props {
@@ -77,6 +79,7 @@
     onEdit?: ((rule: RuleWithStats) => void) | null;
     onDelete?: ((id: string) => void) | null;
     onDuplicate?: ((rule: RuleWithStats) => void) | null;
+    onPromote?: ((rule: RuleWithStats) => void) | null;
   }
 
   let {
@@ -86,6 +89,7 @@
     onEdit = null,
     onDelete = null,
     onDuplicate = null,
+    onPromote = null,
   }: Props = $props();
 
   let expanded = $state(false);
@@ -170,10 +174,14 @@
         {/if}
       </div>
       {#if rule.stats?.packets_per_sec && rule.stats.packets_per_sec > 0}
-        <div class="heat-indicator" title="{formatPps(rule.stats.packets_per_sec)}">
-          <div 
-            class="heat-bar" 
-            style="width: {getHeatLevel(rule.stats) * 100}%; background: {getHeatColor(getHeatLevel(rule.stats))};"
+        <div
+          class="heat-indicator"
+          title={formatPps(rule.stats.packets_per_sec)}
+        >
+          <div
+            class="heat-bar"
+            style="width: {getHeatLevel(rule.stats) *
+              100}%; background: {getHeatColor(getHeatLevel(rule.stats))};"
           ></div>
         </div>
         <span class="rate-label">{formatPps(rule.stats.packets_per_sec)}</span>
@@ -184,6 +192,35 @@
     <div class="action-badge {actionStyle}">
       {rule.action}
     </div>
+
+    <!-- Implicit Badge -->
+    {#if rule.origin === "implicit_zone_config"}
+      <!-- Extract Zone Name if possible, typically encoded in description or we infer from context.
+           Actually, origin just says "implicit_zone_config". The rule description usually says "Zone X management: ..." or similar.
+           But wait, the user wants visual feedback connecting to the zone.
+           The rule probably doesn't carry the zone name explicitly in a clean field.
+           Let's look at how backend constructs it. It sets Description: fmt.Sprintf("Zone %s management: ...", zone.Name).
+           We might need to parse it or hope a better field exists.
+           Wait, there is no `zone_name` field in RuleWithStats.
+           However, we can try to rely on the fact that if it's implicit, it relates to the zone active in the context OR imply it from description.
+
+           Actually, the "Promote" action logic in Policy.svelte parses it!
+           const match = rule.description?.match(/Zone (.*?) (management|services)/);
+           Let's do similar here to get the name for the badge.
+      -->
+      {@const zoneName = rule.description?.match(
+        /Zone (.*?) (management|services)/,
+      )?.[1]}
+      {#if zoneName}
+        <div class="origin-badge-wrapper" title="Managed by Zone settings">
+          <ZoneLink name={zoneName} size="sm" />
+        </div>
+      {:else}
+        <div class="origin-badge" title="Rule generated from Zone settings">
+          ZONE
+        </div>
+      {/if}
+    {/if}
 
     <!-- Expand Indicator -->
     <div class="expand-indicator" class:expanded>
@@ -236,21 +273,39 @@
 
         <!-- Right: Actions -->
         <div class="details-right">
-          <button class="action-btn primary" onclick={() => onEdit?.(rule)}>
-            <Icon name="edit" size="sm" />
-            Edit Rule
-          </button>
-          <button class="action-btn" onclick={() => onDuplicate?.(rule)}>
-            <Icon name="content_copy" size="sm" />
-            {$t("policy.duplicate_rule")}
-          </button>
-          <button
-            class="action-btn destructive"
-            onclick={() => rule.id && onDelete?.(rule.id)}
-          >
-            <Icon name="delete" size="sm" />
-            {$t("policy.delete_rule")}
-          </button>
+          {#if rule.origin === "implicit_zone_config"}
+            <div class="implicit-notice">
+              <Icon name="info" size="sm" />
+              <span
+                >{$t("policy.implicit_rule_notice", {
+                  default: "This rule is managed by Zone settings.",
+                })}</span
+              >
+            </div>
+            <button
+              class="action-btn primary"
+              onclick={() => onPromote?.(rule)}
+            >
+              <Icon name="arrow_upward" size="sm" />
+              {$t("policy.promote_rule", { default: "Promote to Policy" })}
+            </button>
+          {:else}
+            <button class="action-btn primary" onclick={() => onEdit?.(rule)}>
+              <Icon name="edit" size="sm" />
+              Edit Rule
+            </button>
+            <button class="action-btn" onclick={() => onDuplicate?.(rule)}>
+              <Icon name="content_copy" size="sm" />
+              {$t("policy.duplicate_rule")}
+            </button>
+            <button
+              class="action-btn destructive"
+              onclick={() => rule.id && onDelete?.(rule.id)}
+            >
+              <Icon name="delete" size="sm" />
+              {$t("policy.delete_rule")}
+            </button>
+          {/if}
         </div>
       </div>
     </div>
@@ -374,7 +429,9 @@
   .heat-bar {
     height: 100%;
     border-radius: 3px;
-    transition: width 0.3s ease, background 0.3s ease;
+    transition:
+      width 0.3s ease,
+      background 0.3s ease;
   }
 
   .rate-label {
@@ -538,5 +595,29 @@
 
   .action-btn.primary:hover {
     filter: brightness(1.1);
+  }
+
+  .origin-badge {
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    background: var(--dashboard-input);
+    color: var(--dashboard-text-muted);
+    border: 1px dashed var(--dashboard-border);
+    cursor: help;
+  }
+
+  .implicit-notice {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--dashboard-text-muted);
+    padding: var(--space-2);
+    background: var(--dashboard-input);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-2);
   }
 </style>

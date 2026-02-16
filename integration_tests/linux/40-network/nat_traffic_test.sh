@@ -57,11 +57,15 @@ schema_version = "1.0"
 ip_forwarding = true
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 interface "veth-lan" {
@@ -114,11 +118,12 @@ EOF
 
 # Test 1: Create test topology
 diag "Creating network namespace topology..."
+teardown_test_topology
 setup_test_topology
 ok $? "Test topology created"
 
 # Test 2: Apply firewall rules with NAT config
-apply_firewall_rules "$TEST_CONFIG" /tmp/nat_traffic.log
+apply_firewall_rules "$TEST_CONFIG" /tmp/nat_traffic_$$.log
 ok $? "Firewall rules applied with NAT config"
 
 dilated_sleep 1
@@ -225,6 +230,6 @@ else
     diag "NAT table:"
     nft list table ip nat 2>/dev/null | head -20
     diag "Application Log:"
-    cat /tmp/nat_traffic.log | sed 's/^/# /'
+    cat /tmp/nat_traffic_$$.log | sed 's/^/# /'
     exit 1
 fi

@@ -25,7 +25,7 @@ This directory contains translation files for the Web UI.
 3. **Register in the app** - Edit `ui/src/lib/i18n.ts`:
    ```typescript
    import fr from '../locales/fr.json';
-   
+
    const translations = { en, fr };
    ```
 

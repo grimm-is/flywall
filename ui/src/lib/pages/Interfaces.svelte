@@ -9,51 +9,53 @@
   import {
     Card,
     Button,
-    Modal,
-    Input,
-    Select,
-    Badge,
     Spinner,
     Icon,
-    Toggle,
+    Modal,
   } from "$lib/components";
-  import InterfaceStateBadge from "$lib/components/InterfaceStateBadge.svelte";
+  import InterfaceCard from "$lib/components/InterfaceCard.svelte";
+  import VlanCreateCard from "$lib/components/VlanCreateCard.svelte";
+  import BondCreateCard from "$lib/components/BondCreateCard.svelte";
   import { t } from "svelte-i18n";
 
   let loading = $state(false);
-  let showVlanModal = $state(false);
-  let showBondModal = $state(false);
-  let showEditModal = $state(false);
-  let editingInterface = $state<any>(null);
+  let isAddingVlan = $state(false);
+  let isAddingBond = $state(false);
+
+  // Removed global edit modal state
   let interfaceStatus = $state<any[]>([]);
-
-  // VLAN form
-  let vlanParent = $state("");
-  let vlanId = $state("");
-  let vlanZone = $state("");
-  let vlanIp = $state("");
-
-  // Bond form
-  let bondName = $state("");
-  let bondZone = $state("");
-  let bondMode = $state("balance-rr");
-  let bondMembers = $state<string[]>([]);
-
-  // Edit form
-  let editDescription = $state("");
-  // Zone editing removed as per user request (deprecated field)
-  let editIpv4 = $state("");
-  let editDhcp = $state(false);
-  let editMtu = $state("");
-  let editGateway = $state("");
-  let editDisabled = $state(false);
 
   // Load runtime status
   onMount(async () => {
+    loading = true;
     try {
-      const res = await api.getInterfaces();
+      const [res, available] = await Promise.all([
+        api.getInterfaces(),
+        api.getAvailableInterfaces(),
+      ]);
+
       // Handle both array response and object with .interfaces property
       const rawData = Array.isArray(res) ? res : res.interfaces || [];
+      const availData = Array.isArray(available) ? available : [];
+
+      // Create a map of existing status for quick lookup
+      const statusMap = new Map(rawData.map((s: any) => [s.name, s]));
+
+      // Merge available interfaces that aren't in status
+      availData.forEach((avail: any) => {
+        if (!statusMap.has(avail.name)) {
+          // This is an unconfigured interface
+          rawData.push({
+            name: avail.name,
+            state: avail.link_up ? "up" : "down",
+            type: "ethernet", // Assuming mostly ethernet from available list
+            mac: avail.mac,
+            // Add other fields as needed
+            is_unconfigured: true,
+          });
+        }
+      });
+
       // Normalize API response (snake_case) to Component model (PascalCase)
       interfaceStatus = rawData.map((s: any) => ({
         ...s,
@@ -64,6 +66,8 @@
       }));
     } catch (e) {
       console.error("Failed to load interface status", e);
+    } finally {
+      loading = false;
     }
   });
 
@@ -71,56 +75,103 @@
   const rawInterfaces = $derived($config?.interfaces || []);
 
   // Merge static config with runtime status, OR use runtime status directly if no config
+  // Merge static config with runtime status to show ALL interface
   const interfaces = $derived.by(() => {
-    if (rawInterfaces.length === 0) {
-      // No config interfaces - show runtime status directly (simulator mode)
-      return interfaceStatus;
-    }
-    return rawInterfaces.map((iface: any) => {
-      const status = interfaceStatus.find((s) => s.Name === iface.Name);
-      return {
-        ...iface,
-        // Prefer runtime IPs if available, otherwise fallback to config
-        IPv4: status?.IPv4Addrs?.length ? status.IPv4Addrs : iface.IPv4,
-        State: status?.State || iface.State,
-      };
-    });
+    const configMap = new Map(rawInterfaces.map((i: any) => [i.Name, i]));
+    const statusMap = new Map(interfaceStatus.map((s: any) => [s.Name, s]));
+
+    // Union of all names
+    const allNames = new Set([...configMap.keys(), ...statusMap.keys()]);
+
+    return Array.from(allNames)
+      .map((name) => {
+        const configIface = configMap.get(name);
+        const statusIface = statusMap.get(name);
+
+        // Base object
+        const iface: any = configIface ? { ...configIface } : { Name: name };
+
+        // If only in status (unconfigured), mark it
+        if (!configIface && statusIface) {
+          iface.is_unconfigured = true;
+          // Infer type from name or status type if available
+        }
+
+        // Merge status details
+        if (statusIface) {
+          iface.IPv4 = statusIface.IPv4Addrs?.length
+            ? statusIface.IPv4Addrs
+            : iface.IPv4;
+          iface.State = statusIface.State;
+          // Propagate unconfigured state from status if set there (e.g. from onMount)
+          if (statusIface.is_unconfigured) {
+            iface.is_unconfigured = true;
+          }
+        }
+
+        return iface;
+      })
+      .sort((a, b) => a.Name.localeCompare(b.Name));
   });
 
-  // All hardware interfaces for bond creation (with availability status)
+  const memberOfMap = $derived.by(() => {
+    const map = new Map<string, string>();
+    interfaces.forEach((iface: any) => {
+      const type = getInterfaceType(iface);
+      if (type === "bond") {
+        const members = iface.Bond?.members || iface.Members || [];
+        members.forEach((m: string) => map.set(m, iface.Name));
+      }
+    });
+    return map;
+  });
+
+  // All hardware interfaces for bond creation
   const hardwareInterfaces = $derived(
     interfaces
       .filter((iface: any) => {
         // Hardware interfaces: not a VLAN (no '.'), not a bond (no 'bond' prefix)
-        return !iface.Name?.includes(".") && !iface.Name?.startsWith("bond");
+        // Also exclude other virtual types if known, but generally name check suffices for now
+        return (
+          !iface.Name?.includes(".") &&
+          !iface.Name?.startsWith("bond") &&
+          !iface.Name?.startsWith("wg") &&
+          !iface.Name?.startsWith("tun")
+        );
       })
       .map((iface: any) => {
-        // Check if already in a bond
-        const inBond = interfaces.some(
+        // Check if already in a bond (in CONFIG)
+        // We check rawInterfaces to see if it's bound in the persisted config
+        const inBond = rawInterfaces.some(
           (other: any) =>
             other.Bond?.members?.includes(iface.Name) ||
             other.Members?.includes(iface.Name),
         );
-        // Check if it IS a bond (has members)
+        // Check if it IS a bond (has members in CONFIG)
         const isBond =
           iface.Bond?.members?.length > 0 || iface.Members?.length > 0;
-        // Check if has an IP assigned (in use)
-        // Note: We check config IPv4/DHCP, as runtime IPs might just be auto-conf
+
+        // Check if has an IP assigned (in CONFIG)
         const hasIP =
           (iface.IPv4?.length > 0 && !iface.IPv4[0].startsWith("169.254")) ||
           iface.DHCP;
-        // Check if assigned to a zone
-        const hasZone = !!iface.Zone;
+
+        // Check if assigned to a zone (in CONFIG)
+        // Only check config for usage constraints
+        const configIface = rawInterfaces.find(
+          (i: any) => i.Name === iface.Name,
+        );
+        const hasZone = !!configIface?.Zone;
 
         const isAvailable = !inBond && !isBond && !hasIP && !hasZone;
         const usageReason = inBond
-          ? "in bond"
+          ? "in bond (staged)"
           : isBond
             ? "is bond"
             : hasIP
-              ? "has IP"
+              ? "has IP (staged)"
               : hasZone
-                ? "in zone"
+                ? "in zone (staged)"
                 : null;
 
         return {
@@ -135,7 +186,8 @@
     hardwareInterfaces.filter((i: any) => i.isAvailable),
   );
   const hasAnyHardwareInterfaces = $derived(hardwareInterfaces.length > 0);
-  const isDegradedBond = $derived(bondMembers.length === 1);
+
+  // NOTE: isDegradedBond is derived from form state in BondCreateCard, not page state anymore
 
   function getZoneColor(zoneName: string): string {
     const zone = zones.find((z: any) => z.name === zoneName);
@@ -156,130 +208,106 @@
       2,
   );
 
-  function openEditInterface(iface: any) {
-    editingInterface = iface;
-    editDescription = iface.Description || "";
-    editIpv4 = (iface.IPv4 || []).join(", ");
-    editDhcp = iface.DHCP || false;
-    editMtu = iface.MTU?.toString() || "";
-    editGateway = iface.Gateway || "";
-    editDisabled = iface.Disabled || false;
-    showEditModal = true;
-  }
-
-  async function saveInterfaceEdit() {
-    if (!editingInterface) return;
-
+  async function handleSaveInterface(event: CustomEvent) {
+    const data = event.detail;
     loading = true;
     try {
       await api.updateInterface({
-        name: editingInterface.Name,
-        action: "update", // Required by UpdateInterfaceArgs
-        description: editDescription || undefined,
-        ipv4: editIpv4
-          ? editIpv4
-              .split(",")
-              .map((s: string) => s.trim())
-              .filter(Boolean)
-          : undefined,
-        dhcp: editDhcp,
-        mtu: editMtu ? parseInt(editMtu) : undefined,
-        disabled: !!editDisabled,
-        // Note: gateway requires separate API endpoints or config updates
+        name: data.name,
+        action: "update",
+        description: data.description || undefined,
+        ipv4: data.ipv4, // InterfaceCard already formats this to string[]
+        dhcp: data.dhcp,
+        mtu: data.mtu,
+        disabled: !!data.disabled,
       });
-      showEditModal = false;
       // Refresh status
       interfaceStatus = await api.getInterfaces();
     } catch (e: any) {
-      alert(`Failed to update interface: ${e.message || e}`);
+      alert($t("interfaces.update_failed") + `: ${e.message || e}`);
       console.error("Failed to update interface:", e);
     } finally {
       loading = false;
     }
   }
 
-  function openAddVlan() {
-    vlanParent = interfaces[0]?.Name || "";
-    vlanId = "";
-    vlanZone = zones[0]?.name || "";
-    vlanIp = "";
-    showVlanModal = true;
+  function toggleAddVlan() {
+    isAddingVlan = !isAddingVlan;
+    isAddingBond = false;
   }
 
-  async function saveVlan() {
-    if (!vlanParent || !vlanId || !vlanZone) return;
+  function toggleAddBond() {
+    isAddingBond = !isAddingBond;
+    isAddingVlan = false;
+  }
 
+  async function handleCreateVlan(event: CustomEvent) {
     loading = true;
+    const { parent_interface, vlan_id, zone, ipv4 } = event.detail;
+
     try {
       await api.createVlan({
-        parent_interface: vlanParent,
-        vlan_id: parseInt(vlanId),
-        zone: vlanZone,
-        ipv4: vlanIp ? [vlanIp] : [],
+        parent_interface,
+        vlan_id,
+        zone,
+        ipv4,
       });
-      showVlanModal = false;
+      isAddingVlan = false;
     } catch (e: any) {
-      alert(`Failed to create VLAN: ${e.message || e}`);
+      alert($t("interfaces.vlan_create_failed") + `: ${e.message || e}`);
       console.error("Failed to create VLAN:", e);
     } finally {
       loading = false;
     }
   }
 
-  function openAddBond() {
-    bondName = "bond0";
-    bondZone = zones[0]?.name || "";
-    bondMode = "balance-rr";
-    bondMembers = [];
-    showBondModal = true;
-  }
-
-  function toggleBondMember(ifaceName: string) {
-    if (bondMembers.includes(ifaceName)) {
-      bondMembers = bondMembers.filter((m) => m !== ifaceName);
-    } else {
-      bondMembers = [...bondMembers, ifaceName];
-    }
-  }
-
-  async function saveBond() {
-    if (!bondName || !bondZone || bondMembers.length < 1) return;
-
+  async function handleCreateBond(event: CustomEvent) {
     loading = true;
+    const { name, zone, mode, interfaces } = event.detail;
+
     try {
       await api.createBond({
-        name: bondName,
-        zone: bondZone,
-        mode: bondMode,
-        interfaces: bondMembers,
+        name,
+        zone,
+        mode,
+        interfaces,
       });
-      showBondModal = false;
+      isAddingBond = false;
     } catch (e: any) {
-      alert(`Failed to create Bond: ${e.message || e}`);
+       // BondCreateCard displays error if it can, but here we just alert
+      alert($t("interfaces.bond_create_failed") + `: ${e.message || e}`);
       console.error("Failed to create Bond:", e);
     } finally {
       loading = false;
     }
   }
 
-  async function deleteInterface(iface: any) {
+  // Delete confirmation state
+  let showDeleteModal = $state(false);
+  let itemToDelete = $state<any>(null);
+
+  async function requestDelete(event: CustomEvent) {
+    itemToDelete = event.detail;
+    showDeleteModal = true;
+  }
+
+  async function confirmDelete() {
+    if (!itemToDelete) return;
+
+    loading = true;
+    const iface = itemToDelete;
     const type = getInterfaceType(iface);
     const name = iface.Name;
 
-    if (
-      !confirm(`Delete ${type} interface "${name}"? This cannot be undone.`)
-    ) {
-      return;
-    }
-
-    loading = true;
     try {
       if (type === "vlan") {
         await api.deleteVlan(name);
       } else if (type === "bond") {
         await api.deleteBond(name);
+      } else if (type === "ethernet") {
+        await api.updateInterface({ name, action: "delete" });
       } else {
-        alert("Only VLAN and Bond interfaces can be deleted.");
+        alert($t("interfaces.delete_not_supported"));
         return;
       }
       // Refresh interface status
@@ -291,8 +319,29 @@
         IPv4Addrs: s.ipv4_addrs,
         IPv6Addrs: s.ipv6_addrs,
       }));
+      showDeleteModal = false;
+      itemToDelete = null;
     } catch (e: any) {
-      alert(`Failed to delete interface: ${e.message || e}`);
+      const msg = e.message || e.toString();
+      if (msg.includes("interface not in configuration")) {
+        console.warn(
+          "Interface already removed from configuration, refreshing list.",
+        );
+        // Treat as success - the goal was to remove it, and it's gone.
+        const res = await api.getInterfaces();
+        interfaceStatus = (res.interfaces || []).map((s: any) => ({
+          ...s,
+          Name: s.name,
+          State: s.state,
+          IPv4Addrs: s.ipv4_addrs,
+          IPv6Addrs: s.ipv6_addrs,
+        }));
+        showDeleteModal = false;
+        itemToDelete = null;
+        return;
+      }
+
+      alert($t("interfaces.delete_failed") + `: ${msg}`);
       console.error("Failed to delete interface:", e);
     } finally {
       loading = false;
@@ -303,14 +352,14 @@
 <div class="interfaces-page">
   <div class="page-header">
     <div class="header-actions">
-      <Button variant="outline" onclick={openAddVlan}
-        >{$t("common.add_item", {
+      <Button variant={isAddingVlan ? "primary" : "outline"} onclick={toggleAddVlan}
+        ><Icon name="add" size={16} /> {$t("common.add_item", {
           values: { item: $t("item.vlan") },
         })}</Button
       >
       {#if canCreateBond}
-        <Button variant="outline" onclick={openAddBond}
-          >{$t("common.add_item", {
+        <Button variant={isAddingBond ? "primary" : "outline"} onclick={toggleAddBond}
+          ><Icon name="add" size={16} /> {$t("common.add_item", {
             values: { item: $t("item.bond") },
           })}</Button
         >
@@ -318,7 +367,36 @@
     </div>
   </div>
 
-  {#if interfaces.length === 0}
+  {#if isAddingVlan}
+      <div class="create-section mb-4">
+          <VlanCreateCard
+            {interfaces}
+            {zones}
+            {loading}
+            on:save={handleCreateVlan}
+            on:cancel={() => isAddingVlan = false}
+          />
+      </div>
+  {/if}
+
+  {#if isAddingBond}
+      <div class="create-section mb-4">
+          <BondCreateCard
+            {zones}
+            {hardwareInterfaces}
+            {loading}
+            on:save={handleCreateBond}
+            on:cancel={() => isAddingBond = false}
+          />
+      </div>
+  {/if}
+
+  {#if loading && interfaces.length === 0}
+    <div class="loading-state">
+      <Spinner size="lg" />
+      <p>{$t("common.loading")}</p>
+    </div>
+  {:else if interfaces.length === 0}
     <Card>
       <p class="empty-message">
         {$t("common.no_items", {
@@ -329,327 +407,45 @@
   {:else}
     <div class="interfaces-grid">
       {#each interfaces as iface (iface.Name)}
-        <Card>
-          <div class="iface-header">
-            <div class="iface-name-row">
-              <span class="iface-name">{iface.Name}</span>
-              {#if iface.Alias}<span class="iface-alias">({iface.Alias})</span
-                >{/if}
-              <Badge
-                variant={getInterfaceType(iface) === "ethernet"
-                  ? "outline"
-                  : "secondary"}
-              >
-                {getInterfaceType(iface)}
-              </Badge>
-              <InterfaceStateBadge
-                state={iface.State || (iface.Disabled ? "disabled" : "up")}
-                size="sm"
-              />
-            </div>
-            <div class="iface-actions">
-              <Button
-                variant="ghost"
-                size="sm"
-                onclick={() => openEditInterface(iface)}
-                title="Edit interface"><Icon name="edit" size="sm" /></Button
-              >
-              {#if getInterfaceType(iface) === "vlan" || getInterfaceType(iface) === "bond"}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onclick={() => deleteInterface(iface)}
-                  title="Delete interface"
-                  ><Icon name="trash" size="sm" /></Button
-                >
-              {/if}
-            </div>
-          </div>
-
-          {#if iface.Description}
-            <p class="iface-description">{iface.Description}</p>
-          {/if}
-
-          <div class="iface-details">
-            <div class="detail-row">
-              <span class="detail-label">{$t("item.zone")}:</span>
-              <span
-                class="zone-badge"
-                style="--zone-color: var(--zone-{getZoneColor(iface.Zone)})"
-                >{iface.Zone || $t("common.none")}</span
-              >
-            </div>
-
-            {#if iface.Vendor}
-              <div class="detail-row">
-                <span class="detail-label">{$t("common.vendor")}:</span>
-                <span class="detail-value">{iface.Vendor}</span>
-              </div>
-            {/if}
-
-            <div class="detail-row">
-              <span class="detail-label">{$t("interfaces.ipv4")}:</span>
-              <span class="detail-value mono">
-                {#if iface.DHCP && (!iface.IPv4 || iface.IPv4.length === 0)}
-                  {$t("interfaces.dhcp_acquiring")}
-                {:else if iface.IPv4?.length > 0}
-                  {iface.IPv4.join(", ")}
-                  {#if iface.DHCP}
-                    <span class="text-xs text-muted-foreground ml-1"
-                      >({$t("interfaces.dhcp")})</span
-                    >
-                  {/if}
-                {:else}
-                  {$t("common.none")}
-                {/if}
-              </span>
-            </div>
-
-            {#if iface.IPv6?.length > 0}
-              <div class="detail-row">
-                <span class="detail-label">{$t("interfaces.ipv6")}:</span>
-                <span class="detail-value mono">{iface.IPv6.join(", ")}</span>
-              </div>
-            {/if}
-
-            {#if iface.Gateway}
-              <div class="detail-row">
-                <span class="detail-label">{$t("common.gateway")}:</span>
-                <span class="detail-value mono">{iface.Gateway}</span>
-              </div>
-            {/if}
-
-            {#if iface.MTU}
-              <div class="detail-row">
-                <span class="detail-label">{$t("common.mtu")}:</span>
-                <span class="detail-value">{iface.MTU}</span>
-              </div>
-            {/if}
-
-            {#if iface.Bond?.members?.length > 0 || iface.Members?.length > 0}
-              <div class="detail-row">
-                <span class="detail-label"
-                  >{$t("interfaces.bond_members")}:</span
-                >
-                <span class="detail-value">
-                  {(iface.Bond?.members || iface.Members || []).join(", ")}
-                </span>
-              </div>
-            {/if}
-
-            {#if iface.VLANs?.length > 0}
-              <div class="detail-row">
-                <span class="detail-label">{$t("interfaces.vlans")}:</span>
-                <span class="detail-value">
-                  {iface.VLANs.map((v: any) => v.ID || v.id).join(", ")}
-                </span>
-              </div>
-            {/if}
-          </div>
-        </Card>
+        <div id="interface-{iface.Name}" style="width: 100%;">
+          <InterfaceCard
+            {iface}
+            {zones}
+            {loading}
+            {hardwareInterfaces}
+            memberOf={memberOfMap.get(iface.Name)}
+            on:save={handleSaveInterface}
+            on:delete={requestDelete}
+          />
+        </div>
       {/each}
     </div>
   {/if}
 </div>
 
-<!-- Edit Interface Modal -->
-<Modal
-  bind:open={showEditModal}
-  title={$t("common.edit_item", {
-    values: { item: editingInterface?.Name || $t("item.interface") },
-  })}
->
+<!-- Delete Confirmation Modal (Only modal remaining) -->
+<Modal bind:open={showDeleteModal} title={$t("common.confirm_delete")}>
   <div class="form-stack">
-    <Input
-      id="edit-description"
-      label={$t("common.description")}
-      bind:value={editDescription}
-      placeholder="e.g., Primary WAN"
-    />
-
-    <!-- Zone editing removed (deprecated) -->
-
-    <Toggle label={$t("interfaces.use_dhcp")} bind:checked={editDhcp} />
-
-    {#if !editDhcp}
-      <Input
-        id="edit-ipv4"
-        label={$t("interfaces.ipv4_list")}
-        bind:value={editIpv4}
-        placeholder="192.168.1.1/24, 192.168.1.2/24"
-      />
-
-      <Input
-        id="edit-gateway"
-        label={$t("common.gateway")}
-        bind:value={editGateway}
-        placeholder="192.168.1.254"
-      />
-    {/if}
-
-    <Input
-      id="edit-mtu"
-      label={$t("common.mtu")}
-      bind:value={editMtu}
-      placeholder="1500"
-      type="text"
-    />
-
-    <Toggle
-      label={$t("interfaces.interface_enabled")}
-      checked={!editDisabled}
-      onchange={(checked) => (editDisabled = !checked)}
-    />
-
-    <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showEditModal = false)}
-        >{$t("common.cancel")}</Button
-      >
-      <Button onclick={saveInterfaceEdit} disabled={loading}>
-        {#if loading}<Spinner size="sm" />{/if}
-        {$t("common.save")}
-      </Button>
-    </div>
-  </div>
-</Modal>
-
-<!-- VLAN Modal -->
-<Modal
-  bind:open={showVlanModal}
-  title={$t("common.add_item", { values: { item: $t("item.vlan") } })}
->
-  <div class="form-stack">
-    <Select
-      id="vlan-parent"
-      label={$t("interfaces.parent_interface")}
-      bind:value={vlanParent}
-      options={interfaces
-        .filter((i: any) => !i.Name?.includes("."))
-        .map((i: any) => ({ value: i.Name, label: i.Name }))}
-      required
-    />
-
-    <Input
-      id="vlan-id"
-      label={$t("interfaces.vlan_id")}
-      bind:value={vlanId}
-      placeholder="100"
-      type="number"
-      required
-    />
-
-    <Select
-      id="vlan-zone"
-      label={$t("item.zone")}
-      bind:value={vlanZone}
-      options={zones.map((z: any) => ({ value: z.name, label: z.name }))}
-      required
-    />
-
-    <Input
-      id="vlan-ip"
-      label={$t("interfaces.ipv4_list")}
-      bind:value={vlanIp}
-      placeholder="192.168.100.1/24"
-    />
-
-    <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showVlanModal = false)}
-        >{$t("common.cancel")}</Button
-      >
-      <Button onclick={saveVlan} disabled={loading}>
-        {#if loading}<Spinner size="sm" />{/if}
-        {$t("common.create_item", { values: { item: $t("item.vlan") } })}
-      </Button>
-    </div>
-  </div>
-</Modal>
-
-<!-- Bond Modal -->
-<Modal
-  bind:open={showBondModal}
-  title={$t("common.add_item", { values: { item: $t("item.bond") } })}
->
-  <div class="form-stack">
-    <Input
-      id="bond-name"
-      label={$t("common.name")}
-      bind:value={bondName}
-      placeholder="bond0"
-      required
-    />
-
-    <Select
-      id="bond-zone"
-      label={$t("item.zone")}
-      bind:value={bondZone}
-      options={zones.map((z: any) => ({ value: z.name, label: z.name }))}
-      required
-    />
-
-    <Select
-      id="bond-mode"
-      label={$t("interfaces.bond_mode")}
-      bind:value={bondMode}
-      options={[
-        { value: "balance-rr", label: "Round Robin (balance-rr)" },
-        { value: "active-backup", label: "Active Backup (active-backup)" },
-        { value: "balance-xor", label: "XOR (balance-xor)" },
-        { value: "broadcast", label: "Broadcast" },
-        { value: "802.3ad", label: "LACP (802.3ad)" },
-        { value: "balance-tlb", label: "Adaptive TLB (balance-tlb)" },
-        { value: "balance-alb", label: "Adaptive ALB (balance-alb)" },
-      ]}
-    />
-
-    <div class="member-selection">
-      <span class="member-label">{$t("interfaces.select_members")}</span>
-      <div class="member-list">
-        {#each hardwareInterfaces as iface}
-          <label class="member-item" class:disabled={!iface.isAvailable}>
-            <input
-              type="checkbox"
-              checked={bondMembers.includes(iface.Name)}
-              disabled={!iface.isAvailable}
-              onchange={() => toggleBondMember(iface.Name)}
-            />
-            <span class="member-name">{iface.Name}</span>
-            {#if !iface.isAvailable}
-              <span class="member-status">({iface.usageReason})</span>
-            {/if}
-          </label>
-        {/each}
-        {#if hardwareInterfaces.length === 0}
-          <p class="member-warning">{$t("interfaces.no_hardware")}</p>
-        {/if}
-      </div>
-
-      {#if availableInterfaces.length === 0}
-        <p class="member-warning">
-          ⚠️ {$t("interfaces.no_available")}
-        </p>
-      {:else if availableInterfaces.length === 1}
-        <p class="member-info">
-          ℹ️ {$t("interfaces.one_available")}
-        </p>
+    <p>
+      {#if itemToDelete}
+        {$t("interfaces.delete_confirm", {
+          values: {
+            type: getInterfaceType(itemToDelete),
+            name: itemToDelete.Name,
+          },
+        })}
+      {:else}
+        {$t("common.confirm_action")}
       {/if}
-
-      {#if isDegradedBond}
-        <p class="member-warning degraded">
-          ⚠️ {$t("interfaces.degraded_bond")}
-        </p>
-      {/if}
-    </div>
+    </p>
 
     <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showBondModal = false)}
+      <Button variant="ghost" onclick={() => (showDeleteModal = false)}
         >{$t("common.cancel")}</Button
       >
-      <Button onclick={saveBond} disabled={loading || bondMembers.length < 1}>
+      <Button variant="destructive" onclick={confirmDelete} disabled={loading}>
         {#if loading}<Spinner size="sm" />{/if}
-        {isDegradedBond
-          ? $t("common.create_item", { values: { item: $t("item.bond") } })
-          : $t("common.create_item", { values: { item: $t("item.bond") } })}
+        {$t("common.delete")}
       </Button>
     </div>
   </div>
@@ -660,12 +456,14 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-6);
+    padding: var(--space-4);
   }
 
   .page-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end; /* Align buttons to right */
+    gap: var(--space-4);
   }
 
   .header-actions {
@@ -679,143 +477,20 @@
     gap: var(--space-4);
   }
 
-  .iface-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: var(--space-2);
-  }
-
-  .iface-name-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-  }
-
-  .iface-name {
-    font-family: var(--font-mono);
-    font-weight: 600;
-    font-size: var(--text-lg);
-    color: var(--color-foreground);
-  }
-
-  .iface-actions {
-    display: flex;
-    gap: var(--space-1);
-  }
-
-  .iface-description {
-    color: var(--color-muted);
-    font-size: var(--text-sm);
-    margin: 0 0 var(--space-3) 0;
-  }
-
-  .iface-details {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    padding-top: var(--space-3);
-    border-top: 1px solid var(--color-border);
-  }
-
-  .detail-row {
-    display: flex;
-    justify-content: space-between;
-    font-size: var(--text-sm);
-  }
-
-  .detail-label {
-    color: var(--color-muted);
-  }
-
-  .detail-value {
-    color: var(--color-foreground);
-  }
-
-  .mono {
-    font-family: var(--font-mono);
-  }
-
-  .zone-badge {
-    display: inline-flex;
-    padding: var(--space-1) var(--space-2);
-    background-color: var(--zone-color, var(--color-muted));
-    color: white;
-    font-weight: 500;
-    font-size: var(--text-xs);
-    border-radius: var(--radius-sm);
-  }
-
   .empty-message {
     color: var(--color-muted);
     text-align: center;
     margin: 0;
   }
 
+  .create-section {
+      width: 100%;
+  }
+
   .form-stack {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-  }
-
-  .member-selection {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-
-  .member-label {
-    font-size: var(--text-sm);
-    font-weight: 500;
-    color: var(--color-foreground);
-  }
-
-  .member-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    padding: var(--space-3);
-    background-color: var(--color-backgroundSecondary);
-    border-radius: var(--radius-md);
-  }
-
-  .member-item {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    cursor: pointer;
-    font-size: var(--text-sm);
-  }
-
-  .member-item.disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .member-name {
-    color: var(--color-foreground);
-  }
-
-  .member-status {
-    color: var(--color-muted);
-    font-size: var(--text-xs);
-    font-style: italic;
-  }
-
-  .member-warning {
-    color: var(--color-warning, #f59e0b);
-    font-size: var(--text-sm);
-    margin: var(--space-2) 0 0 0;
-  }
-
-  .member-warning.degraded {
-    color: var(--color-destructive);
-  }
-
-  .member-info {
-    color: var(--color-muted);
-    font-size: var(--text-sm);
-    margin: var(--space-2) 0 0 0;
   }
 
   .modal-actions {
@@ -837,4 +512,16 @@
     --zone-cyan: #0891b2;
     --zone-gray: #6b7280;
   }
+
+  .loading-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-4);
+    padding: var(--space-12);
+    color: var(--color-muted);
+  }
+
+  .mb-4 { margin-bottom: var(--space-4); }
 </style>

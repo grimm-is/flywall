@@ -7,7 +7,7 @@ set -x
 #
 
 # Source common functions
-. "$(dirname "$0")/../../common.sh"
+. "$(dirname "$0")/../common.sh"
 
 require_binary
 
@@ -25,7 +25,11 @@ cat > "$CONFIG_FILE" <<EOF
 api {
     enabled = true
     listen = "127.0.0.1:8080"
-    require_auth = false
+    require_auth = true
+    key "admin-key" {
+        key = "testtoken"
+        permissions = ["vpn:write", "config:read", "config:write"]
+    }
 }
 EOF
 
@@ -33,6 +37,8 @@ EOF
 plan 4
 
 start_ctl "$CONFIG_FILE"
+start_api
+wait_for_api_ready 8080
 dilated_sleep 2
 
 # 3. Create a sample WireGuard config file
@@ -60,12 +66,13 @@ diag "Testing POST /api/vpn/import..."
 
 # Use curl to upload file
 RESPONSE=$(curl -s -X POST "http://127.0.0.1:8080/api/vpn/import" \
+    -H "X-API-Key: testtoken" \
     -F "file=@$IMPORT_FILE")
 
 diag "Response: $RESPONSE"
 
-if echo "$RESPONSE" | grep -q '"private_key":"aaaaaa"'; then
-    pass "Import successful (PrivateKey match)"
+if echo "$RESPONSE" | grep -q '"private_key":"******"'; then
+    pass "Import successful (PrivateKey present and masked)"
 else
     fail "Import failed (PrivateKey mismatch)"
 fi
@@ -106,6 +113,7 @@ PAYLOAD='{
 }'
 
 apply_response=$(curl -s -X POST "http://127.0.0.1:8080/api/config/vpn" \
+    -H "X-API-Key: testtoken" \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD")
 
@@ -115,4 +123,3 @@ else
     diag "Apply response: $apply_response"
     fail "Failed to save config"
 fi
-

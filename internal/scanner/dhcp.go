@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package scanner
 
 import (
@@ -16,7 +18,7 @@ func ExtractDHCP(packet gopacket.Packet, record *DeviceFingerprint) {
 	if layer := packet.Layer(layers.LayerTypeDHCPv4); layer != nil {
 		if udpLayer := packet.Layer(layers.LayerTypeUDP); udpLayer != nil {
 			udp, _ := udpLayer.(*layers.UDP)
-			
+
 			// Try parsing as DHCPv4
 			msg, err := dhcpv4.FromBytes(udp.Payload)
 			if err == nil && msg.MessageType() == dhcpv4.MessageTypeRequest {
@@ -29,7 +31,7 @@ func ExtractDHCP(packet gopacket.Packet, record *DeviceFingerprint) {
 					}
 					record.DHCPv4Params = hex.EncodeToString(bytes)
 				}
-				
+
 				// Option 60: Vendor Class Identifier
 				if vci := msg.ClassIdentifier(); vci != "" {
 					record.DHCPv4Vendor = vci

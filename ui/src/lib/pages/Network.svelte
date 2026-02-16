@@ -7,16 +7,9 @@
     import { onMount, onDestroy } from "svelte";
     import { get } from "svelte/store";
     import { leases, config, api, alertStore, topology } from "$lib/stores/app";
-    import {
-        Card,
-        Badge,
-        Input,
-        Modal,
-        Button,
-        Icon,
-        Spinner,
-    } from "$lib/components";
+    import { Card, Badge, Input, Button, Icon, Spinner } from "$lib/components";
     import TopologyGraph from "$lib/components/TopologyGraph.svelte";
+    import ClientEditCard from "$lib/components/ClientEditCard.svelte";
     import { t } from "svelte-i18n";
 
     // ... (state)
@@ -110,16 +103,10 @@
     // DEVICES TAB STATE
     let searchQuery = $state("");
     let editingClient = $state<any>(null);
-    let editModalOpen = $state(false);
+    let isEditingClient = $state(false);
     let discoveredDevices = $state<any[]>([]);
     let loadingDevices = $state(true);
-    let loadingTopology = $state(false); // Used for initial fetch spinner if store empty
-
-    // Edit State
-    let editAlias = $state("");
-    let editOwner = $state("");
-    let editType = $state("");
-    let editTags = $state("");
+    let loadingTopology = $state(false);
     let isSaving = $state(false);
 
     async function loadDiscoveredDevices() {
@@ -251,85 +238,63 @@
         label: string;
         variant: "default" | "secondary" | "destructive";
     } {
-        if (!iface) return { label: "unknown", variant: "secondary" };
+        if (!iface)
+            return { label: $t("network.unknown"), variant: "secondary" };
         const lower = iface.toLowerCase();
         if (lower.includes("wan") || lower === "eth0") {
-            return { label: "WAN", variant: "destructive" };
+            return { label: $t("network.wan"), variant: "destructive" };
         }
-        return { label: "LAN", variant: "default" };
+        return { label: $t("network.lan"), variant: "default" };
     }
 
     function openEdit(client: any) {
         editingClient = client;
-        editAlias = client.alias || "";
-        editOwner = client.owner || "";
-        editType = client.type || "";
-        editTags = (client.tags || []).join(", ");
-        editModalOpen = true;
+        isEditingClient = true;
     }
 
     function closeEdit() {
         editingClient = null;
-        editModalOpen = false;
+        isEditingClient = false;
     }
 
-    async function saveIdentity() {
-        if (!editingClient) return;
+    async function handleSaveClient(event: CustomEvent) {
+        const data = event.detail;
         isSaving = true;
-
         try {
-            const tags = editTags
-                .split(",")
-                .map((t) => t.trim())
-                .filter((t) => t);
             const alias =
-                editAlias ||
+                data.alias ||
                 editingClient.hostname ||
                 `Device-${editingClient.mac}`;
-
-            // Update Identity (Creates if ID is empty)
             const identity = await api.updateDeviceIdentity(
                 editingClient.device_id || "",
                 alias,
-                editOwner,
-                editType,
-                tags,
+                data.owner || "",
+                data.type || "",
+                data.tags || [],
             );
-
-            // If we didn't have an ID before, we must Link the MAC to the new Identity
+            // If we didn't have an ID before, link the MAC to the new Identity
             if (!editingClient.device_id && identity && identity.id) {
                 await api.linkDevice(editingClient.mac, identity.id);
             }
-
             alertStore.show($t("network.update_success"), "success");
-            // Refresh
-            loadDiscoveredDevices();
+            await loadDiscoveredDevices();
             closeEdit();
-        } catch (err: any) {
-            alertStore.show(
-                err.message || $t("network.update_failed"),
-                "error",
-            );
+        } catch (e: any) {
+            alertStore.error(e.message || "Failed to save device");
         } finally {
             isSaving = false;
         }
     }
 
-    async function unlinkIdentity() {
-        if (!editingClient || !editingClient.device_id) return;
-        if (!confirm($t("network.unlink_confirm"))) return;
-
+    async function handleUnlinkClient(event: CustomEvent) {
+        const { device_id } = event.detail;
         isSaving = true;
         try {
-            await api.unlinkDevice(editingClient.mac);
-            alertStore.show($t("network.device_unlinked"), "success");
-            loadDiscoveredDevices();
+            await api.unlinkDevice(device_id);
+            await loadDiscoveredDevices();
             closeEdit();
-        } catch (err: any) {
-            alertStore.show(
-                err.message || $t("network.unlink_failed"),
-                "error",
-            );
+        } catch (e: any) {
+            alertStore.error(e.message || "Failed to unlink device");
         } finally {
             isSaving = false;
         }
@@ -509,135 +474,17 @@
     {/if}
 </div>
 
-<Modal
-    bind:open={editModalOpen}
-    title={$t("common.edit_item", { values: { item: $t("item.device") } })}
->
-    <div class="edit-form">
-        {#if editingClient}
-            <div class="form-group">
-                <label for="mac">{$t("network.mac_address")}</label>
-                <code id="mac">{editingClient.mac}</code>
-            </div>
-
-            {#if editingClient.vendor}
-                <div class="form-group">
-                    <label for="vendor">{$t("network.vendor")}</label>
-                    <span id="vendor">{editingClient.vendor}</span>
-                </div>
-            {/if}
-
-            {#if editingClient.dhcp_fingerprint}
-                <div class="form-group">
-                    <label for="fp">{$t("network.dhcp_fingerprint")}</label>
-                    <code id="fp" style="font-size:0.8em"
-                        >{editingClient.dhcp_fingerprint}</code
-                    >
-                </div>
-            {/if}
-
-            <div class="form-group">
-                <label for="alias">{$t("network.alias")}</label>
-                <Input
-                    id="alias"
-                    bind:value={editAlias}
-                    placeholder={$t("network.friendly_name")}
-                />
-            </div>
-
-            <div class="form-group">
-                <label for="owner">{$t("network.owner")}</label>
-                <Input
-                    id="owner"
-                    bind:value={editOwner}
-                    placeholder={$t("network.owner_placeholder")}
-                />
-            </div>
-
-            <div class="form-group">
-                <label for="type">{$t("network.type")}</label>
-                <Input
-                    id="type"
-                    bind:value={editType}
-                    placeholder={$t("network.type_placeholder")}
-                />
-            </div>
-
-            <div class="form-group">
-                <label for="tags">{$t("network.tags")}</label>
-                <Input
-                    id="tags"
-                    bind:value={editTags}
-                    placeholder={$t("network.tags_placeholder")}
-                />
-            </div>
-
-            <div class="form-group">
-                <label for="raw">{$t("network.raw_attributes")}</label>
-                <div
-                    class="raw-data"
-                    style="font-size: 0.8em; color: var(--color-muted);"
-                >
-                    {#if editingClient.device_model}
-                        <div>
-                            <strong>{$t("network.model")}</strong>
-                            {editingClient.device_model}
-                        </div>
-                    {/if}
-                    {#if editingClient.mdns_hostname}
-                        <div>
-                            <strong>{$t("network.mdns_host")}</strong>
-                            {editingClient.mdns_hostname}
-                        </div>
-                    {/if}
-                    {#if editingClient.dhcp_vendor_class}
-                        <div>
-                            <strong>{$t("network.dhcp_vendor_class")}</strong>
-                            {editingClient.dhcp_vendor_class}
-                        </div>
-                    {/if}
-                    {#if editingClient.dhcp_client_id}
-                        <div>
-                            <strong>{$t("network.dhcp_client_id")}</strong>
-                            {editingClient.dhcp_client_id}
-                        </div>
-                    {/if}
-                    <details>
-                        <summary style="cursor: pointer; margin-top: 0.5rem;"
-                            >{$t("network.full_raw_data")}</summary
-                        >
-                        <pre
-                            style="background: var(--color-backgroundSecondary); padding: 0.5rem; border-radius: 4px; overflow: auto; margin-top: 0.5rem;">{JSON.stringify(
-                                editingClient,
-                                null,
-                                2,
-                            )}</pre>
-                    </details>
-                </div>
-            </div>
-
-            <div class="modal-actions">
-                {#if editingClient.device_id}
-                    <Button
-                        variant="destructive"
-                        onclick={unlinkIdentity}
-                        disabled={isSaving}
-                        >{$t("network.unlink_identity")}</Button
-                    >
-                {/if}
-                <div class="spacer"></div>
-                <Button variant="ghost" onclick={closeEdit} disabled={isSaving}
-                    >{$t("common.cancel")}</Button
-                >
-                <Button onclick={saveIdentity} disabled={isSaving}>
-                    {isSaving
-                        ? $t("network.saving")
-                        : $t("network.save_changes")}
-                </Button>
-            </div>
-        {/if}
+{#if isEditingClient && editingClient}
+    <div class="edit-overlay">
+        <ClientEditCard
+            client={editingClient}
+            loading={isSaving}
+            on:save={handleSaveClient}
+            on:cancel={closeEdit}
+            on:unlink={handleUnlinkClient}
+        />
     </div>
-</Modal>
+{/if}
 
 <style>
     .network-page {
@@ -781,5 +628,18 @@
     }
     .spacer {
         flex: 1;
+    }
+
+    .raw-summary {
+        cursor: pointer;
+        margin-top: 0.5rem;
+    }
+
+    .raw-json {
+        background: var(--color-backgroundSecondary);
+        padding: 0.5rem;
+        border-radius: 4px;
+        overflow: auto;
+        margin-top: 0.5rem;
     }
 </style>

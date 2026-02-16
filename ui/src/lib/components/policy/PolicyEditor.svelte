@@ -3,93 +3,111 @@
      * PolicyEditor - Main orchestrator for ClearPath Policy Editor
      * Dashboard-native styling using CSS variables
      */
-    import { onMount, onDestroy } from "svelte";
+    import { createEventDispatcher } from "svelte";
     import RuleRow from "./RuleRow.svelte";
     import Icon from "../Icon.svelte";
     import { t } from "svelte-i18n";
-    import {
-        rulesApi,
-        flatRules,
-        filteredRules,
-        groups,
-        selectedGroup,
-        isLoading,
-        lastError,
-        type RuleWithStats,
-    } from "$lib/stores/rules";
+    import { flip } from "svelte/animate";
+
+    // Define Rule interface locally or import from a types file
+    // For now we match the shape expected by RuleRow
+    export interface Rule {
+        id?: string;
+        name?: string;
+        action: string;
+        protocol?: string;
+        src_ipset?: string;
+        src_ip?: string | string[];
+        dest_ipset?: string;
+        dest_ip?: string | string[];
+        dest_port?: number | number[];
+        disabled?: boolean;
+        description?: string;
+        policy_from?: string;
+        policy_to?: string;
+        origin?: string;
+        // ... other fields
+        stats?: any;
+    }
 
     interface Props {
         title?: string;
         showGroupFilter?: boolean;
+        rules: Rule[];
+        isLoading?: boolean;
     }
 
-    let { title = "Firewall Rules", showGroupFilter = true }: Props = $props();
+    let {
+        title = "Firewall Rules",
+        showGroupFilter = true,
+        rules = [],
+        isLoading = false,
+    }: Props = $props();
 
-    // Load data on mount
-    onMount(() => {
-        rulesApi.loadGroups();
-        rulesApi.startStatsPolling();
+    const dispatch = createEventDispatcher();
+
+    // Grouping logic (derived)
+    let selectedGroup = $state<string | null>(null);
+
+    // Compute groups from rules
+    let groups = $derived.by(() => {
+        const map = new Map<string, number>();
+        rules.forEach((r) => {
+            // Group by Policy (From -> To)
+            const groupName =
+                r.policy_from && r.policy_to
+                    ? `${r.policy_from} → ${r.policy_to}`
+                    : "Global";
+            map.set(groupName, (map.get(groupName) || 0) + 1);
+        });
+        return Array.from(map.entries()).map(([name, count]) => ({
+            name,
+            count,
+        }));
     });
 
-    // Cleanup on destroy
-    onDestroy(() => {
-        rulesApi.stopStatsPolling();
+    // Filter rules
+    let filteredRules = $derived.by(() => {
+        if (!selectedGroup) return rules;
+        return rules.filter((r) => {
+            const groupName =
+                r.policy_from && r.policy_to
+                    ? `${r.policy_from} → ${r.policy_to}`
+                    : "Global";
+            return groupName === selectedGroup;
+        });
     });
 
     function handleGroupSelect(group: string | null) {
-        rulesApi.selectGroup(group);
+        selectedGroup = group;
     }
 
-    async function handleToggleRule(id: string, disabled: boolean) {
-        try {
-            await rulesApi.toggleRule(id, disabled);
-        } catch (e) {
-            alert(
-                `Failed to toggle rule: ${e instanceof Error ? e.message : e}`,
-            );
-        }
+    // Event Handlers (bubble up to parent)
+    function onToggle(id: string, disabled: boolean) {
+        dispatch("toggle", { id, disabled });
     }
 
-    async function handleDeleteRule(id: string) {
-        if (confirm("Delete this rule?")) {
-            try {
-                await rulesApi.deleteRule(id);
-            } catch (e) {
-                alert(
-                    `Failed to delete rule: ${e instanceof Error ? e.message : e}`,
-                );
-            }
-        }
+    function onDelete(id: string) {
+        dispatch("delete", { id });
     }
 
-    async function handleDuplicateRule(rule: RuleWithStats) {
-        try {
-            const newRule = {
-                ...rule,
-                name: `${rule.name || "Rule"} (Copy)`,
-                description: rule.description,
-            };
-            delete (newRule as any).id;
-            delete (newRule as any).stats;
-            await rulesApi.createRule(newRule);
-        } catch (e) {
-            alert(
-                `Failed to duplicate rule: ${e instanceof Error ? e.message : e}`,
-            );
-        }
+    function onEdit(rule: Rule) {
+        dispatch("edit", { rule });
     }
 
-    function handleEditRule(rule: RuleWithStats) {
-        // TODO: Open modal for editing
-        alert(
-            `Edit rule: ${rule.name || rule.id}\n\nRule editor modal coming soon.`,
-        );
+    function onDuplicate(rule: Rule) {
+        dispatch("duplicate", { rule });
     }
 
-    function handleCreateRule() {
-        // TODO: Open modal for creating
-        alert("Create Rule\n\nRule creator modal coming soon.");
+    function onPromote(rule: Rule) {
+        dispatch("promote", { rule });
     }
+
+    function onCreate() {
+        dispatch("create");
+    }
+
+    // No internal handlers - all actions bubble up via dispatch
 </script>
 
 <div class="policy-editor">
@@ -99,19 +117,19 @@
 
         <div class="header-actions">
             <!-- Group Filter -->
-            {#if showGroupFilter && $groups.length > 0}
+            {#if showGroupFilter && groups.length > 0}
                 <div class="group-filter">
                     <button
                         class="filter-btn"
-                        class:active={!$selectedGroup}
+                        class:active={!selectedGroup}
                         onclick={() => handleGroupSelect(null)}
                     >
                         {$t("policy.all")}
                     </button>
-                    {#each $groups as group (group.name)}
+                    {#each groups as group (group.name)}
                         <button
                             class="filter-btn"
-                            class:active={$selectedGroup === group.name}
+                            class:active={selectedGroup === group.name}
                             onclick={() => handleGroupSelect(group.name)}
                         >
                             {group.name}
@@ -122,7 +140,7 @@
             {/if}
 
             <!-- Add Rule Button -->
-            <button class="btn-primary" onclick={handleCreateRule}>
+            <button class="btn-primary" onclick={onCreate}>
                 <Icon name="add" size="sm" />
                 {$t("policy.add_rule")}
             </button>
@@ -131,35 +149,31 @@
 
     <!-- Content -->
     <div class="editor-content">
-        {#if $isLoading && $flatRules.length === 0}
+        {#if isLoading && rules.length === 0}
             <!-- Loading State -->
             <div class="state-container">
                 <div class="loading-pulse">{$t("policy.loading_rules")}</div>
             </div>
-        {:else if $lastError}
-            <!-- Error State -->
-            <div class="state-container">
-                <div class="error-message">{$lastError}</div>
-            </div>
-        {:else if $filteredRules.length === 0}
+        {:else if filteredRules.length === 0}
             <!-- Empty State -->
             <div class="state-container empty-state">
                 <Icon name="inbox" size="lg" />
                 <p>{$t("policy.no_rules")}</p>
-                <button class="btn-primary" onclick={handleCreateRule}>
+                <button class="btn-primary" onclick={onCreate}>
                     {$t("policy.create_first_rule")}
                 </button>
             </div>
         {:else}
             <!-- Rules List -->
             <div class="rules-list">
-                {#each $filteredRules as rule (rule.id || `${rule.policy_from}-${rule.policy_to}-${rule.name}`)}
+                {#each filteredRules as rule, i (rule.id || `${rule.policy_from}-${rule.policy_to}-${rule.name}-${i}`)}
                     <RuleRow
-                        {rule}
-                        onToggle={handleToggleRule}
-                        onEdit={handleEditRule}
-                        onDelete={handleDeleteRule}
-                        onDuplicate={handleDuplicateRule}
+                        rule={rule as any}
+                        {onToggle}
+                        {onEdit}
+                        {onDelete}
+                        {onDuplicate}
+                        {onPromote}
                     />
                 {/each}
             </div>
@@ -169,13 +183,13 @@
     <!-- Footer -->
     <div class="editor-footer">
         <div class="rule-count">
-            {$filteredRules.length} rule{$filteredRules.length !== 1 ? "s" : ""}
-            {#if $selectedGroup}
-                in "{$selectedGroup}"
+            {filteredRules.length} rule{filteredRules.length !== 1 ? "s" : ""}
+            {#if selectedGroup}
+                in "{selectedGroup}"
             {/if}
         </div>
         <div class="live-indicator">
-            {#if $isLoading}
+            {#if isLoading}
                 <span class="loading-pulse">{$t("policy.updating")}</span>
             {:else}
                 <span>{$t("policy.live_stats")}</span>
@@ -311,14 +325,6 @@
         50% {
             opacity: 0.5;
         }
-    }
-
-    .error-message {
-        padding: var(--space-3) var(--space-4);
-        background: rgba(239, 68, 68, 0.1);
-        border: 1px solid var(--color-destructive);
-        border-radius: var(--radius-md);
-        color: var(--color-destructive);
     }
 
     /* Footer */

@@ -9,7 +9,6 @@
   import {
     Card,
     Button,
-    Modal,
     Input,
     Select,
     Badge,
@@ -17,12 +16,20 @@
     Spinner,
     Icon,
   } from "$lib/components";
+  import RouteCreateCard from "$lib/components/RouteCreateCard.svelte";
+  import StaticRouteCard from "$lib/components/routing/StaticRouteCard.svelte";
+  import MarkRuleCard from "$lib/components/routing/MarkRuleCard.svelte";
+  import UidRuleCard from "$lib/components/routing/UidRuleCard.svelte";
   import { t } from "svelte-i18n";
 
   let loading = $state(false);
-  let showRouteModal = $state(false);
-  let editingIndex = $state<number | null>(null);
-  let isEditMode = $derived(editingIndex !== null);
+  let isEditingRoute = $state(false);
+  let isAddingRoute = $state(false);
+  let editingRouteIndex = $state<number | null>(null);
+  let isAddingMark = $state(false);
+  let editingMarkIndex = $state<number | null>(null);
+  let isAddingUid = $state(false);
+  let editingUidIndex = $state<number | null>(null);
 
   let activeTab = $state<"kernel" | "routes" | "marks" | "uid">("kernel");
 
@@ -66,23 +73,38 @@
     { key: "metric", label: "Metric" },
   ];
 
-  function openAddRoute() {
-    editingIndex = null;
-    routeDestination = "";
-    routeGateway = "";
-    routeInterface = interfaces[0]?.Name || "";
-    routeMetric = "100";
-    showRouteModal = true;
+  function toggleAddRoute() {
+    isAddingRoute = !isAddingRoute;
+  }
+
+  async function handleCreateRoute(event: CustomEvent) {
+    const data = event.detail;
+    loading = true;
+    try {
+      const newRoute = {
+        destination: data.destination,
+        gateway: data.gateway || undefined,
+        interface: data.interface || undefined,
+        metric: parseInt(data.metric) || 100,
+      };
+      const updatedRoutes = [...routes, newRoute];
+      await api.updateRoutes(updatedRoutes);
+      isAddingRoute = false;
+    } catch (e: any) {
+      console.error("Failed to add route:", e);
+    } finally {
+      loading = false;
+    }
   }
 
   function openEditRoute(index: number) {
-    editingIndex = index;
+    editingRouteIndex = index;
     const route = routes[index];
     routeDestination = route.destination || "";
     routeGateway = route.gateway || "";
     routeInterface = route.interface || "";
     routeMetric = route.metric?.toString() || "100";
-    showRouteModal = true;
+    isEditingRoute = true;
   }
 
   async function saveRoute() {
@@ -98,15 +120,16 @@
       };
 
       let updatedRoutes;
-      if (isEditMode && editingIndex !== null) {
+      if (editingRouteIndex !== null) {
         updatedRoutes = [...routes];
-        updatedRoutes[editingIndex] = newRoute;
+        updatedRoutes[editingRouteIndex] = newRoute;
       } else {
         updatedRoutes = [...routes, newRoute];
       }
 
       await api.updateRoutes(updatedRoutes);
-      showRouteModal = false;
+      isEditingRoute = false;
+      editingRouteIndex = null;
     } catch (e) {
       console.error("Failed to save route:", e);
     } finally {
@@ -127,7 +150,6 @@
   }
 
   // --- Mark Rules Logic ---
-  let showMarkModal = $state(false);
   // Mark Rule Form
   let mrName = $state("");
   let mrMark = $state("");
@@ -139,7 +161,7 @@
   let mrEnabled = $state(true);
 
   function openAddMarkRule() {
-    editingIndex = null;
+    editingMarkIndex = null;
     mrName = "";
     mrMark = "";
     mrSrcIP = "";
@@ -148,11 +170,11 @@
     mrOutInterface = "";
     mrSaveMark = true;
     mrEnabled = true;
-    showMarkModal = true;
+    isAddingMark = true;
   }
 
   function openEditMarkRule(index: number) {
-    editingIndex = index;
+    editingMarkIndex = index;
     const r = markRules[index];
     mrName = r.name || "";
     mrMark = r.mark?.toString() || "";
@@ -162,14 +184,13 @@
     mrOutInterface = r.out_interface || "";
     mrSaveMark = r.save_mark ?? true;
     mrEnabled = r.enabled ?? true;
-    showMarkModal = true;
+    isAddingMark = true;
   }
 
   async function saveMarkRule() {
     if (!mrName || !mrMark) return;
     loading = true;
     try {
-      // Send all mark rules
       const rule = {
         name: mrName,
         mark: parseInt(mrMark) || 0,
@@ -182,29 +203,15 @@
       };
 
       let updated = [...markRules];
-      if (isEditMode && editingIndex !== null) {
-        updated[editingIndex] = rule;
+      if (editingMarkIndex !== null) {
+        updated[editingMarkIndex] = rule;
       } else {
         updated.push(rule);
       }
 
-      // We need a specific endpoint or generic update.
-      // Implementation plan didn't specify endpoints for mark rules separately, usually all under /config
-      // But looking at api.ts, I need to add updateMarkRules method or generic config update
-      // For now, let's assume I'll add `updateMarkRules` to `api.ts`.
-      // Wait, I missed adding `updateMarkRules` in app.ts step!
-      // I will add generic support via /config/settings? No, that's settings.
-      // I'll stick to assumption that I can use a generic update or add it.
-      // Let's use `api.updateConfig({ mark_rules: updated })` if available, or I should have added `updateMarkRules`.
-      // I'll check app.ts again or just add it.
-      // Wait, `app.ts` does NOT have generic updateConfig. It has specific methods.
-      // I must assume I need to add one. BUT I am editing Routing.svelte right now.
-      // I will implement `api.updateMarkRules` in `app.ts` in NEXT step if I forgot.
-      // Actually, I can use a generic fetch here if I have to.
-      // But `api` object is imported.
-      // Let's assume `api.updateMarkRules` exists and I will add it to `app.ts` in a fix-up step.
       await (api as any).updateMarkRules(updated);
-      showMarkModal = false;
+      isAddingMark = false;
+      editingMarkIndex = null;
     } catch (e) {
       console.error(e);
     } finally {
@@ -233,29 +240,28 @@
   }
 
   // --- UID Routing Logic ---
-  let showUIDModal = $state(false);
   let uidName = $state("");
   let uidUID = $state("");
   let uidUplink = $state("");
   let uidEnabled = $state(true);
 
   function openAddUIDRule() {
-    editingIndex = null;
+    editingUidIndex = null;
     uidName = "";
     uidUID = "";
     uidUplink = "";
     uidEnabled = true;
-    showUIDModal = true;
+    isAddingUid = true;
   }
 
   function openEditUIDRule(index: number) {
-    editingIndex = index;
+    editingUidIndex = index;
     const r = uidRouting[index];
     uidName = r.name || "";
     uidUID = r.uid?.toString() || "";
     uidUplink = r.uplink || "";
     uidEnabled = r.enabled ?? true;
-    showUIDModal = true;
+    isAddingUid = true;
   }
 
   async function saveUIDRule() {
@@ -269,13 +275,14 @@
         enabled: uidEnabled,
       };
       let updated = [...uidRouting];
-      if (isEditMode && editingIndex !== null) {
-        updated[editingIndex] = rule;
+      if (editingUidIndex !== null) {
+        updated[editingUidIndex] = rule;
       } else {
         updated.push(rule);
       }
       await (api as any).updateUIDRouting(updated);
-      showUIDModal = false;
+      isAddingUid = false;
+      editingUidIndex = null;
     } catch (e) {
       console.error(e);
     } finally {
@@ -396,12 +403,26 @@
   {:else if activeTab === "routes"}
     <div class="sub-header">
       <h3>{$t("routing.static_routes")}</h3>
-      <Button onclick={openAddRoute} size="sm"
-        >+ {$t("common.add_item", {
-          values: { item: $t("item.static_route") },
-        })}</Button
+      <Button onclick={toggleAddRoute} size="sm"
+        >{isAddingRoute
+          ? $t("common.cancel")
+          : `+ ${$t("common.add_item", {
+              values: { item: $t("item.static_route") },
+            })}`}</Button
       >
     </div>
+
+    {#if isAddingRoute}
+      <div class="mb-4">
+        <RouteCreateCard
+          {loading}
+          {interfaces}
+          on:save={handleCreateRoute}
+          on:cancel={toggleAddRoute}
+        />
+      </div>
+    {/if}
+
     <Card>
       {#if routes.length === 0}
         <p class="empty-message">
@@ -554,145 +575,6 @@
     </Card>
   {/if}
 </div>
-
-<!-- Modal for MARK RULES -->
-<Modal
-  bind:open={showMarkModal}
-  title={isEditMode
-    ? $t("common.edit_item", { values: { item: $t("item.mark_rule") } })
-    : $t("common.add_item", { values: { item: $t("item.mark_rule") } })}
->
-  <div class="form-stack">
-    <Input
-      id="mr-name"
-      label={$t("common.name")}
-      bind:value={mrName}
-      required
-    />
-    <Input
-      id="mr-mark"
-      label={$t("routing.mark_int")}
-      bind:value={mrMark}
-      type="number"
-      required
-    />
-    <Input id="mr-src" label={$t("routing.source_ip")} bind:value={mrSrcIP} />
-    <Select
-      id="mr-iface"
-      label={$t("common.interface")}
-      bind:value={mrOutInterface}
-      options={[
-        { value: "", label: $t("routing.any") },
-        ...interfaces.map((i: any) => ({ value: i.Name, label: i.Name })),
-      ]}
-    />
-    <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showMarkModal = false)}
-        >{$t("common.cancel")}</Button
-      >
-      <Button onclick={saveMarkRule} disabled={loading}>
-        {#if loading}<Spinner size="sm" />{/if}
-        {$t("common.save")}
-      </Button>
-    </div>
-  </div>
-</Modal>
-
-<!-- Modal for UID RULES -->
-<Modal
-  bind:open={showUIDModal}
-  title={isEditMode
-    ? $t("common.edit_item", { values: { item: $t("item.uid_rule") } })
-    : $t("common.add_item", { values: { item: $t("item.uid_rule") } })}
->
-  <div class="form-stack">
-    <Input
-      id="uid-name"
-      label={$t("common.name")}
-      bind:value={uidName}
-      required
-    />
-    <Input
-      id="uid-uid"
-      label={$t("routing.uid")}
-      bind:value={uidUID}
-      type="number"
-      required
-    />
-    <Input
-      id="uid-uplink"
-      label={$t("routing.uplink_name")}
-      bind:value={uidUplink}
-      required
-    />
-    <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showUIDModal = false)}
-        >{$t("common.cancel")}</Button
-      >
-      <Button onclick={saveUIDRule} disabled={loading}>
-        {#if loading}<Spinner size="sm" />{/if}
-        {$t("common.save")}
-      </Button>
-    </div>
-  </div>
-</Modal>
-
-<!-- Add/Edit Route Modal -->
-<Modal
-  bind:open={showRouteModal}
-  title={isEditMode
-    ? $t("common.edit_item", { values: { item: $t("item.static_route") } })
-    : $t("common.add_item", { values: { item: $t("item.static_route") } })}
->
-  <div class="form-stack">
-    <Input
-      id="route-dest"
-      label={$t("routing.destination_cidr")}
-      bind:value={routeDestination}
-      placeholder="e.g., 10.0.0.0/8"
-      required
-    />
-
-    <Input
-      id="route-gateway"
-      label={$t("common.gateway")}
-      bind:value={routeGateway}
-      placeholder="e.g., 192.168.1.254"
-    />
-
-    <Select
-      id="route-interface"
-      label={$t("common.interface")}
-      bind:value={routeInterface}
-      options={[
-        { value: "", label: $t("routing.auto") },
-        ...interfaces.map((i: any) => ({ value: i.Name, label: i.Name })),
-      ]}
-    />
-
-    <Input
-      id="route-metric"
-      label={$t("routing.metric")}
-      bind:value={routeMetric}
-      placeholder="100"
-      type="number"
-    />
-
-    <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showRouteModal = false)}
-        >{$t("common.cancel")}</Button
-      >
-      <Button onclick={saveRoute} disabled={loading || !routeDestination}>
-        {#if loading}<Spinner size="sm" />{/if}
-        {isEditMode
-          ? $t("common.save")
-          : $t("common.add_item", {
-              values: { item: $t("item.static_route") },
-            })}
-      </Button>
-    </div>
-  </div>
-</Modal>
 
 <style>
   .routing-page {

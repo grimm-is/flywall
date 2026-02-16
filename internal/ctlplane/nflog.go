@@ -1,21 +1,24 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package ctlplane
 
 import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"grimm.is/flywall/internal/clock"
-	"grimm.is/flywall/internal/learning"
 	"log"
 	"net"
 	"sync"
 	"time"
 
+	"grimm.is/flywall/internal/clock"
+	"grimm.is/flywall/internal/learning"
+
 	"github.com/florianl/go-nflog/v2"
 )
 
-// NFLogGroup is the nflog group we listen on (must match nftables rules)
-const NFLogGroup = 100
+// DefaultLogGroup is the nflog group we listen on by default
+const DefaultLogGroup = 100
 
 // NFLogEntry represents a parsed netfilter log entry
 type NFLogEntry struct {
@@ -112,7 +115,7 @@ func (r *NFLogReader) Start() error {
 		return fmt.Errorf("failed to register nflog callback: %w", err)
 	}
 
-	log.Printf("[NFLOG] Listening on group %d", NFLogGroup)
+	log.Printf("[NFLOG] Listening on group %d", r.group)
 	return nil
 }
 

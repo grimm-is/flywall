@@ -12,7 +12,7 @@ require_root
 require_binary
 cleanup_on_exit
 
-CONFIG_FILE="/tmp/mac_vendor.hcl"
+CONFIG_FILE="/tmp/mac_vendor_$$.hcl"
 
 cat > "$CONFIG_FILE" <<EOF
 schema_version = "1.0"

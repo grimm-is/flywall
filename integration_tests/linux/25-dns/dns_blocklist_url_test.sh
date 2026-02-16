@@ -18,7 +18,7 @@ fi
 TEST_TIMEOUT=45
 BLOCKLIST_PORT=8088
 BLOCKLIST_URL="http://127.0.0.1:$BLOCKLIST_PORT/blocklist.txt"
-CONFIG_FILE="/tmp/dns_blocklist_url.hcl"
+CONFIG_FILE="/tmp/dns_blocklist_url_$$.hcl"
 
 # --- Setup HTTP Server ---
 
@@ -50,7 +50,9 @@ interface "lo" {
 }
 
 zone "local" {
-  interfaces = ["lo"]
+  match {
+    interface = "lo"
+  }
   services {
     dns = true
   }

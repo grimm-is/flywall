@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package scanner provides internal network service discovery.
 // It scans LAN hosts for common services that users may want to expose to the internet.
 package scanner
@@ -81,18 +83,20 @@ type ScanResult struct {
 
 // Scanner performs network service discovery
 type Scanner struct {
-	logger      *logging.Logger
-	timeout     time.Duration
-	concurrency int
-	mu          sync.Mutex
-	scanning    bool
-	lastResult  *ScanResult
+	logger            *logging.Logger
+	timeout           time.Duration
+	concurrency       int
+	disableReverseDNS bool
+	mu                sync.Mutex
+	scanning          bool
+	lastResult        *ScanResult
 }
 
 // Config holds scanner configuration
 type Config struct {
-	Timeout     time.Duration // Per-port timeout
-	Concurrency int           // Max concurrent connections
+	Timeout           time.Duration // Per-port timeout
+	Concurrency       int           // Max concurrent connections
+	DisableReverseDNS bool          // Skip reverse DNS lookups (for testing/isolation)
 }
 
 // DefaultConfig returns sensible defaults
@@ -112,9 +116,10 @@ func New(logger *logging.Logger, cfg Config) *Scanner {
 		cfg.Concurrency = 100
 	}
 	return &Scanner{
-		logger:      logger,
-		timeout:     cfg.Timeout,
-		concurrency: cfg.Concurrency,
+		logger:            logger,
+		timeout:           cfg.Timeout,
+		concurrency:       cfg.Concurrency,
+		disableReverseDNS: cfg.DisableReverseDNS,
 	}
 }
 
@@ -244,10 +249,12 @@ func (s *Scanner) scanHost(ctx context.Context, ip string) HostResult {
 		ScannedAt: start,
 	}
 
-	// Try reverse DNS
-	names, err := net.LookupAddr(ip)
-	if err == nil && len(names) > 0 {
-		result.Hostname = names[0]
+	// Try reverse DNS if allowed
+	if !s.disableReverseDNS {
+		names, err := net.LookupAddr(ip)
+		if err == nil && len(names) > 0 {
+			result.Hostname = names[0]
+		}
 	}
 
 	// Scan each common port

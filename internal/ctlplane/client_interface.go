@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package ctlplane
 
 import (
@@ -22,11 +24,15 @@ type ControlPlaneClient interface {
 
 	// --- Status & Config ---
 	GetStatus() (*Status, error)
+	GetMonitors() ([]MonitorResult, error)
 	GetReplicationStatus() (*GetReplicationStatusReply, error)
 	GetConfig() (*config.Config, error)
+	GetRunningConfig() (*config.Config, error)
+	GetForgivingResult() (*config.ForgivingLoadResult, error)
 	GetInterfaces() ([]InterfaceStatus, error)
 	GetServices() ([]ServiceStatus, error)
 	ApplyConfig(cfg *config.Config) error
+	DiscardConfig() error
 	RestartService(serviceName string) error
 	Reboot() error
 	GetDHCPLeases() ([]DHCPLease, error)

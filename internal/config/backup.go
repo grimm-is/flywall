@@ -1,15 +1,18 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package config provides configuration management including versioned backups.
 package config
 
 import (
 	"encoding/json"
 	"fmt"
-	"grimm.is/flywall/internal/clock"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"grimm.is/flywall/internal/clock"
 )
 
 // BackupManager handles versioned configuration backups.
@@ -76,7 +79,7 @@ func (b *BackupManager) CreateBackup(description string, isAuto bool) (*BackupIn
 	backupPath := filepath.Join(b.backupDir, filename)
 
 	// Write backup
-	if err := os.WriteFile(backupPath, data, 0644); err != nil {
+	if err := SecureWriteFile(backupPath, data); err != nil {
 		return nil, fmt.Errorf("failed to write backup: %w", err)
 	}
 
@@ -102,7 +105,9 @@ func (b *BackupManager) CreateBackup(description string, isAuto bool) (*BackupIn
 
 	metaPath := backupPath + ".meta.json"
 	metaData, _ := json.MarshalIndent(info, "", "  ")
-	os.WriteFile(metaPath, metaData, 0644)
+	if err := SecureWriteFile(metaPath, metaData); err != nil {
+		return nil, fmt.Errorf("failed to write metadata: %w", err)
+	}
 
 	// Prune old backups
 	b.pruneOldBackups()
@@ -237,7 +242,7 @@ func (b *BackupManager) RestoreBackupWithOptions(version int, autoMigrate bool) 
 	}
 
 	// Write restored content directly (no migration needed)
-	if err := os.WriteFile(b.configPath, content, 0644); err != nil {
+	if err := SecureWriteFile(b.configPath, content); err != nil {
 		return fmt.Errorf("failed to restore config: %w", err)
 	}
 
@@ -394,7 +399,7 @@ func (b *BackupManager) CreatePinnedBackup(description string) (*BackupInfo, err
 	// Update metadata
 	metaPath := backup.Path + ".meta.json"
 	metaData, _ := json.MarshalIndent(backup, "", "  ")
-	if err := os.WriteFile(metaPath, metaData, 0644); err != nil {
+	if err := SecureWriteFile(metaPath, metaData); err != nil {
 		return nil, fmt.Errorf("failed to update backup metadata: %w", err)
 	}
 
@@ -423,7 +428,7 @@ func (b *BackupManager) setBackupPinned(version int, pinned bool) error {
 	// Update metadata
 	metaPath := backup.Path + ".meta.json"
 	metaData, _ := json.MarshalIndent(backup, "", "  ")
-	if err := os.WriteFile(metaPath, metaData, 0644); err != nil {
+	if err := SecureWriteFile(metaPath, metaData); err != nil {
 		return fmt.Errorf("failed to update backup metadata: %w", err)
 	}
 

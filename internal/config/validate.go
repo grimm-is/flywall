@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 import (
@@ -66,6 +68,9 @@ func (c *Config) Validate() ValidationErrors {
 	// Validate zones
 	errs = append(errs, c.validateZones()...)
 
+	// Validate VRFs
+	errs = append(errs, c.validateVRFs()...)
+
 	// Validate interfaces
 	errs = append(errs, c.validateInterfaces()...)
 
@@ -83,6 +88,9 @@ func (c *Config) Validate() ValidationErrors {
 
 	// Validate routes
 	errs = append(errs, c.validateRoutes()...)
+
+	// Validate QoS policies
+	errs = append(errs, c.validateQoS()...)
 
 	return errs
 }
@@ -209,7 +217,7 @@ func (c *Config) validateInterfaces() ValidationErrors {
 	return errs
 }
 
-// validateInterfaceOverlaps checks for overlapping subnets across interfaces
+// validateInterfaceOverlaps checks for overlapping subnets across interfaces, respecting VRFs.
 func (c *Config) validateInterfaceOverlaps() ValidationErrors {
 	var errs ValidationErrors
 
@@ -217,12 +225,15 @@ func (c *Config) validateInterfaceOverlaps() ValidationErrors {
 		Name  string
 		IPNet *net.IPNet
 		CIDR  string
+		VRF   string
 	}
 
 	var networks []ifaceNet
 
-	// Collect all networks
+	// Collect all networks and their assigned VRFs
 	for _, iface := range c.Interfaces {
+		effectiveVRF := iface.VRF // Default to "" (global/main)
+
 		for _, addr := range iface.IPv4 {
 			_, ipnet, err := net.ParseCIDR(addr)
 			if err == nil {
@@ -230,10 +241,15 @@ func (c *Config) validateInterfaceOverlaps() ValidationErrors {
 					Name:  iface.Name,
 					IPNet: ipnet,
 					CIDR:  addr,
+					VRF:   effectiveVRF,
 				})
 			}
 		}
 		for _, vlan := range iface.VLANs {
+			// VLANs typically inherit parent's VRF unless we support per-VLAN VRF later.
+			// Current plan: Interface-level VRF applies to all VLANs on it too?
+			// Probably safer to assume yes for L3 domain consistency, or explicitly allow overriding.
+			// For now, assume inherited.
 			for _, addr := range vlan.IPv4 {
 				_, ipnet, err := net.ParseCIDR(addr)
 				if err == nil {
@@ -241,6 +257,7 @@ func (c *Config) validateInterfaceOverlaps() ValidationErrors {
 						Name:  fmt.Sprintf("%s.vlan%s", iface.Name, vlan.ID),
 						IPNet: ipnet,
 						CIDR:  addr,
+						VRF:   effectiveVRF,
 					})
 				}
 			}
@@ -253,16 +270,17 @@ func (c *Config) validateInterfaceOverlaps() ValidationErrors {
 			n1 := networks[i]
 			n2 := networks[j]
 
-			// Skip if same interface (technically alias IPs are allowed, but usually same subnet on same iface is alias)
-			// But if they are different subnets on same iface, it's advanced but allowed.
-			// The user concern is "eth0 vs eth1".
-			// So checks across different interfaces are primary.
+			// Skip if different VRFs (this is the key change for overlapping support)
+			if n1.VRF != n2.VRF {
+				continue
+			}
+
+			// Skip if same interface
 			if n1.Name == n2.Name {
-				// Same interface.
 				if n1.IPNet.String() == n2.IPNet.String() {
 					errs = append(errs, ValidationError{
 						Field:   fmt.Sprintf("interfaces[%s]", n1.Name),
-						Message: fmt.Sprintf("duplicate subnet %s on same interface", n1.CIDR),
+						Message: fmt.Sprintf("duplicate subnet %s on same interface (VRF: %s)", n1.CIDR, n1.VRF),
 					})
 				}
 				continue
@@ -270,12 +288,68 @@ func (c *Config) validateInterfaceOverlaps() ValidationErrors {
 
 			// Check overlap
 			if netsOverlap(n1.IPNet, n2.IPNet) {
+				vrfMsg := n1.VRF
+				if vrfMsg == "" {
+					vrfMsg = "default"
+				}
 				errs = append(errs, ValidationError{
 					Field:    "interfaces",
-					Message:  fmt.Sprintf("overlapping subnets detected: %s (%s) and %s (%s)", n1.Name, n1.CIDR, n2.Name, n2.CIDR),
-					Severity: "error", // High risk
+					Message:  fmt.Sprintf("overlapping subnets detected in VRF '%s': %s (%s) and %s (%s)", vrfMsg, n1.Name, n1.CIDR, n2.Name, n2.CIDR),
+					Severity: "error",
 				})
 			}
+		}
+	}
+
+	return errs
+}
+
+func (c *Config) validateVRFs() ValidationErrors {
+	var errs ValidationErrors
+	seen := make(map[string]bool)
+	seenIDs := make(map[int]bool)
+
+	for i, vrf := range c.VRFs {
+		field := fmt.Sprintf("vrfs[%d]", i)
+
+		if vrf.Name == "" {
+			errs = append(errs, ValidationError{
+				Field:   field + ".name",
+				Message: "VRF name is required",
+			})
+		}
+
+		if seen[vrf.Name] {
+			errs = append(errs, ValidationError{
+				Field:   field + ".name",
+				Message: fmt.Sprintf("duplicate VRF name: %s", vrf.Name),
+			})
+		}
+		seen[vrf.Name] = true
+
+		if vrf.TableID <= 0 || vrf.TableID > 4294967295 {
+			errs = append(errs, ValidationError{
+				Field:   field + ".table_id",
+				Message: fmt.Sprintf("invalid VRF table ID: %d", vrf.TableID),
+			})
+		}
+
+		if seenIDs[vrf.TableID] {
+			errs = append(errs, ValidationError{
+				Field:   field + ".table_id",
+				Message: fmt.Sprintf("duplicate VRF table ID: %d", vrf.TableID),
+			})
+		}
+		seenIDs[vrf.TableID] = true
+	}
+
+	// Check that interfaces reference valid VRFs
+	for i, iface := range c.Interfaces {
+		if iface.VRF != "" && !seen[iface.VRF] {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("interfaces[%d].vrf", i),
+				Message: fmt.Sprintf("unknown VRF: %s", iface.VRF),
+			})
 		}
 	}
 
@@ -342,18 +416,25 @@ func (c *Config) validateIPSets() ValidationErrors {
 			}
 		}
 
-		// Validate FireHOL list name
-		if ipset.FireHOLList != "" {
-			validLists := map[string]bool{
-				"firehol_level1": true, "firehol_level2": true, "firehol_level3": true,
-				"spamhaus_drop": true, "spamhaus_edrop": true,
-				"dshield": true, "blocklist_de": true,
-				"feodo": true, "tor_exits": true, "fullbogons": true,
+		// Validate Managed List (generic)
+		if ipset.ManagedList != "" {
+			if !isValidSetName(ipset.ManagedList) {
+				errs = append(errs, ValidationError{
+					Field:   field + ".managed_list",
+					Message: fmt.Sprintf("invalid managed list name: %s", ipset.ManagedList),
+				})
 			}
-			if !validLists[ipset.FireHOLList] {
+		}
+
+		// Validate FireHOL list name (legacy validation kept for backward compat)
+		if ipset.FireHOLList != "" {
+			// We no longer strictly validate against a hardcoded map here
+			// because the lists are now dynamic.
+			// However, simple format check is good.
+			if !isValidSetName(ipset.FireHOLList) {
 				errs = append(errs, ValidationError{
 					Field:   field + ".firehol_list",
-					Message: fmt.Sprintf("unknown FireHOL list: %s", ipset.FireHOLList),
+					Message: fmt.Sprintf("invalid FireHOL list name: %s", ipset.FireHOLList),
 				})
 			}
 		}
@@ -596,6 +677,37 @@ func (c *Config) validateRoutes() ValidationErrors {
 	return errs
 }
 
+func (c *Config) validateQoS() ValidationErrors {
+	var errs ValidationErrors
+
+	for i, policy := range c.QoSPolicies {
+		field := fmt.Sprintf("qos_policies[%d]", i)
+
+		if policy.Interface == "" {
+			errs = append(errs, ValidationError{
+				Field:   field + ".interface",
+				Message: "interface is required",
+			})
+		}
+
+		if policy.DownloadMbps < 0 {
+			errs = append(errs, ValidationError{
+				Field:   field + ".download_mbps",
+				Message: fmt.Sprintf("download_mbps cannot be negative: %d", policy.DownloadMbps),
+			})
+		}
+
+		if policy.UploadMbps < 0 {
+			errs = append(errs, ValidationError{
+				Field:   field + ".upload_mbps",
+				Message: fmt.Sprintf("upload_mbps cannot be negative: %d", policy.UploadMbps),
+			})
+		}
+	}
+
+	return errs
+}
+
 // Helper functions
 
 func (c *Config) getDefinedZones() map[string]bool {
@@ -620,91 +732,11 @@ func (c *Config) getDefinedZones() map[string]bool {
 	return zones
 }
 
-// NormalizeZoneMappings unifies zone-interface mappings from both syntaxes:
-//   - Zone-centric: zone "wan" { interfaces = ["eth0"] }
-//   - Interface-centric (legacy): interface "eth0" { zone = "wan" }
-//
-// After normalization, all zone.Interfaces arrays are populated AND all iface.Zone fields are set.
+// NormalizeZoneMappings is a no-op. Zone-interface normalization is now handled
+// by the canonicalizeZones post-load migration which converts all syntaxes to zone.Matches.
 func (c *Config) NormalizeZoneMappings() {
-	// Build map of zone name -> zone INDEX (not pointer, to survive slice reallocation)
-	zoneIndex := make(map[string]int)
-	for i := range c.Zones {
-		zoneIndex[c.Zones[i].Name] = i
-	}
-
-	// Helper to get zone by name, returning nil if not found
-	getZone := func(name string) *Zone {
-		if idx, ok := zoneIndex[name]; ok {
-			return &c.Zones[idx]
-		}
-		return nil
-	}
-
-	// Helper to add a new zone and update the index
-	addZone := func(z Zone) *Zone {
-		c.Zones = append(c.Zones, z)
-		idx := len(c.Zones) - 1
-		zoneIndex[z.Name] = idx
-		return &c.Zones[idx]
-	}
-
-	// 1. Process zone-centric config: zone "name" { interfaces = [...] }
-	// We need to populate iface.Zone for these interfaces if not already set
-	ifaceMap := make(map[string]*Interface)
-	for i := range c.Interfaces {
-		ifaceMap[c.Interfaces[i].Name] = &c.Interfaces[i]
-	}
-
-	for _, zone := range c.Zones {
-		for _, ifaceName := range zone.Interfaces {
-			if iface, exists := ifaceMap[ifaceName]; exists {
-				// Set interface zone if empty (prefer zone definition in new syntax)
-				if iface.Zone == "" {
-					iface.Zone = zone.Name
-				}
-			}
-		}
-	}
-
-	// 2. Process interface-centric (legacy): interface "name" { zone = "..." }
-	// We need to add these interfaces to the zone's interface list
-	for _, iface := range c.Interfaces {
-		if iface.Zone != "" {
-			zone := getZone(iface.Zone)
-			if zone == nil {
-				// Create implicit zone for this interface-referenced zone
-				zone = addZone(Zone{
-					Name:       iface.Zone,
-					Interfaces: []string{iface.Name},
-				})
-			} else {
-				// Add interface to existing zone if not already present
-				if !containsString(zone.Interfaces, iface.Name) {
-					zone.Interfaces = append(zone.Interfaces, iface.Name)
-				}
-			}
-		}
-
-		// Process VLAN zones
-		for _, vlan := range iface.VLANs {
-			if vlan.Zone != "" {
-				vlanIfaceName := fmt.Sprintf("%s.%s", iface.Name, vlan.ID)
-				zone := getZone(vlan.Zone)
-				if zone == nil {
-					addZone(Zone{
-						Name:       vlan.Zone,
-						Interfaces: []string{vlanIfaceName},
-					})
-				} else {
-					if !containsString(zone.Interfaces, vlanIfaceName) {
-						zone.Interfaces = append(zone.Interfaces, vlanIfaceName)
-					}
-				}
-			}
-		}
-	}
+	// No-op: migration handles this
 }
-
 
 func containsString(slice []string, s string) bool {
 	for _, item := range slice {
@@ -765,4 +797,291 @@ func (c *Config) NormalizePolicies() {
 			p.Name = fmt.Sprintf("%s-to-%s", p.From, p.To)
 		}
 	}
+}
+
+// IntentValidator validates configuration intent and detects logical conflicts
+type IntentValidator struct {
+	config *Config
+}
+
+// NewIntentValidator creates a new intent validator
+func NewIntentValidator(config *Config) *IntentValidator {
+	return &IntentValidator{config: config}
+}
+
+// ValidateIntent checks for logical conflicts and unintended consequences
+func (iv *IntentValidator) ValidateIntent() []ValidationError {
+	var errors []ValidationError
+
+	// Check for conflicting rules
+	errors = append(errors, iv.checkRuleConflicts()...)
+
+	// Check for overlapping zones
+	errors = append(errors, iv.checkZoneOverlap()...)
+
+	// Check for routing loops
+	errors = append(errors, iv.checkRoutingLoops()...)
+
+	// Check for security implications
+	errors = append(errors, iv.checkSecurityImplications()...)
+
+	// Check for interface consistency
+	errors = append(errors, iv.checkInterfaceConsistency()...)
+
+	return errors
+}
+
+// checkRuleConflicts looks for conflicting rules between the same zones
+func (iv *IntentValidator) checkRuleConflicts() []ValidationError {
+	var errors []ValidationError
+
+	// Build policy lookup
+	policyMap := make(map[string]*Policy)
+	for i := range iv.config.Policies {
+		key := fmt.Sprintf("%s->%s", iv.config.Policies[i].From, iv.config.Policies[i].To)
+		policyMap[key] = &iv.config.Policies[i]
+	}
+
+	// Check each policy for internal conflicts
+	for key, policy := range policyMap {
+		for i, rule1 := range policy.Rules {
+			for j, rule2 := range policy.Rules {
+				if i >= j {
+					continue // Avoid duplicate checks
+				}
+
+				if iv.rulesConflict(rule1, rule2) {
+					errors = append(errors, ValidationError{
+						Field:   "policies",
+						Message: fmt.Sprintf("conflicting rules in same policy: %s rules[%d] vs rules[%d]", key, i, j),
+					})
+				}
+			}
+		}
+	}
+
+	return errors
+}
+
+// rulesConflict checks if two rules have overlapping criteria but conflicting actions
+func (iv *IntentValidator) rulesConflict(rule1, rule2 PolicyRule) bool {
+	// Skip if same action
+	if rule1.Action == rule2.Action {
+		return false
+	}
+
+	// Check for overlapping match criteria
+	protocolMatch := rule1.Protocol == "" || rule2.Protocol == "" || rule1.Protocol == rule2.Protocol
+	portMatch := rule1.DestPort == 0 || rule2.DestPort == 0 || rule1.DestPort == rule2.DestPort
+	srcIPMatch := iv.ipSetsOverlap(rule1.SrcIP, rule1.SrcIPSet, rule2.SrcIP, rule2.SrcIPSet)
+	dstIPMatch := iv.ipSetsOverlap(rule1.DestIP, rule1.DestIPSet, rule2.DestIP, rule2.DestIPSet)
+
+	// Rules conflict if they match on all criteria
+	return protocolMatch && portMatch && srcIPMatch && dstIPMatch
+}
+
+func (iv *IntentValidator) ipSetsOverlap(ip1, set1, ip2, set2 string) bool {
+	// Handle empty (match all)
+	if (ip1 == "" && set1 == "") || (ip2 == "" && set2 == "") {
+		return true
+	}
+
+	// Simple string match for now - could be enhanced with actual IP set parsing
+	return ip1 == ip2 && set1 == set2
+}
+
+// checkZoneOverlap checks for interfaces assigned to multiple zones
+func (iv *IntentValidator) checkZoneOverlap() []ValidationError {
+	var errors []ValidationError
+
+	// Check if interfaces belong to multiple zones
+	interfaceZones := make(map[string][]string)
+	for _, iface := range iv.config.Interfaces {
+		if iface.Zone != "" {
+			interfaceZones[iface.Name] = append(interfaceZones[iface.Name], iface.Zone)
+		}
+	}
+
+	for iface, zones := range interfaceZones {
+		if len(zones) > 1 {
+			errors = append(errors, ValidationError{
+				Field:   "interfaces",
+				Message: fmt.Sprintf("interface %s assigned to multiple zones: %v", iface, zones),
+			})
+		}
+	}
+
+	// Check for undefined zones referenced by interfaces
+	zoneMap := make(map[string]bool)
+	for _, zone := range iv.config.Zones {
+		zoneMap[zone.Name] = true
+	}
+
+	for _, iface := range iv.config.Interfaces {
+		if iface.Zone != "" && !zoneMap[iface.Zone] {
+			errors = append(errors, ValidationError{
+				Field:   "interfaces",
+				Message: fmt.Sprintf("interface %s references undefined zone: %s", iface.Name, iface.Zone),
+			})
+		}
+	}
+
+	return errors
+}
+
+// checkRoutingLoops checks for potential routing loops
+func (iv *IntentValidator) checkRoutingLoops() []ValidationError {
+	var errors []ValidationError
+
+	// Build routing graph
+	routes := make(map[string][]string) // interface -> gateways
+	for _, route := range iv.config.Routes {
+		if route.Gateway != "" {
+			routes[route.Interface] = append(routes[route.Interface], route.Gateway)
+		}
+	}
+
+	// Simple loop detection
+	visited := make(map[string]bool)
+	recStack := make(map[string]bool)
+
+	for iface := range routes {
+		if !visited[iface] {
+			if iv.hasRouteLoop(iface, routes, visited, recStack) {
+				errors = append(errors, ValidationError{
+					Field:   "routes",
+					Message: fmt.Sprintf("potential routing loop detected for interface: %s", iface),
+				})
+			}
+		}
+	}
+
+	return errors
+}
+
+// hasRouteLoop performs DFS to detect loops in routing
+func (iv *IntentValidator) hasRouteLoop(iface string, routes map[string][]string, visited, recStack map[string]bool) bool {
+	visited[iface] = true
+	recStack[iface] = true
+
+	for _, nextHop := range routes[iface] {
+		if !visited[nextHop] {
+			if iv.hasRouteLoop(nextHop, routes, visited, recStack) {
+				return true
+			}
+		} else if recStack[nextHop] {
+			return true // Found a back edge (loop)
+		}
+	}
+
+	recStack[iface] = false
+	return false
+}
+
+// checkSecurityImplications checks for security issues
+func (iv *IntentValidator) checkSecurityImplications() []ValidationError {
+	var errors []ValidationError
+
+	// Check for overly permissive rules
+	for i, policy := range iv.config.Policies {
+		for j, rule := range policy.Rules {
+			if iv.isOverlyPermissive(rule) {
+				errors = append(errors, ValidationError{
+					Field:   "policies",
+					Message: fmt.Sprintf("overly permissive rule detected in policies[%d].rules[%d]: allows all traffic", i, j),
+				})
+			}
+		}
+	}
+
+	// Check for policies from internet to internal zones
+	for i, policy := range iv.config.Policies {
+		if iv.isInternetZone(policy.From) && !iv.isInternetZone(policy.To) {
+			for j, rule := range policy.Rules {
+				if rule.Action == "accept" && iv.isBroadRule(rule) {
+					errors = append(errors, ValidationError{
+						Field:   "policies",
+						Message: fmt.Sprintf("internet to internal zone allows broad access in policies[%d].rules[%d]", i, j),
+					})
+				}
+			}
+		}
+	}
+
+	return errors
+}
+
+// checkInterfaceConsistency validates interface configurations
+func (iv *IntentValidator) checkInterfaceConsistency() []ValidationError {
+	var errors []ValidationError
+
+	// Check for duplicate interface names
+	ifaceNames := make(map[string]bool)
+	for i, iface := range iv.config.Interfaces {
+		if iface.Name == "" {
+			errors = append(errors, ValidationError{
+				Field:   "interfaces",
+				Message: fmt.Sprintf("interfaces[%d]: interface name is required", i),
+			})
+			continue
+		}
+
+		if ifaceNames[iface.Name] {
+			errors = append(errors, ValidationError{
+				Field:   "interfaces",
+				Message: fmt.Sprintf("duplicate interface name: %s", iface.Name),
+			})
+		}
+		ifaceNames[iface.Name] = true
+
+		// Validate IP addresses
+		for j, ip := range iface.IPv4 {
+			if _, _, err := net.ParseCIDR(ip); err != nil {
+				errors = append(errors, ValidationError{
+					Field:   "interfaces",
+					Message: fmt.Sprintf("%s.ipv4[%d] = %s: invalid IPv4 CIDR format", iface.Name, j, ip),
+				})
+			}
+		}
+
+		// Check VLAN consistency - Interface struct doesn't have VLANParent field
+		// This would need to be implemented if VLAN support is added
+		// if iface.VLANParent != "" {
+		// 	found := false
+		// 	for _, parent := range iv.config.Interfaces {
+		// 		if parent.Name == iface.VLANParent {
+		// 			found = true
+		// 			break
+		// 		}
+		// 	}
+		// 	if !found {
+		// 		errors = append(errors, ValidationError{
+		// 			Field:   "interfaces",
+		// 			Message: fmt.Sprintf("%s.vlan_parent = %s: VLAN parent interface not found", iface.Name, iface.VLANParent),
+		// 		})
+		// 	}
+		// }
+	}
+
+	return errors
+}
+
+func (iv *IntentValidator) isOverlyPermissive(rule PolicyRule) bool {
+	return (rule.SrcIP == "" && rule.SrcIPSet == "") &&
+		(rule.DestIP == "" && rule.DestIPSet == "") &&
+		(rule.DestPort == 0 && len(rule.DestPorts) == 0) &&
+		(rule.Protocol == "" || rule.Protocol == "any") &&
+		rule.Service == "" && len(rule.Services) == 0 &&
+		rule.Action == "accept"
+}
+
+// isInternetZone checks if a zone represents the internet
+func (iv *IntentValidator) isInternetZone(zone string) bool {
+	return zone == "internet" || zone == "wan" || zone == "external"
+}
+
+func (iv *IntentValidator) isBroadRule(rule PolicyRule) bool {
+	return (rule.SrcIP == "" || rule.SrcIP == "0.0.0.0/0") &&
+		(rule.DestIP == "" || rule.DestIP == "0.0.0.0/0") &&
+		(rule.DestPort == 0 || rule.DestPort == -1)
 }

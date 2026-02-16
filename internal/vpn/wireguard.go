@@ -1,8 +1,9 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package vpn
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"grimm.is/flywall/internal/clock"
+	"grimm.is/flywall/internal/config"
+	"grimm.is/flywall/internal/errors"
 
 	"grimm.is/flywall/internal/logging"
 
@@ -20,34 +23,36 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
+// SecureString is now defined in types.go
+
 // WireGuardConfig represents WireGuard VPN configuration.
 type WireGuardConfig struct {
-	Name             string          `hcl:"name,label" json:"name,omitempty"`
-	Enabled          bool            `hcl:"enabled" json:"enabled"`
-	Interface        string          `hcl:"interface" json:"interface"`
-	ManagementAccess bool            `hcl:"management_access" json:"management_access"`
-	Zone             string          `hcl:"zone" json:"zone,omitempty"`
-	PrivateKey       string          `hcl:"private_key" json:"private_key,omitempty"`
-	PrivateKeyFile   string          `hcl:"private_key_file" json:"private_key_file,omitempty"`
-	ListenPort       int             `hcl:"listen_port" json:"listen_port,omitempty"`
-	Address          []string        `hcl:"address" json:"address,omitempty"`
-	DNS              []string        `hcl:"dns" json:"dns,omitempty"`
-	MTU              int             `hcl:"mtu" json:"mtu,omitempty"`
-	FWMark           int             `hcl:"fwmark" json:"fwmark,omitempty"`
-	Table            string          `hcl:"table,optional" json:"table,omitempty"`         // Routing table ID or "auto"/"off"
-	PostUp           []string        `hcl:"post_up,optional" json:"post_up,omitempty"`     // Commands to run after up
-	PostDown         []string        `hcl:"post_down,optional" json:"post_down,omitempty"` // Commands to run after down
-	Peers            []WireGuardPeer `hcl:"peer,block" json:"peers,omitempty"`
+	Name             string              `hcl:"name,label" json:"name,omitempty"`
+	Enabled          bool                `hcl:"enabled" json:"enabled"`
+	Interface        string              `hcl:"interface" json:"interface"`
+	ManagementAccess bool                `hcl:"management_access" json:"management_access"`
+	Zone             string              `hcl:"zone" json:"zone,omitempty"`
+	PrivateKey       config.SecureString `hcl:"private_key" json:"private_key,omitempty"`
+	PrivateKeyFile   string              `hcl:"private_key_file" json:"private_key_file,omitempty"`
+	ListenPort       int                 `hcl:"listen_port" json:"listen_port,omitempty"`
+	Address          []string            `hcl:"address" json:"address,omitempty"`
+	DNS              []string            `hcl:"dns" json:"dns,omitempty"`
+	MTU              int                 `hcl:"mtu" json:"mtu,omitempty"`
+	FWMark           int                 `hcl:"fwmark" json:"fwmark,omitempty"`
+	Table            string              `hcl:"table,optional" json:"table,omitempty"`         // Routing table ID or "auto"/"off"
+	PostUp           []string            `hcl:"post_up,optional" json:"post_up,omitempty"`     // Commands to run after up
+	PostDown         []string            `hcl:"post_down,optional" json:"post_down,omitempty"` // Commands to run after down
+	Peers            []WireGuardPeer     `hcl:"peer,block" json:"peers,omitempty"`
 }
 
 // WireGuardPeer represents a WireGuard peer configuration.
 type WireGuardPeer struct {
-	Name                string   `hcl:"name,label" json:"name"`
-	PublicKey           string   `hcl:"public_key" json:"public_key"`
-	PresharedKey        string   `hcl:"preshared_key" json:"preshared_key,omitempty"`
-	Endpoint            string   `hcl:"endpoint" json:"endpoint,omitempty"`
-	AllowedIPs          []string `hcl:"allowed_ips" json:"allowed_ips"`
-	PersistentKeepalive int      `hcl:"persistent_keepalive" json:"persistent_keepalive,omitempty"`
+	Name                string              `hcl:"name,label" json:"name"`
+	PublicKey           string              `hcl:"public_key" json:"public_key"`
+	PresharedKey        config.SecureString `hcl:"preshared_key" json:"preshared_key,omitempty"`
+	Endpoint            string              `hcl:"endpoint" json:"endpoint,omitempty"`
+	AllowedIPs          []string            `hcl:"allowed_ips" json:"allowed_ips"`
+	PersistentKeepalive int                 `hcl:"persistent_keepalive" json:"persistent_keepalive,omitempty"`
 }
 
 // WireGuardStatus represents the current WireGuard status.
@@ -69,46 +74,6 @@ type WireGuardPeerStatus struct {
 	TransferRx          uint64    `json:"transfer_rx"`
 	TransferTx          uint64    `json:"transfer_tx"`
 	PersistentKeepalive int       `json:"persistent_keepalive,omitempty"`
-}
-
-// MarshalJSON masks the private key in API responses.
-// Mitigation: CWE-200: Exposure of Sensitive Information
-func (c WireGuardConfig) MarshalJSON() ([]byte, error) {
-	type Alias WireGuardConfig
-	// Create a temporary struct with the same fields
-	aux := &struct {
-		Alias
-		PrivateKey string `json:"private_key,omitempty"`
-	}{
-		Alias: (Alias)(c),
-	}
-
-	// Mask the private key if it exists
-	if c.PrivateKey != "" {
-		aux.PrivateKey = "******"
-	}
-
-	return json.Marshal(aux)
-}
-
-// MarshalJSON masks the preshared key in API responses.
-// Mitigation: CWE-200: Exposure of Sensitive Information
-func (p WireGuardPeer) MarshalJSON() ([]byte, error) {
-	type Alias WireGuardPeer
-	// Create a temporary struct with the same fields
-	aux := &struct {
-		Alias
-		PresharedKey string `json:"preshared_key,omitempty"`
-	}{
-		Alias: (Alias)(p),
-	}
-
-	// Mask the preshared key if it exists
-	if p.PresharedKey != "" {
-		aux.PresharedKey = "******"
-	}
-
-	return json.Marshal(aux)
 }
 
 // DefaultWireGuardConfig returns sensible defaults.
@@ -159,7 +124,7 @@ func (m *WireGuardManager) Start(ctx context.Context) error {
 
 	// Bring up interface
 	if err := m.Up(); err != nil {
-		return fmt.Errorf("failed to bring up wireguard interface: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to bring up wireguard interface")
 	}
 
 	// Initial status check
@@ -256,7 +221,7 @@ func (m *WireGuardManager) updateStatus() error {
 	if m.wgClient == nil {
 		c, err := wgctrl.New()
 		if err != nil {
-			return fmt.Errorf("failed to open wgctrl: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "failed to open wgctrl")
 		}
 		m.wgClient = c
 	}
@@ -271,7 +236,7 @@ func (m *WireGuardManager) updateStatus() error {
 			m.mu.Unlock()
 			return nil
 		}
-		return fmt.Errorf("failed to get device info: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to get device info")
 	}
 
 	m.mu.Lock()
@@ -318,27 +283,27 @@ func (m *WireGuardManager) Up() error {
 	if existing, err := netlink.LinkByName(m.config.Interface); err == nil {
 		// If it exists but is not wireguard, that's an issue
 		if existing.Type() != "wireguard" {
-			return fmt.Errorf("interface %s exists but is not wireguard (type: %s)", m.config.Interface, existing.Type())
+			return errors.Errorf(errors.KindInternal, "interface %s exists but is not wireguard (type: %s)", m.config.Interface, existing.Type())
 		}
 		link = existing.(*netlink.Wireguard)
 	} else {
 		// Create it
 		if err := netlink.LinkAdd(link); err != nil {
-			return fmt.Errorf("failed to create wireguard interface: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "failed to create wireguard interface")
 		}
 	}
 
 	// Refresh link handle
 	l, err := netlink.LinkByName(m.config.Interface)
 	if err != nil {
-		return fmt.Errorf("failed to get link after creation: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to get link after creation")
 	}
 
 	// 2. Configure Device (Crypto/Peers)
 	if m.wgClient == nil {
 		c, err := wgctrl.New()
 		if err != nil {
-			return fmt.Errorf("failed to open wgctrl: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "failed to open wgctrl")
 		}
 		m.wgClient = c
 	}
@@ -349,21 +314,21 @@ func (m *WireGuardManager) Up() error {
 
 	// Set Private Key
 	if m.config.PrivateKey != "" {
-		key, err := wgtypes.ParseKey(m.config.PrivateKey)
+		key, err := wgtypes.ParseKey(string(m.config.PrivateKey))
 		if err != nil {
-			return fmt.Errorf("invalid private key: %w", err)
+			return errors.Wrap(err, errors.KindValidation, "invalid private key")
 		}
 		conf.PrivateKey = &key
 	} else if m.config.PrivateKeyFile != "" {
 		// Read private key from file
 		keyData, err := os.ReadFile(m.config.PrivateKeyFile)
 		if err != nil {
-			return fmt.Errorf("failed to read private key file: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "failed to read private key file")
 		}
 		keyStr := strings.TrimSpace(string(keyData))
 		key, err := wgtypes.ParseKey(keyStr)
 		if err != nil {
-			return fmt.Errorf("invalid private key in file: %w", err)
+			return errors.Wrap(err, errors.KindValidation, "invalid private key in file")
 		}
 		conf.PrivateKey = &key
 	}
@@ -396,7 +361,7 @@ func (m *WireGuardManager) Up() error {
 		}
 
 		if p.PresharedKey != "" {
-			psk, err := wgtypes.ParseKey(p.PresharedKey)
+			psk, err := wgtypes.ParseKey(string(p.PresharedKey))
 			if err != nil {
 				m.logger.Warn("Invalid peer preshared key", "peer", p.Name, "error", err)
 			} else {
@@ -432,13 +397,13 @@ func (m *WireGuardManager) Up() error {
 	conf.Peers = peers
 
 	if err := m.wgClient.ConfigureDevice(m.config.Interface, conf); err != nil {
-		return fmt.Errorf("failed to configure wireguard device: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to configure wireguard device")
 	}
 
 	// 3. Assign IP Addresses
 	currentAddrs, err := netlink.AddrList(l, 0)
 	if err != nil {
-		return fmt.Errorf("failed to list addresses: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to list addresses")
 	}
 	// Flush existing? Or just add. Flushing is safer for 'conf sync'.
 	// For simple Up(), usually we just add.
@@ -448,7 +413,7 @@ func (m *WireGuardManager) Up() error {
 	for _, addrStr := range m.config.Address {
 		addr, err := netlink.ParseAddr(addrStr)
 		if err != nil {
-			return fmt.Errorf("invalid address %s: %w", addrStr, err)
+			return errors.Wrapf(err, errors.KindValidation, "invalid address %s", addrStr)
 		}
 
 		// Check if exists
@@ -465,7 +430,7 @@ func (m *WireGuardManager) Up() error {
 				if strings.Contains(err.Error(), "file exists") {
 					continue
 				}
-				return fmt.Errorf("failed to add address %s: %w", addrStr, err)
+				return errors.Wrapf(err, errors.KindInternal, "failed to add address %s", addrStr)
 			}
 		}
 	}
@@ -479,7 +444,7 @@ func (m *WireGuardManager) Up() error {
 
 	// 5. Bring Up
 	if err := netlink.LinkSetUp(l); err != nil {
-		return fmt.Errorf("failed to bring interface up: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to bring interface up")
 	}
 
 	// 6. Add Routes
@@ -527,11 +492,11 @@ func (m *WireGuardManager) Down() error {
 		if _, ok := err.(netlink.LinkNotFoundError); ok {
 			return nil
 		}
-		return fmt.Errorf("failed to get link: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to get link")
 	}
 
 	if err := netlink.LinkDel(link); err != nil {
-		return fmt.Errorf("failed to delete interface: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to delete interface")
 	}
 
 	m.logger.Info("WireGuard down completed", "interface", m.config.Interface)
@@ -542,7 +507,7 @@ func (m *WireGuardManager) Down() error {
 func GenerateKeyPair() (privateKey, publicKey string, err error) {
 	key, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
-		return "", "", fmt.Errorf("failed to generate private key: %w", err)
+		return "", "", errors.Wrap(err, errors.KindInternal, "failed to generate private key")
 	}
 	return key.String(), key.PublicKey().String(), nil
 }
@@ -571,9 +536,9 @@ func (m *WireGuardManager) AddPeer(peer WireGuardPeer) error {
 
 	// Parse preshared key
 	if peer.PresharedKey != "" {
-		psk, err := wgtypes.ParseKey(peer.PresharedKey)
+		psk, err := wgtypes.ParseKey(string(peer.PresharedKey))
 		if err != nil {
-			return fmt.Errorf("invalid preshared key: %w", err)
+			return errors.Wrap(err, errors.KindValidation, "invalid preshared key")
 		}
 		peerConf.PresharedKey = &psk
 	}
@@ -582,7 +547,7 @@ func (m *WireGuardManager) AddPeer(peer WireGuardPeer) error {
 	if peer.Endpoint != "" {
 		udpAddr, err := net.ResolveUDPAddr("udp", peer.Endpoint)
 		if err != nil {
-			return fmt.Errorf("invalid endpoint: %w", err)
+			return errors.Wrap(err, errors.KindValidation, "invalid endpoint")
 		}
 		peerConf.Endpoint = udpAddr
 	}
@@ -597,7 +562,7 @@ func (m *WireGuardManager) AddPeer(peer WireGuardPeer) error {
 	for _, cidr := range peer.AllowedIPs {
 		_, ipnet, err := net.ParseCIDR(cidr)
 		if err != nil {
-			return fmt.Errorf("invalid allowed IP %s: %w", cidr, err)
+			return errors.Wrapf(err, errors.KindValidation, "invalid allowed IP %s", cidr)
 		}
 		peerConf.AllowedIPs = append(peerConf.AllowedIPs, *ipnet)
 	}
@@ -608,7 +573,7 @@ func (m *WireGuardManager) AddPeer(peer WireGuardPeer) error {
 	}
 
 	if err := m.wgClient.ConfigureDevice(m.config.Interface, conf); err != nil {
-		return fmt.Errorf("failed to add peer: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to add peer")
 	}
 
 	// Add routes for allowed IPs
@@ -676,7 +641,7 @@ func (m *WireGuardManager) RemovePeer(publicKey string) error {
 	}
 
 	if err := m.wgClient.ConfigureDevice(m.config.Interface, conf); err != nil {
-		return fmt.Errorf("failed to remove peer: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to remove peer")
 	}
 
 	// Remove routes

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package ctlplane
 
 import (
@@ -7,20 +9,24 @@ import (
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/network"
 
+	"runtime"
+	"strconv"
+
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
-	"runtime"
 )
 
 // NetworkManager handles network interface configuration.
 type NetworkManager struct {
 	config *config.Config
+	netLib network.NetworkManager
 }
 
 // NewNetworkManager creates a new network manager.
-func NewNetworkManager(cfg *config.Config) *NetworkManager {
+func NewNetworkManager(cfg *config.Config, netLib network.NetworkManager) *NetworkManager {
 	return &NetworkManager{
 		config: cfg,
+		netLib: netLib,
 	}
 }
 
@@ -29,8 +35,8 @@ func (nm *NetworkManager) UpdateConfig(cfg *config.Config) {
 	nm.config = cfg
 }
 
-// GetInterfaces returns the status of all configured interfaces with comprehensive state detection.
-func (nm *NetworkManager) GetInterfaces() ([]InterfaceStatus, error) {
+// GetInterfaces returns the status of interfaces based on the provided configuration.
+func (nm *NetworkManager) GetInterfaces(cfg *config.Config) ([]InterfaceStatus, error) {
 	var interfaces []InterfaceStatus
 
 	// Try to create ethtool manager for additional info
@@ -44,13 +50,13 @@ func (nm *NetworkManager) GetInterfaces() ([]InterfaceStatus, error) {
 		}
 	}()
 
-	for _, iface := range nm.config.Interfaces {
+	for _, iface := range cfg.Interfaces {
 		zoneName := iface.Zone
 		// If zone is empty, try to find it in zone definitions (reverse lookup)
 		if zoneName == "" {
 			for _, z := range nm.config.Zones {
-				for _, member := range z.Interfaces {
-					if member == iface.Name {
+				for _, m := range z.Matches {
+					if m.Interface == iface.Name {
 						zoneName = z.Name
 						break
 					}
@@ -202,6 +208,19 @@ func (nm *NetworkManager) GetInterfaces() ([]InterfaceStatus, error) {
 			}
 		}
 
+		// Mock ethtool data for macOS (since we can't run ethtool)
+		if runtime.GOOS == "darwin" && (status.Type == "ethernet" || status.Type == "bond") {
+			status.Speed = 1000
+			status.Duplex = "Full"
+			status.Autoneg = true
+			status.Stats = &InterfaceStats{
+				RxBytes:   1024 * 1024 * 500, // 500 MB
+				TxBytes:   1024 * 1024 * 120, // 120 MB
+				RxPackets: 500000,
+				TxPackets: 120000,
+			}
+		}
+
 		interfaces = append(interfaces, status)
 	}
 
@@ -274,7 +293,41 @@ func (nm *NetworkManager) GetInterfaces() ([]InterfaceStatus, error) {
 }
 
 // GetAvailableInterfaces returns all physical interfaces available for configuration.
-func (nm *NetworkManager) GetAvailableInterfaces() ([]AvailableInterface, error) {
+func (nm *NetworkManager) GetAvailableInterfaces(cfg *config.Config) ([]AvailableInterface, error) {
+	if runtime.GOOS == "darwin" {
+		// Mock available interfaces for development on macOS
+		mockInterfaces := []AvailableInterface{
+			{Name: "eth0", MAC: "00:11:22:33:44:55", LinkUp: true, Driver: "e1000", Speed: "1000Mb/s"},
+			{Name: "eth1", MAC: "00:11:22:33:44:56", LinkUp: true, Driver: "e1000", Speed: "1000Mb/s"},
+			{Name: "eth2", MAC: "00:11:22:33:44:57", LinkUp: true, Driver: "e1000", Speed: "1000Mb/s"},
+			{Name: "eth3", MAC: "00:11:22:33:44:58", LinkUp: true, Driver: "e1000", Speed: "1000Mb/s"},
+			{Name: "eth4", MAC: "00:11:22:33:44:59", LinkUp: true, Driver: "e1000", Speed: "1000Mb/s"},
+			{Name: "eth5", MAC: "00:11:22:33:44:60", LinkUp: false, Driver: "e1000", Speed: "1000Mb/s"},
+		}
+
+		// Calculate assigned status
+		assigned := make(map[string]bool)
+		bondMembers := make(map[string]string)
+		for _, iface := range cfg.Interfaces {
+			assigned[iface.Name] = true
+			if iface.Bond != nil {
+				for _, member := range iface.Bond.Interfaces {
+					bondMembers[member] = iface.Name
+				}
+			}
+		}
+
+		for i := range mockInterfaces {
+			name := mockInterfaces[i].Name
+			mockInterfaces[i].Assigned = assigned[name]
+			if bondName, ok := bondMembers[name]; ok {
+				mockInterfaces[i].InBond = true
+				mockInterfaces[i].BondName = bondName
+			}
+		}
+		return mockInterfaces, nil
+	}
+
 	links, err := netlink.LinkList()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list interfaces: %w", err)
@@ -283,7 +336,7 @@ func (nm *NetworkManager) GetAvailableInterfaces() ([]AvailableInterface, error)
 	// Build a map of assigned interfaces from config
 	assigned := make(map[string]bool)
 	bondMembers := make(map[string]string) // interface -> bond name
-	for _, iface := range nm.config.Interfaces {
+	for _, iface := range cfg.Interfaces {
 		assigned[iface.Name] = true
 		if iface.Bond != nil {
 			for _, member := range iface.Bond.Interfaces {
@@ -324,16 +377,16 @@ func (nm *NetworkManager) GetAvailableInterfaces() ([]AvailableInterface, error)
 	return interfaces, nil
 }
 
-// UpdateInterface updates an interface's configuration.
-func (nm *NetworkManager) UpdateInterface(args *UpdateInterfaceArgs) error {
-	auditLog("UpdateInterface", fmt.Sprintf("name=%s action=%s", args.Name, args.Action))
+// StageInterfaceUpdate updates an interface's configuration in the provided staged config.
+func (nm *NetworkManager) StageInterfaceUpdate(cfg *config.Config, args *UpdateInterfaceArgs) error {
+	auditLog("StageInterfaceUpdate", fmt.Sprintf("name=%s action=%s", args.Name, args.Action))
 	if args.Name == "" {
 		return fmt.Errorf("interface name is required")
 	}
 
 	// Find interface in config
 	var ifaceIdx int = -1
-	for i, iface := range nm.config.Interfaces {
+	for i, iface := range cfg.Interfaces {
 		if iface.Name == args.Name {
 			ifaceIdx = i
 			break
@@ -342,21 +395,17 @@ func (nm *NetworkManager) UpdateInterface(args *UpdateInterfaceArgs) error {
 
 	switch args.Action {
 	case ActionEnable:
-		link, err := netlink.LinkByName(args.Name)
-		if err != nil {
-			return fmt.Errorf("interface not found: %w", err)
-		}
-		if err := netlink.LinkSetUp(link); err != nil {
-			return fmt.Errorf("failed to enable interface: %w", err)
+		if ifaceIdx < 0 {
+			cfg.Interfaces = append(cfg.Interfaces, config.Interface{Name: args.Name, Disabled: false})
+		} else {
+			cfg.Interfaces[ifaceIdx].Disabled = false
 		}
 
 	case ActionDisable:
-		link, err := netlink.LinkByName(args.Name)
-		if err != nil {
-			return fmt.Errorf("interface not found: %w", err)
-		}
-		if err := netlink.LinkSetDown(link); err != nil {
-			return fmt.Errorf("failed to disable interface: %w", err)
+		if ifaceIdx < 0 {
+			cfg.Interfaces = append(cfg.Interfaces, config.Interface{Name: args.Name, Disabled: true})
+		} else {
+			cfg.Interfaces[ifaceIdx].Disabled = true
 		}
 
 	case ActionUpdate:
@@ -381,42 +430,47 @@ func (nm *NetworkManager) UpdateInterface(args *UpdateInterfaceArgs) error {
 			if args.Disabled != nil {
 				newIface.Disabled = *args.Disabled
 			}
-			nm.config.Interfaces = append(nm.config.Interfaces, newIface)
+			cfg.Interfaces = append(cfg.Interfaces, newIface)
 		} else {
 			// Update existing interface
 			if args.Zone != nil {
-				nm.config.Interfaces[ifaceIdx].Zone = *args.Zone
+				cfg.Interfaces[ifaceIdx].Zone = *args.Zone
 			}
 			if args.Description != nil {
-				nm.config.Interfaces[ifaceIdx].Description = *args.Description
+				cfg.Interfaces[ifaceIdx].Description = *args.Description
 			}
 			if args.IPv4 != nil {
-				nm.config.Interfaces[ifaceIdx].IPv4 = args.IPv4
+				cfg.Interfaces[ifaceIdx].IPv4 = args.IPv4
 			}
 			if args.DHCP != nil {
-				nm.config.Interfaces[ifaceIdx].DHCP = *args.DHCP
+				cfg.Interfaces[ifaceIdx].DHCP = *args.DHCP
 			}
 			if args.MTU != nil {
-				nm.config.Interfaces[ifaceIdx].MTU = *args.MTU
+				cfg.Interfaces[ifaceIdx].MTU = *args.MTU
 			}
 			if args.Disabled != nil {
-				nm.config.Interfaces[ifaceIdx].Disabled = *args.Disabled
-                auditLog("UpdateInterface", fmt.Sprintf("Updated config Disabled=%v for %s", *args.Disabled, args.Name))
+				cfg.Interfaces[ifaceIdx].Disabled = *args.Disabled
 			}
-		}
-        auditLog("UpdateInterface", fmt.Sprintf("Current Interface Config: %+v", nm.config.Interfaces[ifaceIdx]))
-
-		// Apply the changes to the system
-		if err := nm.applyInterfaceConfig(args.Name); err != nil {
-			return fmt.Errorf("failed to apply config: %w", err)
+			if args.Bond != nil && cfg.Interfaces[ifaceIdx].Bond != nil {
+				if args.Bond.Mode != "" {
+					cfg.Interfaces[ifaceIdx].Bond.Mode = args.Bond.Mode
+				}
+				if len(args.Bond.Interfaces) > 0 {
+					cfg.Interfaces[ifaceIdx].Bond.Interfaces = args.Bond.Interfaces
+				}
+			}
 		}
 
 	case ActionDelete:
 		if ifaceIdx < 0 {
 			return fmt.Errorf("interface not in configuration")
 		}
+		// Referencial Integrity Check
+		if err := nm.checkInterfaceDependencies(cfg, args.Name); err != nil {
+			return err
+		}
 		// Remove from config
-		nm.config.Interfaces = append(nm.config.Interfaces[:ifaceIdx], nm.config.Interfaces[ifaceIdx+1:]...)
+		cfg.Interfaces = append(cfg.Interfaces[:ifaceIdx], cfg.Interfaces[ifaceIdx+1:]...)
 
 	default:
 		return fmt.Errorf("unknown action: %s", args.Action)
@@ -425,188 +479,249 @@ func (nm *NetworkManager) UpdateInterface(args *UpdateInterfaceArgs) error {
 	return nil
 }
 
-// CreateVLAN creates a VLAN interface.
-// L2 creation is delegated to LinkManager; this method handles L3 (IP addresses) and config updates.
-func (nm *NetworkManager) CreateVLAN(args *CreateVLANArgs) (string, error) {
-	auditLog("CreateVLAN", fmt.Sprintf("parent=%s vlan=%d", args.ParentInterface, args.VLANID))
+// StageVLANCreate stages a VLAN interface creation in the provided staged config.
+func (nm *NetworkManager) StageVLANCreate(cfg *config.Config, args *CreateVLANArgs) error {
+	auditLog("StageVLANCreate", fmt.Sprintf("parent=%s vlan=%d", args.ParentInterface, args.VLANID))
 
-	// Create LinkManager for L2 operations
-	linkMgr, err := NewLinkManager()
-	if err != nil {
-		return "", fmt.Errorf("failed to create link manager: %w", err)
-	}
-	defer linkMgr.Close()
-
-	// L2: Create the VLAN interface (delegated to LinkManager)
-	vlanName, err := linkMgr.CreateVLAN(args)
-	if err != nil {
-		return "", err
-	}
-
-	// L3: Add IP addresses
-	if len(args.IPv4) > 0 {
-		link, err := netlink.LinkByName(vlanName)
-		if err != nil {
-			log.Printf("[NM] Warning: could not get VLAN link for IP assignment: %v", err)
-		} else {
-			for _, ipStr := range args.IPv4 {
-				addr, err := netlink.ParseAddr(ipStr)
-				if err != nil {
-					log.Printf("[NM] Invalid IP address %s: %v", ipStr, err)
-					continue
-				}
-				if err := netlink.AddrAdd(link, addr); err != nil {
-					log.Printf("[NM] Failed to add IP %s: %v", ipStr, err)
-				}
-			}
-		}
-	}
+	vlanIDStr := fmt.Sprintf("%d", args.VLANID)
 
 	// Config: Add to config
-	for i, iface := range nm.config.Interfaces {
+	for i, iface := range cfg.Interfaces {
 		if iface.Name == args.ParentInterface {
-			nm.config.Interfaces[i].VLANs = append(nm.config.Interfaces[i].VLANs, config.VLAN{
-				ID:          fmt.Sprintf("%d", args.VLANID),
-				Zone:        args.Zone,
-				Description: args.Description,
-				IPv4:        args.IPv4,
-			})
-			break
-		}
-	}
-
-	return vlanName, nil
-}
-
-// DeleteVLAN deletes a VLAN interface.
-// L2 deletion is delegated to LinkManager; this method handles config updates.
-func (nm *NetworkManager) DeleteVLAN(interfaceName string) error {
-	auditLog("DeleteVLAN", fmt.Sprintf("name=%s", interfaceName))
-
-	// Create LinkManager for L2 operations
-	linkMgr, err := NewLinkManager()
-	if err != nil {
-		return fmt.Errorf("failed to create link manager: %w", err)
-	}
-	defer linkMgr.Close()
-
-	// L2: Delete the VLAN interface (delegated to LinkManager)
-	if err := linkMgr.DeleteVLAN(interfaceName); err != nil {
-		return err
-	}
-
-	// Config: Remove from config
-	for i := range nm.config.Interfaces {
-		for j, vlan := range nm.config.Interfaces[i].VLANs {
-			expectedName := fmt.Sprintf("%s.%s", nm.config.Interfaces[i].Name, vlan.ID)
-			if expectedName == interfaceName {
-				nm.config.Interfaces[i].VLANs = append(
-					nm.config.Interfaces[i].VLANs[:j],
-					nm.config.Interfaces[i].VLANs[j+1:]...,
-				)
-				log.Printf("[NM] Removed VLAN %s from config", interfaceName)
-				return nil
-			}
-		}
-	}
-
-	log.Printf("[NM] VLAN %s not found in config (orphaned or manually created)", interfaceName)
-	return nil
-}
-
-// CreateBond creates a bonded interface.
-// L2 creation is delegated to LinkManager; this method handles L3 (IP/DHCP) and config updates.
-func (nm *NetworkManager) CreateBond(args *CreateBondArgs) error {
-	auditLog("CreateBond", fmt.Sprintf("name=%s members=%v", args.Name, args.Interfaces))
-
-	// Create LinkManager for L2 operations
-	linkMgr, err := NewLinkManager()
-	if err != nil {
-		return fmt.Errorf("failed to create link manager: %w", err)
-	}
-	defer linkMgr.Close()
-
-	// L2: Create the bond interface (delegated to LinkManager)
-	if err := linkMgr.CreateBond(args); err != nil {
-		return err
-	}
-
-	// L3: Add IP addresses or start DHCP
-	if args.DHCP {
-		if err := network.StartDHCPClient(args.Name); err != nil {
-			log.Printf("[NM] Failed to start DHCP on bond %s: %v", args.Name, err)
-			return fmt.Errorf("bond created but DHCP failed: %w", err)
-		}
-	} else if len(args.IPv4) > 0 {
-		link, err := netlink.LinkByName(args.Name)
-		if err != nil {
-			log.Printf("[NM] Warning: could not get bond link for IP assignment: %v", err)
-		} else {
-			for _, ipStr := range args.IPv4 {
-				addr, err := netlink.ParseAddr(ipStr)
-				if err != nil {
-					continue
+			// Check for duplicates
+			found := false
+			for j, v := range cfg.Interfaces[i].VLANs {
+				if v.ID == vlanIDStr {
+					log.Printf("[NM] Warning: VLAN %s.%s already exists in config, updating", args.ParentInterface, vlanIDStr)
+					cfg.Interfaces[i].VLANs[j] = config.VLAN{
+						ID:          vlanIDStr,
+						Zone:        args.Zone,
+						Description: args.Description,
+						IPv4:        args.IPv4,
+					}
+					found = true
+					break
 				}
-				netlink.AddrAdd(link, addr)
 			}
+			if !found {
+				cfg.Interfaces[i].VLANs = append(cfg.Interfaces[i].VLANs, config.VLAN{
+					ID:          vlanIDStr,
+					Zone:        args.Zone,
+					Description: args.Description,
+					IPv4:        args.IPv4,
+				})
+			}
+			return nil
 		}
 	}
 
-	// Config: Add to config
-	nm.config.Interfaces = append(nm.config.Interfaces, config.Interface{
-		Name:        args.Name,
-		Description: args.Description,
-		Zone:        args.Zone,
-		IPv4:        args.IPv4,
-		DHCP:        args.DHCP,
-		Bond: &config.Bond{
-			Mode:       args.Mode,
-			Interfaces: args.Interfaces,
-		},
-	})
+	return fmt.Errorf("parent interface %s not found", args.ParentInterface)
+}
+
+// StageVLANDelete stages a VLAN interface deletion in the provided staged config.
+func (nm *NetworkManager) StageVLANDelete(cfg *config.Config, interfaceName string) error {
+	auditLog("StageVLANDelete", fmt.Sprintf("name=%s", interfaceName))
+
+	found := false
+	for i := range cfg.Interfaces {
+		newVLANs := cfg.Interfaces[i].VLANs[:0]
+		for _, vlan := range cfg.Interfaces[i].VLANs {
+			expectedName := fmt.Sprintf("%s.%s", cfg.Interfaces[i].Name, vlan.ID)
+			if expectedName != interfaceName {
+				newVLANs = append(newVLANs, vlan)
+			} else {
+				found = true
+			}
+		}
+		cfg.Interfaces[i].VLANs = newVLANs
+		if found {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("VLAN %s not found in config", interfaceName)
+}
+
+// StageBondCreate stages a bonded interface creation in the provided staged config.
+func (nm *NetworkManager) StageBondCreate(cfg *config.Config, args *CreateBondArgs) error {
+	auditLog("StageBondCreate", fmt.Sprintf("name=%s mode=%s", args.Name, args.Mode))
+
+	// Validate members exist
+	for _, member := range args.Interfaces {
+		if _, err := netlink.LinkByName(member); err != nil {
+			return fmt.Errorf("interface %s not found", member)
+		}
+	}
+
+	// Check for duplicates
+	duplicateIndex := -1
+	for i, iface := range cfg.Interfaces {
+		if iface.Name == args.Name {
+			duplicateIndex = i
+			break
+		}
+	}
+
+	if duplicateIndex != -1 {
+		cfg.Interfaces[duplicateIndex] = config.Interface{
+			Name:        args.Name,
+			Description: args.Description,
+			Zone:        args.Zone,
+			IPv4:        args.IPv4,
+			DHCP:        args.DHCP,
+			Bond: &config.Bond{
+				Mode:       args.Mode,
+				Interfaces: args.Interfaces,
+			},
+		}
+	} else {
+		cfg.Interfaces = append(cfg.Interfaces, config.Interface{
+			Name:        args.Name,
+			Description: args.Description,
+			Zone:        args.Zone,
+			IPv4:        args.IPv4,
+			DHCP:        args.DHCP,
+			Bond: &config.Bond{
+				Mode:       args.Mode,
+				Interfaces: args.Interfaces,
+			},
+		})
+	}
 
 	return nil
 }
 
-// DeleteBond deletes a bonded interface.
-// L2 deletion is delegated to LinkManager; this method handles L3 (DHCP) and config updates.
-func (nm *NetworkManager) DeleteBond(args *DeleteBondArgs) error {
-	auditLog("DeleteBond", fmt.Sprintf("name=%s", args.Name))
+// StageBondDelete stages a bonded interface deletion in the provided staged config.
+func (nm *NetworkManager) StageBondDelete(cfg *config.Config, name string) error {
+	auditLog("StageBondDelete", fmt.Sprintf("name=%s", name))
 
-	// Create LinkManager for L2 operations
+	newInterfaces := cfg.Interfaces[:0]
+	found := false
+	for _, iface := range cfg.Interfaces {
+		if iface.Name != name {
+			newInterfaces = append(newInterfaces, iface)
+		} else {
+			found = true
+		}
+	}
+	cfg.Interfaces = newInterfaces
+
+	if !found {
+		return fmt.Errorf("bond %s not found in config", name)
+	}
+
+	return nil
+}
+
+// ApplyConfig synchronizes the kernel state with the provided configuration.
+func (nm *NetworkManager) ApplyConfig(newConfig *config.Config) error {
+	auditLog("ApplyConfig", "Applying network configuration")
+
 	linkMgr, err := NewLinkManager()
 	if err != nil {
 		return fmt.Errorf("failed to create link manager: %w", err)
 	}
 	defer linkMgr.Close()
 
-	// L2: Delete the bond interface (delegated to LinkManager)
-	if err := linkMgr.DeleteBond(args.Name); err != nil {
-		return err
-	}
-
-	// L3: Stop DHCP client if running
-	if err := network.StopDHCPClient(args.Name); err != nil {
-		log.Printf("[NM] Warning: failed to stop DHCP on %s: %v", args.Name, err)
-	}
-
-	// Config: Remove from config
-	for i, iface := range nm.config.Interfaces {
-		if iface.Name == args.Name {
-			nm.config.Interfaces = append(nm.config.Interfaces[:i], nm.config.Interfaces[i+1:]...)
-			break
+	// Apply VRFs first so interfaces can be enslaved
+	if nm.netLib != nil {
+		if err := nm.netLib.ApplyVRFs(newConfig.VRFs); err != nil {
+			log.Printf("[NM] Warning: failed to apply VRFs: %v", err)
+			// Continue best-effort
 		}
 	}
 
+	// 1. Identify deletions (In Running, but not in Staged)
+	stagedNames := make(map[string]bool)
+	for _, iface := range newConfig.Interfaces {
+		stagedNames[iface.Name] = true
+	}
+
+	for _, iface := range nm.config.Interfaces {
+		if !stagedNames[iface.Name] {
+			// Found an interface that should be removed
+			if iface.Bond != nil {
+				linkMgr.DeleteBond(iface.Name)
+			}
+			// VLANs are handled as children of interfaces
+			for _, vlan := range iface.VLANs {
+				linkMgr.DeleteVLAN(fmt.Sprintf("%s.%s", iface.Name, vlan.ID))
+			}
+		} else {
+			// Interface exists in both. Check for removed VLANs.
+			// Find the new interface config to compare
+			var newIfaceConfig *config.Interface
+			for i := range newConfig.Interfaces {
+				if newConfig.Interfaces[i].Name == iface.Name {
+					newIfaceConfig = &newConfig.Interfaces[i]
+					break
+				}
+			}
+
+			if newIfaceConfig != nil {
+				// Build set of new VLAN IDs
+				newVLANs := make(map[string]bool)
+				for _, v := range newIfaceConfig.VLANs {
+					newVLANs[v.ID] = true
+				}
+
+				// Check if any old VLANs are missing in the new config
+				for _, oldVLAN := range iface.VLANs {
+					if !newVLANs[oldVLAN.ID] {
+						// VLAN removed
+						vlanName := fmt.Sprintf("%s.%s", iface.Name, oldVLAN.ID)
+						log.Printf("[NM] Removing deleted VLAN %s", vlanName)
+						if err := linkMgr.DeleteVLAN(vlanName); err != nil {
+							log.Printf("[NM] Warning: failed to delete removed VLAN %s: %v", vlanName, err)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Identify additions and updates
+	for _, iface := range newConfig.Interfaces {
+		if iface.Bond != nil {
+			// Ensure bond exists
+			linkMgr.CreateBond(&CreateBondArgs{
+				Name:        iface.Name,
+				Mode:        iface.Bond.Mode,
+				Interfaces:  iface.Bond.Interfaces,
+				Description: iface.Description,
+				Zone:        iface.Zone,
+				IPv4:        iface.IPv4,
+				DHCP:        iface.DHCP,
+			})
+		}
+
+		// Handle VLANs
+		for _, vlan := range iface.VLANs {
+			vlanID, _ := strconv.Atoi(vlan.ID)
+			linkMgr.CreateVLAN(&CreateVLANArgs{
+				ParentInterface: iface.Name,
+				VLANID:          vlanID,
+				Zone:            vlan.Zone,
+				Description:     vlan.Description,
+				IPv4:            vlan.IPv4,
+			})
+		}
+
+		// Apply L3 config (IPs, DHCP, etc.)
+		nm.applyInterfaceConfigWithConfig(iface.Name, newConfig)
+	}
+
+	// Update running config reference
+	nm.config = newConfig
 	return nil
 }
 
-// applyInterfaceConfig applies configuration to a specific interface.
-func (nm *NetworkManager) applyInterfaceConfig(ifaceName string) error {
+// applyInterfaceConfigWithConfig applies configuration to a specific interface using a provided config object.
+func (nm *NetworkManager) applyInterfaceConfigWithConfig(ifaceName string, cfg *config.Config) error {
 	var ifaceCfg *config.Interface
-	for i := range nm.config.Interfaces {
-		if nm.config.Interfaces[i].Name == ifaceName {
-			ifaceCfg = &nm.config.Interfaces[i]
+	for i := range cfg.Interfaces {
+		if cfg.Interfaces[i].Name == ifaceName {
+			ifaceCfg = &cfg.Interfaces[i]
 			break
 		}
 	}
@@ -616,10 +731,7 @@ func (nm *NetworkManager) applyInterfaceConfig(ifaceName string) error {
 
 	link, err := netlink.LinkByName(ifaceName)
 	if err != nil {
-		// On macOS (Darwin), we allow updating config even if interface is missing
-		// This supports running the UI and HCL generation tests locally
 		if runtime.GOOS == "darwin" {
-			log.Printf("[NM] Skipping system apply for %s (darwin: interface not found)", ifaceName)
 			return nil
 		}
 		return err
@@ -627,8 +739,18 @@ func (nm *NetworkManager) applyInterfaceConfig(ifaceName string) error {
 
 	// Set MTU if specified
 	if ifaceCfg.MTU > 0 {
-		if err := netlink.LinkSetMTU(link, ifaceCfg.MTU); err != nil {
-			log.Printf("[NM] Failed to set MTU on %s: %v", ifaceName, err)
+		netlink.LinkSetMTU(link, ifaceCfg.MTU)
+	}
+
+	// Enslave to VRF if configured
+	if ifaceCfg.VRF != "" {
+		vrfLink, err := netlink.LinkByName(ifaceCfg.VRF)
+		if err != nil {
+			log.Printf("[NM] Warning: VRF %s not found for interface %s: %v", ifaceCfg.VRF, ifaceName, err)
+		} else {
+			if err := netlink.LinkSetMaster(link, vrfLink); err != nil {
+				log.Printf("[NM] Warning: failed to enslave %s to VRF %s: %v", ifaceName, ifaceCfg.VRF, err)
+			}
 		}
 	}
 
@@ -643,18 +765,20 @@ func (nm *NetworkManager) applyInterfaceConfig(ifaceName string) error {
 		for _, ipStr := range ifaceCfg.IPv4 {
 			addr, err := netlink.ParseAddr(ipStr)
 			if err != nil {
-				log.Printf("[NM] Invalid IP %s: %v", ipStr, err)
 				continue
 			}
-			if err := netlink.AddrAdd(link, addr); err != nil {
-				log.Printf("[NM] Failed to add IP %s: %v", ipStr, err)
-			}
+			netlink.AddrAdd(link, addr)
 		}
+		network.StopDHCPClient(ifaceName)
+	} else {
+		network.StartDHCPClient(ifaceName)
 	}
 
-	// Bring interface up
-	if err := netlink.LinkSetUp(link); err != nil {
-		log.Printf("[NM] Failed to bring up %s: %v", ifaceName, err)
+	// Handle Admin State
+	if ifaceCfg.Disabled {
+		netlink.LinkSetDown(link)
+	} else {
+		netlink.LinkSetUp(link)
 	}
 
 	return nil
@@ -662,30 +786,57 @@ func (nm *NetworkManager) applyInterfaceConfig(ifaceName string) error {
 
 // SnapshotInterfaces returns a deep copy of the current interface configuration.
 func (nm *NetworkManager) SnapshotInterfaces() ([]config.Interface, error) {
-	interfaces := make([]config.Interface, len(nm.config.Interfaces))
-	copy(interfaces, nm.config.Interfaces)
-	return interfaces, nil
+	clone := nm.config.Clone()
+	return clone.Interfaces, nil
+}
+
+// UpdateInterface is a shim for the NetworkConfigurator interface, providing immediate application.
+func (nm *NetworkManager) UpdateInterface(args *UpdateInterfaceArgs) error {
+	staged := nm.config.Clone()
+	if err := nm.StageInterfaceUpdate(staged, args); err != nil {
+		return err
+	}
+	return nm.ApplyConfig(staged)
 }
 
 // RestoreInterfaces restores the interface configuration from a snapshot.
 func (nm *NetworkManager) RestoreInterfaces(snapshot []config.Interface) error {
-	log.Printf("[NM] Restoring interface snapshot with %d interfaces", len(snapshot))
+	cfg := &config.Config{Interfaces: snapshot}
+	return nm.ApplyConfig(cfg)
+}
 
-	// Update config
-	nm.config.Interfaces = snapshot
-
-	// Re-apply all interfaces in the snapshot
-	// This ensures we return to the exact state
-	var errs []error
-	for _, iface := range snapshot {
-		if err := nm.applyInterfaceConfig(iface.Name); err != nil {
-			log.Printf("[NM] Failed to restore interface %s: %v", iface.Name, err)
-			errs = append(errs, err)
+// checkInterfaceDependencies checks if an interface is used by other components
+func (nm *NetworkManager) checkInterfaceDependencies(cfg *config.Config, ifaceName string) error {
+	// 1. Check DHCP Scopes
+	if cfg.DHCP != nil {
+		for _, scope := range cfg.DHCP.Scopes {
+			if scope.Interface == ifaceName {
+				return fmt.Errorf("interface %s is used by DHCP scope '%s'", ifaceName, scope.Name)
+			}
 		}
 	}
 
-	if len(errs) > 0 {
-		return fmt.Errorf("encountered %d errors during restore (first: %v)", len(errs), errs[0])
+	// 2. Check Zones
+	for _, zone := range cfg.Zones {
+		// Simple match
+		if zone.Interface == ifaceName {
+			return fmt.Errorf("interface %s is used by zone '%s'", ifaceName, zone.Name)
+		}
+		// Complex matches
+		for _, match := range zone.Matches {
+			if match.Interface == ifaceName {
+				return fmt.Errorf("interface %s is used by zone '%s' match rule", ifaceName, zone.Name)
+			}
+		}
+	}
+
+	// 3. Check mDNS
+	if cfg.MDNS != nil {
+		for _, iface := range cfg.MDNS.Interfaces {
+			if iface == ifaceName {
+				return fmt.Errorf("interface %s is used by mDNS service", ifaceName)
+			}
+		}
 	}
 
 	return nil

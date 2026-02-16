@@ -47,15 +47,21 @@ schema_version = "1.0"
 ip_forwarding = true
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 zone "vpn" {
-  interfaces = ["wg-test"]
+  match {
+    interface = "wg-test"
+  }
 }
 
 interface "veth-lan" {
@@ -112,7 +118,7 @@ ip link set wg-test up 2>/dev/null || true
 ok 0 "Dummy WireGuard interface created"
 
 # Test 3: Apply firewall rules
-apply_firewall_rules "$TEST_CONFIG" /tmp/vpn_isolation.log
+apply_firewall_rules "$TEST_CONFIG" /tmp/vpn_isolation_$$.log
 ok $? "Firewall rules applied"
 
 dilated_sleep 1

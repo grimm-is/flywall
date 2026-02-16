@@ -1,7 +1,7 @@
 
 /**
  * runtime.ts
- * 
+ *
  * Manages container runtime state (Docker).
  * Subscribes to 'runtime:containers' WebSocket topic.
  */

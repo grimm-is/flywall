@@ -6,6 +6,7 @@
 
     import { onMount } from "svelte";
     import { config, api, alertStore } from "$lib/stores/app";
+    import { vault } from "$lib/stores/vault";
     import {
         Card,
         Button,
@@ -17,11 +18,37 @@
         Input,
     } from "$lib/components";
     import { t } from "svelte-i18n";
+    import UserCreateCard from "$lib/components/UserCreateCard.svelte";
 
     let loading = $state(false);
     let users = $state<User[]>([]);
-    let showUserModal = $state(false);
-    let newUser = $state({ username: "", password: "", role: "admin" });
+
+    let isAddingUser = $state(false);
+
+    // Vault State
+    let vaultPassword = $state("");
+    let vaultLoading = $state(false);
+
+    async function handleUnlockVault() {
+        if (!vaultPassword) return;
+        vaultLoading = true;
+        try {
+            const success = await vault.unlock(vaultPassword);
+            if (success) {
+                alertStore.success("Vault Unlocked");
+                vaultPassword = "";
+            } else {
+                alertStore.error("Failed to unlock vault");
+            }
+        } finally {
+            vaultLoading = false;
+        }
+    }
+
+    function handleLockVault() {
+        vault.lock();
+        alertStore.show("Vault Locked");
+    }
 
     interface User {
         username: string;
@@ -53,10 +80,13 @@
     });
 
     async function loadUsers() {
+        loading = true;
         try {
             users = await api.getUsers();
         } catch (e) {
             console.error("Failed to load users", e);
+        } finally {
+            loading = false;
         }
     }
 
@@ -79,15 +109,12 @@
         }
     }
 
-    async function handleCreateUser() {
+    async function handleCreateUser(event: CustomEvent) {
+        const { username, password, role } = event.detail;
         try {
-            await api.createUser(
-                newUser.username,
-                newUser.password,
-                newUser.role,
-            );
-            showUserModal = false;
-            newUser = { username: "", password: "", role: "admin" };
+            await api.createUser(username, password, role);
+            isAddingUser = false;
+            loadUsers();
             alertStore.success($t("settings.user_create_success"));
         } catch (e: any) {
             alertStore.error(e.message || $t("settings.user_create_failed"));
@@ -133,21 +160,33 @@
         }
     }
 
+    // Separate loading state for backups to avoid conflict with users loading if we want granular control,
+    // but the audit plan suggested using 'loading' or dedicated.
+    // 'loading' is currently used for settings toggles too...
+    // Let's use specific loading states for tables to result in better UX.
+    let backupsLoading = $state(false);
+    let isAddingBackup = $state(false);
+    let backupDescription = $state("");
+
     async function loadBackups() {
+        backupsLoading = true;
         try {
             backups = await api.listBackups();
         } catch (e) {
             console.error("Failed to load backups", e);
+        } finally {
+            backupsLoading = false;
         }
     }
 
     async function handleCreateBackup() {
-        const desc = prompt($t("settings.backup_create_description"));
-        if (desc === null) return;
+        if (!backupDescription) return;
         try {
-            await api.createBackup(desc);
+            await api.createBackup(backupDescription);
             loadBackups();
             alertStore.success($t("settings.backup_create_success"));
+            isAddingBackup = false;
+            backupDescription = "";
         } catch (e: any) {
             alertStore.error(e.message || $t("settings.backup_create_failed"));
         }
@@ -197,9 +236,16 @@
         runningTask = taskId;
         try {
             await api.runSchedulerTask(taskId);
-            alertStore.success(`Task "${taskId}" triggered successfully`);
+            alertStore.success(
+                $t("scheduled_tasks.run_success", { values: { name: taskId } }),
+            );
         } catch (e: any) {
-            alertStore.error(e.message || `Failed to run task "${taskId}"`);
+            alertStore.error(
+                e.message ||
+                    $t("scheduled_tasks.run_failed", {
+                        values: { name: taskId },
+                    }),
+            );
         } finally {
             runningTask = null;
         }
@@ -307,19 +353,78 @@
         </div>
     {:else}
         <div class="loading-state">
-            <Spinner /> Loading settings...
+            <Spinner />
+            {$t("settings.loading")}
         </div>
     {/if}
+
+    <!-- Vault Settings -->
+    <div class="section-title">Zero-Knowledge Vault</div>
+    <Card>
+        <div class="setting-item">
+            <div class="setting-info">
+                <div class="setting-label">
+                    Vault Status
+                    <Badge variant={$vault.unlocked ? "success" : "warning"}>
+                        {$vault.unlocked ? "Unlocked" : "Locked"}
+                    </Badge>
+                </div>
+                <div class="setting-desc">
+                    {$vault.unlocked
+                        ? "Your browser is successfully decrypting telemetry data locally."
+                        : "Enter your Master Password to enable telemetry decryption."}
+                </div>
+            </div>
+            <div class="setting-control vault-control">
+                {#if $vault.unlocked}
+                    <Button variant="outline" onclick={handleLockVault}
+                        >Lock Vault</Button
+                    >
+                {:else}
+                    <div class="flex gap-2 items-center">
+                        <Input
+                            type="password"
+                            placeholder="Master Password"
+                            bind:value={vaultPassword}
+                            disabled={vaultLoading}
+                        />
+                        <Button
+                            onclick={handleUnlockVault}
+                            disabled={vaultLoading || !vaultPassword}
+                        >
+                            {#if vaultLoading}
+                                <Spinner size="sm" />
+                            {:else}
+                                Unlock
+                            {/if}
+                        </Button>
+                    </div>
+                {/if}
+            </div>
+        </div>
+    </Card>
 
     <!-- User Management -->
     <div class="section-header">
         <div class="section-title">{$t("settings.users")}</div>
-        <Button size="sm" onclick={() => (showUserModal = true)}
-            >{$t("common.add_item", {
-                values: { item: $t("item.user") },
-            })}</Button
+        <Button size="sm" onclick={() => (isAddingUser = !isAddingUser)}
+            >{isAddingUser
+                ? "Cancel"
+                : $t("common.add_item", {
+                      values: { item: $t("item.user") },
+                  })}</Button
         >
     </div>
+
+    {#if isAddingUser}
+        <div class="mb-4">
+            <UserCreateCard
+                {loading}
+                on:save={handleCreateUser}
+                on:cancel={() => (isAddingUser = false)}
+            />
+        </div>
+    {/if}
 
     <Card class="p-0">
         <div class="table-container">
@@ -332,7 +437,14 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {#if users.length === 0}
+                    {#if loading && users.length === 0}
+                        <tr>
+                            <td colspan="3" class="empty-row">
+                                <Spinner size="sm" />
+                                <span class="ml-2">{$t("common.loading")}</span>
+                            </td>
+                        </tr>
+                    {:else if users.length === 0}
                         <tr>
                             <td colspan="3" class="empty-row"
                                 >{$t("settings.not_found")}</td
@@ -362,28 +474,6 @@
         </div>
     </Card>
 
-    <!-- Create User Modal -->
-    <Modal
-        bind:open={showUserModal}
-        title={$t("common.create_item", { values: { item: $t("item.user") } })}
-    >
-        <div class="space-y-4">
-            <Input label={$t("auth.username")} bind:value={newUser.username} />
-            <Input
-                label={$t("settings.password")}
-                type="password"
-                bind:value={newUser.password}
-            />
-            <div class="modal-actions">
-                <Button variant="ghost" onclick={() => (showUserModal = false)}
-                    >{$t("common.cancel")}</Button
-                >
-                <Button onclick={handleCreateUser}>{$t("common.create")}</Button
-                >
-            </div>
-        </div>
-    </Modal>
-
     <!-- System -->
     <div class="section-title">{$t("settings.system")}</div>
     <div class="settings-grid">
@@ -412,12 +502,34 @@
     <!-- Backups -->
     <div class="section-header">
         <div class="section-title">{$t("settings.backups")}</div>
-        <Button size="sm" onclick={handleCreateBackup}
-            >{$t("common.create_item", {
-                values: { item: $t("item.backup") },
-            })}</Button
+        <Button size="sm" onclick={() => (isAddingBackup = !isAddingBackup)}
+            >{isAddingBackup
+                ? "Cancel"
+                : $t("common.create_item", {
+                      values: { item: $t("item.backup") },
+                  })}</Button
         >
     </div>
+
+    {#if isAddingBackup}
+        <Card class="mb-4">
+            <div class="flex gap-4 items-end p-4">
+                <div class="flex-1">
+                    <Input
+                        label={$t("common.description")}
+                        bind:value={backupDescription}
+                        placeholder="e.g. Before Upgrade"
+                    />
+                </div>
+                <Button
+                    onclick={handleCreateBackup}
+                    disabled={!backupDescription}
+                >
+                    {$t("common.create")}
+                </Button>
+            </div>
+        </Card>
+    {/if}
 
     <Card class="p-0">
         <div class="table-container">
@@ -431,7 +543,14 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {#if backups.length === 0}
+                    {#if backupsLoading}
+                        <tr>
+                            <td colspan="4" class="empty-row">
+                                <Spinner size="sm" />
+                                <span class="ml-2">{$t("common.loading")}</span>
+                            </td>
+                        </tr>
+                    {:else if backups.length === 0}
                         <tr>
                             <td colspan="4" class="empty-row"
                                 >{$t("settings.backups_none")}</td
@@ -467,14 +586,14 @@
 
     <!-- Scheduled Tasks -->
     <div class="section-header">
-        <div class="section-title">Scheduled Tasks</div>
+        <div class="section-title">{$t("scheduled_tasks.title")}</div>
         <Button
             size="sm"
             variant="outline"
             onclick={loadSchedulerTasks}
             disabled={schedulerLoading}
         >
-            Refresh
+            {$t("common.refresh")}
         </Button>
     </div>
 
@@ -483,23 +602,24 @@
             <table class="table">
                 <thead>
                     <tr>
-                        <th>Task</th>
-                        <th>Schedule</th>
-                        <th>Type</th>
-                        <th class="actions">Actions</th>
+                        <th>{$t("scheduled_tasks.task")}</th>
+                        <th>{$t("scheduled_tasks.schedule")}</th>
+                        <th>{$t("scheduled_tasks.type")}</th>
+                        <th class="actions">{$t("settings.actions")}</th>
                     </tr>
                 </thead>
                 <tbody>
                     {#if schedulerLoading}
                         <tr>
                             <td colspan="4" class="empty-row">
-                                <Spinner size="sm" /> Loading tasks...
+                                <Spinner size="sm" />
+                                {$t("scheduled_tasks.loading")}
                             </td>
                         </tr>
                     {:else if schedulerTasks.length === 0}
                         <tr>
                             <td colspan="4" class="empty-row"
-                                >No scheduled tasks</td
+                                >{$t("scheduled_tasks.no_tasks")}</td
                             >
                         </tr>
                     {:else}
@@ -538,7 +658,7 @@
                                         {#if runningTask === task.id}
                                             <Spinner size="sm" />
                                         {:else}
-                                            Run Now
+                                            {$t("scheduled_tasks.run_now")}
                                         {/if}
                                     </Button>
                                 </td>

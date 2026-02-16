@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -38,7 +40,12 @@ func (s *Server) handleUpdateDeviceGroup(w http.ResponseWriter, r *http.Request)
 
 	var group identity.DeviceGroup
 	if err := json.NewDecoder(r.Body).Decode(&group); err != nil {
-		WriteErrorCtx(w, r, http.StatusBadRequest, "Invalid JSON: "+err.Error())
+		WriteErrorCtx(w, r, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if group.Name == "" {
+		WriteErrorCtx(w, r, http.StatusBadRequest, "Group name is required")
 		return
 	}
 

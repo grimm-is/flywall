@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 import (
@@ -12,30 +14,33 @@ import (
 // ForgivingLoadResult contains the result of a forgiving config load.
 type ForgivingLoadResult struct {
 	// Config is the best-effort parsed configuration
-	Config *Config
+	Config *Config `json:"config"`
 
 	// OriginalHCL is the original file content
-	OriginalHCL string
+	OriginalHCL string `json:"original_hcl"`
 
 	// SalvagedHCL is the modified HCL with broken blocks commented out
-	SalvagedHCL string
+	SalvagedHCL string `json:"salvaged_hcl"`
 
 	// SkippedBlocks contains information about blocks that were skipped
-	SkippedBlocks []SkippedBlock
+	SkippedBlocks []SkippedBlock `json:"skipped_blocks"`
 
 	// HadErrors indicates if errors were encountered (partial parse)
-	HadErrors bool
+	HadErrors bool `json:"had_errors"`
 
 	// FatalError is set if even forgiving parse failed completely
-	FatalError error
+	FatalError error `json:"-"`
+
+	// FatalErrorMessage is the string representation of FatalError for JSON
+	FatalErrorMessage string `json:"fatal_error,omitempty"`
 }
 
 // SkippedBlock describes a block that was commented out due to parse errors.
 type SkippedBlock struct {
-	StartLine int
-	EndLine   int
-	Reason    string
-	Content   string
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Reason    string `json:"reason"`
+	Content   string `json:"content"`
 }
 
 // Diff returns a unified diff showing what was changed in the salvage process.
@@ -108,6 +113,7 @@ func LoadForgiving(data []byte, filename string) *ForgivingLoadResult {
 		if newHCL == workingHCL {
 			// Couldn't make progress - give up
 			result.FatalError = fmt.Errorf("could not recover from parse errors: %w", parseErr)
+			result.FatalErrorMessage = result.FatalError.Error()
 			// Return minimal config
 			result.Config = &Config{
 				SchemaVersion: CurrentSchemaVersion,
@@ -128,6 +134,7 @@ func LoadForgiving(data []byte, filename string) *ForgivingLoadResult {
 
 	// Exceeded max iterations
 	result.FatalError = fmt.Errorf("exceeded maximum recovery iterations")
+	result.FatalErrorMessage = result.FatalError.Error()
 	result.Config = &Config{
 		SchemaVersion: CurrentSchemaVersion,
 		IPForwarding:  true,

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 // GeoIPConfig configures country-based traffic filtering using MaxMind or DB-IP databases.
@@ -8,8 +10,8 @@ type GeoIPConfig struct {
 	Enabled bool `hcl:"enabled,optional" json:"enabled"`
 
 	// DatabasePath is the path to the MMDB file (MaxMind or DB-IP format).
-	// Default: /var/lib/flywall/geoip/GeoLite2-Country.mmdb
-	// For DB-IP: /var/lib/flywall/geoip/dbip-country-lite.mmdb
+	// Default: /opt/flywall/share/geoip/GeoLite2-Country.mmdb (or distro path)
+	// For DB-IP: /opt/flywall/share/geoip/dbip-country-lite.mmdb
 	DatabasePath string `hcl:"database_path,optional" json:"database_path,omitempty"`
 
 	// AutoUpdate enables automatic database updates (future feature).

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package client provides an API client for remote Flywall management.
 package client
 
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"grimm.is/flywall/internal/config"
+	"grimm.is/flywall/internal/errors"
 
 	"github.com/gorilla/websocket"
 )
@@ -47,6 +50,7 @@ type ServerInfo struct {
 type APIClient interface {
 	GetStatus() (*ServerInfo, error)
 	GetConfig() (*config.Config, error)
+	GetConfigSalvage() (*config.ForgivingLoadResult, error)
 }
 
 // HTTPClient is an HTTP-based implementation of APIClient.
@@ -126,7 +130,7 @@ func NewHTTPClient(baseURL string, opts ...ClientOption) *HTTPClient {
 
 				// Enforce pinning if configured
 				if c.expectedFingerprint != "" && c.expectedFingerprint != fingerprint {
-					return fmt.Errorf("certificate fingerprint mismatch! Expected %s, got %s", c.expectedFingerprint, fingerprint)
+					return errors.Errorf(errors.KindPermission, "certificate fingerprint mismatch! Expected %s, got %s", c.expectedFingerprint, fingerprint)
 				}
 				return nil
 			},
@@ -145,14 +149,14 @@ func (c *HTTPClient) doRequest(method, path string, body interface{}, result int
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("failed to marshal request body: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "failed to marshal request body")
 		}
 		reqBody = bytes.NewReader(b)
 	}
 
 	req, err := http.NewRequest(method, url, reqBody)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to create request")
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -166,23 +170,23 @@ func (c *HTTPClient) doRequest(method, path string, body interface{}, result int
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "request failed")
 	}
 	defer resp.Body.Close()
 
 	// Read body for error messages
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to read response body")
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		return errors.Errorf(errors.KindInternal, "API error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
 	if result != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, result); err != nil {
-			return fmt.Errorf("failed to decode response: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "failed to decode response")
 		}
 	}
 
@@ -207,6 +211,15 @@ func (c *HTTPClient) GetConfig() (*config.Config, error) {
 	return &cfg, nil
 }
 
+// GetConfigSalvage retrieves the best-effort parse result if normal load failed.
+func (c *HTTPClient) GetConfigSalvage() (*config.ForgivingLoadResult, error) {
+	var res config.ForgivingLoadResult
+	if err := c.doRequest(http.MethodGet, "/api/config/salvage", nil, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
 // UploadBinaryResult is the response from a successful binary upload.
 type UploadBinaryResult struct {
 	Success  bool   `json:"success"`
@@ -221,26 +234,26 @@ func (c *HTTPClient) UploadBinary(binaryPath, arch string) (*UploadBinaryResult,
 	// Open and read the binary file
 	file, err := os.Open(binaryPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open binary: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to open binary")
 	}
 	defer file.Close()
 
 	// Get file info for size
 	stat, err := file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("failed to stat binary: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to stat binary")
 	}
 
 	// Calculate checksum first (need to read entire file)
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, file); err != nil {
-		return nil, fmt.Errorf("failed to calculate checksum: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to calculate checksum")
 	}
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
 	// Seek back to beginning for upload
 	if _, err := file.Seek(0, 0); err != nil {
-		return nil, fmt.Errorf("failed to seek: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to seek")
 	}
 
 	// Create multipart form
@@ -250,31 +263,31 @@ func (c *HTTPClient) UploadBinary(binaryPath, arch string) (*UploadBinaryResult,
 	// Add binary file
 	part, err := writer.CreateFormFile("binary", filepath.Base(binaryPath))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create form file: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to create form file")
 	}
 	if _, err := io.Copy(part, file); err != nil {
-		return nil, fmt.Errorf("failed to copy binary: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to copy binary")
 	}
 
 	// Add checksum field
 	if err := writer.WriteField("checksum", checksum); err != nil {
-		return nil, fmt.Errorf("failed to write checksum field: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to write checksum field")
 	}
 
 	// Add arch field
 	if err := writer.WriteField("arch", arch); err != nil {
-		return nil, fmt.Errorf("failed to write arch field: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to write arch field")
 	}
 
 	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close writer: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to close writer")
 	}
 
 	// Create request
 	url := c.baseURL + "/api/system/upgrade"
 	req, err := http.NewRequest(http.MethodPost, url, body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to create request")
 	}
 
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -288,7 +301,7 @@ func (c *HTTPClient) UploadBinary(binaryPath, arch string) (*UploadBinaryResult,
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "request failed")
 	}
 	defer resp.Body.Close()
 
@@ -381,7 +394,7 @@ func (c *HTTPClient) TailLogs(onLogs func([]LogEntry)) error {
 
 	conn, _, err := dialer.Dial(wsURL, headers)
 	if err != nil {
-		return fmt.Errorf("failed to dial websocket: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to dial websocket")
 	}
 	defer conn.Close()
 
@@ -391,14 +404,14 @@ func (c *HTTPClient) TailLogs(onLogs func([]LogEntry)) error {
 		"topics": []string{"logs"},
 	}
 	if err := conn.WriteJSON(subMsg); err != nil {
-		return fmt.Errorf("failed to subscribe: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to subscribe")
 	}
 
 	// Read Loop
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			return fmt.Errorf("read error: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "read error")
 		}
 
 		// Parse envelope

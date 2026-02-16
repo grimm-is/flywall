@@ -1,17 +1,44 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
-// Interface represents a physical interface configuration.
+// Interface represents a physical or virtual network interface configuration.
+// Each interface can be assigned to a security zone and configured with
+// static IPs, DHCP, VLANs, and other network settings.
 type Interface struct {
-	Name        string   `hcl:"name,label" json:"name"`
-	Description string   `hcl:"description,optional" json:"description,omitempty"`
-	Disabled    bool     `hcl:"disabled,optional" json:"disabled"` // Temporarily disable this interface (bring it down)
-	Zone        string   `hcl:"zone,optional" json:"zone,omitempty"`
-	NewZone     *Zone    `hcl:"new_zone,block" json:"new_zone,omitempty"` // Create zone inline
-	IPv4        []string `hcl:"ipv4,optional" json:"ipv4,omitempty"`
-	IPv6        []string `hcl:"ipv6,optional" json:"ipv6,omitempty"` // IPv6 addresses (static)
-	DHCP        bool     `hcl:"dhcp,optional" json:"dhcp"`
-	DHCPv6      bool     `hcl:"dhcp_v6,optional" json:"dhcp_v6"` // Enable DHCPv6 Client (WAN)
-	RA          bool     `hcl:"ra,optional" json:"ra"`           // Enable Router Advertisements (Server)
+	// Name is the system interface name.
+	// @example: "eth0"
+	Name string `hcl:"name,label" json:"name"`
+	// Human-readable description for this interface.
+	// @example: "WAN Uplink"
+	Description string `hcl:"description,optional" json:"description,omitempty"`
+	// Temporarily disable this interface (brings it down).
+	// @default: false
+	Disabled bool `hcl:"disabled,optional" json:"disabled"`
+	// Assign this interface to a security zone.
+	// @example: "wan"
+	// @ref: Zone
+	Zone string `hcl:"zone,optional" json:"zone,omitempty"`
+	// Assign this interface to a VRF (L3 domain).
+	// @example: "blue"
+	VRF string `hcl:"vrf,optional" json:"vrf,omitempty"`
+	// Create and assign a new zone inline.
+	NewZone *Zone `hcl:"new_zone,block" json:"new_zone,omitempty"`
+	// Static IPv4 addresses in CIDR notation.
+	// @example: ["192.168.1.1/24"]
+	IPv4 []string `hcl:"ipv4,optional" json:"ipv4,omitempty"`
+	// Static IPv6 addresses in CIDR notation.
+	// @example: ["2001:db8::1/64"]
+	IPv6 []string `hcl:"ipv6,optional" json:"ipv6,omitempty"`
+	// Enable DHCP client on this interface.
+	// @default: false
+	DHCP bool `hcl:"dhcp,optional" json:"dhcp"`
+	// Enable DHCPv6 client for IPv6 address assignment.
+	// @default: false
+	DHCPv6 bool `hcl:"dhcp_v6,optional" json:"dhcp_v6"`
+	// Enable Router Advertisements (for IPv6 server mode).
+	// @default: false
+	RA bool `hcl:"ra,optional" json:"ra"`
 	// DHCPClient specifies how DHCP client is managed:
 	//   - "builtin" (default): Use Flywall's built-in DHCP client
 	//   - "external": External DHCP client (udhcpc, dhclient, etc.) manages this interface
@@ -26,11 +53,19 @@ type Interface struct {
 	// - Locally initiated traffic marked for this table (e.g. via specific IP) uses the table.
 	Table int `hcl:"table,optional" json:"table,omitempty"`
 
-	Gateway   string `hcl:"gateway,optional" json:"gateway,omitempty"`       // Default gateway for static config
-	GatewayV6 string `hcl:"gateway_v6,optional" json:"gateway_v6,omitempty"` // Default gateway for static IPv6
-	MTU       int    `hcl:"mtu,optional" json:"mtu,omitempty"`
-	Bond      *Bond  `hcl:"bond,block" json:"bond,omitempty"`
-	VLANs     []VLAN `hcl:"vlan,block" json:"vlans,omitempty"`
+	// Default gateway for static IPv4 configuration.
+	// @example: "192.168.1.254"
+	Gateway string `hcl:"gateway,optional" json:"gateway,omitempty"`
+	// Default gateway for static IPv6 configuration.
+	// @example: "2001:db8::1"
+	GatewayV6 string `hcl:"gateway_v6,optional" json:"gateway_v6,omitempty"`
+	// Maximum Transmission Unit size in bytes.
+	// @min: 576
+	// @max: 9000
+	// @default: 1500
+	MTU   int    `hcl:"mtu,optional" json:"mtu,omitempty"`
+	Bond  *Bond  `hcl:"bond,block" json:"bond,omitempty"`
+	VLANs []VLAN `hcl:"vlan,block" json:"vlan,omitempty"`
 
 	// Anti-Lockout protection (sandbox mode only)
 	// When true, implicit accept rules are created for this interface in the
@@ -81,8 +116,15 @@ type Route struct {
 // RoutingTable represents a custom routing table configuration.
 type RoutingTable struct {
 	Name   string  `hcl:"name,label" json:"name"`
-	ID     int     `hcl:"id" json:"id"`              // Table ID (1-252 for custom tables)
-	Routes []Route `hcl:"route,block" json:"routes"` // Routes in this table
+	ID     int     `hcl:"id" json:"id"`             // Table ID (1-252 for custom tables)
+	Routes []Route `hcl:"route,block" json:"route"` // Routes in this table
+}
+
+// VRF represents a Virtual Routing and Forwarding instance.
+type VRF struct {
+	Name    string `hcl:"name,label" json:"name"`
+	TableID int    `hcl:"table_id" json:"table_id"` // Routing table ID
+	Comment string `hcl:"comment,optional" json:"comment,omitempty"`
 }
 
 // PolicyRoute represents a policy-based routing rule.
@@ -104,6 +146,7 @@ type PolicyRoute struct {
 	Table     int  `hcl:"table,optional" json:"table,omitempty"`         // Routing table to use
 	Blackhole bool `hcl:"blackhole,optional" json:"blackhole,omitempty"` // Drop matching packets
 	Prohibit  bool `hcl:"prohibit,optional" json:"prohibit,omitempty"`   // Return ICMP prohibited
+	Goto      int  `hcl:"goto,optional" json:"goto,omitempty"`           // Jump to another table? Or just set table field.
 
 	Enabled bool   `hcl:"enabled,optional" json:"enabled,omitempty"` // Default true
 	Comment string `hcl:"comment,optional" json:"comment,omitempty"`
@@ -142,7 +185,7 @@ type MarkRule struct {
 type MultiWAN struct {
 	Enabled     bool       `hcl:"enabled,optional" json:"enabled,omitempty"`
 	Mode        string     `hcl:"mode,optional" json:"mode,omitempty"` // "failover", "loadbalance", "both"
-	Connections []WANLink  `hcl:"wan,block" json:"connections"`
+	Connections []WANLink  `hcl:"wan,block" json:"wan"`
 	HealthCheck *WANHealth `hcl:"health_check,block" json:"health_check,omitempty"`
 }
 
@@ -169,7 +212,7 @@ type WANHealth struct {
 // This enables dynamic switching between uplinks while preserving existing connections.
 type UplinkGroup struct {
 	Name             string      `hcl:"name,label" json:"name"`
-	Uplinks          []UplinkDef `hcl:"uplink,block" json:"uplinks"`
+	Uplinks          []UplinkDef `hcl:"uplink,block" json:"uplink"`
 	SourceNetworks   []string    `hcl:"source_networks" json:"source_networks"`                        // CIDRs that use this group
 	SourceInterfaces []string    `hcl:"source_interfaces,optional" json:"source_interfaces,omitempty"` // Interfaces for connmark restore
 	SourceZones      []string    `hcl:"source_zones,optional" json:"source_zones,omitempty"`           // Zones that use this group
@@ -249,7 +292,7 @@ type OSPFArea struct {
 type BGP struct {
 	ASN       int        `hcl:"asn,optional" json:"asn,omitempty"`
 	RouterID  string     `hcl:"router_id,optional" json:"router_id,omitempty"`
-	Neighbors []Neighbor `hcl:"neighbor,block" json:"neighbors,omitempty"`
+	Neighbors []Neighbor `hcl:"neighbor,block" json:"neighbor,omitempty"`
 	Networks  []string   `hcl:"networks,optional" json:"networks,omitempty"`
 }
 
@@ -267,8 +310,8 @@ type QoSPolicy struct {
 	Direction    string     `hcl:"direction,optional" json:"direction"` // "ingress", "egress", "both" (default: both)
 	DownloadMbps int        `hcl:"download_mbps,optional" json:"download_mbps"`
 	UploadMbps   int        `hcl:"upload_mbps,optional" json:"upload_mbps"`
-	Classes      []QoSClass `hcl:"class,block" json:"classes"`
-	Rules        []QoSRule  `hcl:"rule,block" json:"rules"` // Traffic classification rules
+	Classes      []QoSClass `hcl:"class,block" json:"class"`
+	Rules        []QoSRule  `hcl:"rule,block" json:"rule"` // Traffic classification rules
 }
 
 // QoSClass defines a traffic class for QoS.

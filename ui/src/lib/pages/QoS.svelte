@@ -9,7 +9,6 @@
     import {
         Card,
         Button,
-        Modal,
         Input,
         Select,
         Badge,
@@ -17,6 +16,8 @@
         Spinner,
         Icon,
     } from "$lib/components";
+    import QoSPolicyCreateCard from "$lib/components/QoSPolicyCreateCard.svelte";
+    import QoSPolicyEditCard from "$lib/components/QoSPolicyEditCard.svelte";
     import { t } from "svelte-i18n";
 
     interface QoSClass {
@@ -54,18 +55,9 @@
 
     let policies = $state<QoSPolicy[]>([]);
     let loading = $state(false);
-    let showPolicyModal = $state(false);
-    let editingPolicy = $state<QoSPolicy | null>(null);
-    let sentinelEnabled = $state(false); // Mock state for Sentinel AI
-
-    // Policy form state
-    let policyName = $state("");
-    let policyInterface = $state("");
-    let policyEnabled = $state(true);
-    let policyDirection = $state("both");
-    let policyDownload = $state("");
-    let policyUpload = $state("");
-    let formError = $state("");
+    let isEditingPolicy = $state(false);
+    let isAddingPolicy = $state(false);
+    let editingPolicyIndex = $state<number | null>(null);
 
     const interfaces = $derived($config?.interfaces || []);
 
@@ -88,68 +80,59 @@
         }
     }
 
-    function openAddPolicy() {
-        editingPolicy = null;
-        policyName = "";
-        // Default to first interface or empty
-        policyInterface = interfaces.length > 0 ? interfaces[0].Name : "";
-        policyEnabled = true;
-        policyDirection = "both";
-        policyDownload = "";
-        policyUpload = "";
-        formError = "";
-        showPolicyModal = true;
+    function toggleAddPolicy() {
+        isAddingPolicy = !isAddingPolicy;
     }
 
-    function openEditPolicy(policy: QoSPolicy) {
-        editingPolicy = policy;
-        policyName = policy.name;
-        policyInterface = policy.interface;
-        policyEnabled = policy.enabled;
-        policyDirection = policy.direction || "both";
-        policyDownload = policy.download_mbps?.toString() || "";
-        policyUpload = policy.upload_mbps?.toString() || "";
-        formError = "";
-        showPolicyModal = true;
+    async function handleCreatePolicy(event: CustomEvent) {
+        const data = event.detail;
+        loading = true;
+        try {
+            const newPolicy: QoSPolicy = {
+                name: data.name,
+                interface: data.interface,
+                enabled: data.enabled,
+                direction: data.direction,
+                download_mbps: parseInt(data.download) || 0,
+                upload_mbps: parseInt(data.upload) || 0,
+                classes: [],
+                rules: [],
+            };
+            const updatedPolicies = [...policies, newPolicy];
+            await api.updateQoSPolicies(updatedPolicies);
+            await loadPolicies();
+            alertStore.success(`QoS policy "${newPolicy.name}" created`);
+            isAddingPolicy = false;
+        } catch (e: any) {
+            alertStore.error(e.message || "Failed to create QoS policy");
+        } finally {
+            loading = false;
+        }
     }
 
-    async function savePolicy() {
-        formError = "";
-        if (!policyName) {
-            formError = "Policy Name is required";
-            return;
-        }
-        if (!policyInterface) {
-            formError = "Interface is required";
-            return;
-        }
+    function openEditPolicy(index: number) {
+        editingPolicyIndex = index;
+        isEditingPolicy = true;
+    }
 
-        const newPolicy: QoSPolicy = {
-            name: policyName,
-            interface: policyInterface,
-            enabled: policyEnabled,
-            direction: policyDirection,
-            download_mbps: parseInt(policyDownload) || 0,
-            upload_mbps: parseInt(policyUpload) || 0,
-            classes: editingPolicy?.classes || [],
-            rules: editingPolicy?.rules || [],
-        };
-
+    async function handleSaveEditPolicy(event: CustomEvent) {
+        const data = event.detail;
         loading = true;
         try {
             let updatedPolicies: QoSPolicy[];
-            if (editingPolicy) {
-                const editName = editingPolicy.name;
-                updatedPolicies = policies.map((p) =>
-                    p.name === editName ? newPolicy : p,
+            if (editingPolicyIndex !== null) {
+                const origName = policies[editingPolicyIndex].name;
+                updatedPolicies = policies.map((p, i) =>
+                    i === editingPolicyIndex ? data : p,
                 );
             } else {
-                updatedPolicies = [...policies, newPolicy];
+                updatedPolicies = [...policies, data];
             }
             await api.updateQoSPolicies(updatedPolicies);
             await loadPolicies();
-            showPolicyModal = false;
-            alertStore.success(`QoS policy "${policyName}" saved`);
+            isEditingPolicy = false;
+            editingPolicyIndex = null;
+            alertStore.success(`QoS policy "${data.name}" saved`);
         } catch (e: any) {
             alertStore.error(e.message || "Failed to save QoS policy");
         } finally {
@@ -200,7 +183,7 @@
     <div class="page-header">
         <div class="header-info">
             <h2>Quality of Service</h2>
-            <p class="subtitle">Traffic shaping and AI-driven prioritization</p>
+            <p class="subtitle">Traffic shaping and prioritization</p>
         </div>
         <div class="header-actions">
             <Button
@@ -212,35 +195,38 @@
                 <Icon name="refresh" size="sm" />
                 Refresh
             </Button>
-            <Button onclick={openAddPolicy} data-testid="add-policy-btn"
-                >+ Add Policy</Button
+
+            <Button onclick={toggleAddPolicy} data-testid="add-policy-btn"
+                >{isAddingPolicy ? "Cancel" : "+ Add Policy"}</Button
             >
         </div>
     </div>
 
-    <!-- Sentinel AI Feature (Spec Compliance) -->
-    <Card className="sentinel-card">
-        <div class="sentinel-content">
-            <div class="sentinel-info">
-                <div class="sentinel-title">
-                    <Icon
-                        name="auto_awesome"
-                        size="md"
-                        className="text-purple-400"
-                    />
-                    <span>Sentinel AI Optimization</span>
-                </div>
-                <p class="sentinel-desc">
-                    Automatically classify and prioritize Gaming and VoIP
-                    traffic using on-device ML inference.
-                </p>
-            </div>
-            <Toggle
-                bind:checked={sentinelEnabled}
-                label={sentinelEnabled ? "Active" : "Inactive"}
+    {#if isAddingPolicy}
+        <div class="mb-4">
+            <QoSPolicyCreateCard
+                {loading}
+                {interfaces}
+                on:save={handleCreatePolicy}
+                on:cancel={toggleAddPolicy}
             />
         </div>
-    </Card>
+    {/if}
+
+    {#if isEditingPolicy && editingPolicyIndex !== null}
+        <div class="mb-4">
+            <QoSPolicyEditCard
+                policy={policies[editingPolicyIndex]}
+                {loading}
+                {interfaces}
+                on:save={handleSaveEditPolicy}
+                on:cancel={() => {
+                    isEditingPolicy = false;
+                    editingPolicyIndex = null;
+                }}
+            />
+        </div>
+    {/if}
 
     {#if loading && policies.length === 0}
         <Card>
@@ -258,7 +244,7 @@
                     Create a QoS policy to manage bandwidth and prioritize
                     traffic.
                 </p>
-                <Button onclick={openAddPolicy}>Create First Policy</Button>
+                <Button onclick={toggleAddPolicy}>Create First Policy</Button>
             </div>
         </Card>
     {:else}
@@ -295,7 +281,8 @@
                             <Button
                                 variant="ghost"
                                 size="sm"
-                                onclick={() => openEditPolicy(policy)}
+                                onclick={() =>
+                                    openEditPolicy(policies.indexOf(policy))}
                                 aria-label={`Edit ${policy.name}`}
                             >
                                 <Icon name="edit" size="sm" />
@@ -370,96 +357,6 @@
     {/if}
 </div>
 
-<!-- Add/Edit Policy Modal -->
-<Modal
-    bind:open={showPolicyModal}
-    title={editingPolicy
-        ? `Edit Policy: ${editingPolicy.name}`
-        : "Add QoS Policy"}
->
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <form
-        class="form-stack"
-        onsubmit={(e) => {
-            e.preventDefault();
-            savePolicy();
-        }}
-    >
-        {#if formError}
-            <div class="error-alert">{formError}</div>
-        {/if}
-
-        <Input
-            id="policy-name"
-            label="Policy Name"
-            bind:value={policyName}
-            placeholder="e.g., wan-shaping"
-            disabled={!!editingPolicy}
-            required
-        />
-
-        <Select
-            id="policy-interface"
-            label="Interface"
-            bind:value={policyInterface}
-            options={interfaces.map((i: any) => ({
-                value: i.Name,
-                label: i.Name,
-            }))}
-            placeholder={interfaces.length === 0
-                ? "No interfaces available"
-                : "Select Interface"}
-            required
-        />
-
-        <Select
-            id="policy-direction"
-            label="Direction"
-            bind:value={policyDirection}
-            options={[
-                { value: "both", label: "Both (Ingress & Egress)" },
-                { value: "ingress", label: "Ingress (Download)" },
-                { value: "egress", label: "Egress (Upload)" },
-            ]}
-        />
-
-        <div class="bandwidth-row">
-            <Input
-                id="policy-download"
-                label="Download (Mbps)"
-                type="number"
-                bind:value={policyDownload}
-                placeholder="100"
-            />
-            <Input
-                id="policy-upload"
-                label="Upload (Mbps)"
-                type="number"
-                bind:value={policyUpload}
-                placeholder="20"
-            />
-        </div>
-
-        <Toggle label="Policy Enabled" bind:checked={policyEnabled} />
-
-        <div class="modal-actions">
-            <Button
-                type="button"
-                variant="ghost"
-                onclick={() => (showPolicyModal = false)}>Cancel</Button
-            >
-            <Button
-                type="submit"
-                disabled={loading}
-                data-testid="save-policy-btn"
-            >
-                {#if loading}<Spinner size="sm" />{/if}
-                {editingPolicy ? "Save Changes" : "Create Policy"}
-            </Button>
-        </div>
-    </form>
-</Modal>
-
 <style>
     .qos-page {
         display: flex;
@@ -488,27 +385,6 @@
     .header-actions {
         display: flex;
         gap: var(--space-2);
-    }
-
-    .sentinel-content {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--space-4);
-    }
-
-    .sentinel-title {
-        display: flex;
-        align-items: center;
-        gap: var(--space-2);
-        font-weight: 600;
-        color: var(--color-foreground);
-    }
-
-    .sentinel-desc {
-        margin: var(--space-1) 0 0;
-        font-size: var(--text-sm);
-        color: var(--color-muted);
     }
 
     .loading-state,

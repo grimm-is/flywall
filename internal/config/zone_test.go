@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 import (
@@ -23,8 +25,12 @@ zone "wan" {
 	}
 
 	zone := cfg.Zones[0]
-	if zone.Interface != "eth0" {
-		t.Errorf("Interface = %q, want %q", zone.Interface, "eth0")
+	// Canonicalization moves 'interface' to Matches
+	if len(zone.Matches) != 1 {
+		t.Fatalf("len(Matches) = %d, want 1", len(zone.Matches))
+	}
+	if zone.Matches[0].Interface != "eth0" {
+		t.Errorf("Matches[0].Interface = %q, want %q", zone.Matches[0].Interface, "eth0")
 	}
 	if !zone.DHCP {
 		t.Error("DHCP = false, want true")
@@ -52,8 +58,12 @@ zone "vpn" {
 	}
 
 	zone := cfg.Zones[0]
-	if zone.Interface != "wg+" {
-		t.Errorf("Interface = %q, want %q", zone.Interface, "wg+")
+	// Canonicalization moves 'interface' to Matches
+	if len(zone.Matches) != 1 {
+		t.Fatalf("len(Matches) = %d, want 1", len(zone.Matches))
+	}
+	if zone.Matches[0].Interface != "wg+" {
+		t.Errorf("Matches[0].Interface = %q, want %q", zone.Matches[0].Interface, "wg+")
 	}
 }
 
@@ -76,9 +86,21 @@ zone "guest" {
 	}
 
 	zone := cfg.Zones[0]
-	if zone.Interface != "eth1" {
-		t.Errorf("Interface = %q, want %q", zone.Interface, "eth1")
+	// Canonicalization moves 'interface' to Matches
+	if len(zone.Matches) != 1 {
+		t.Fatalf("len(Matches) = %d, want 1", len(zone.Matches))
 	}
+	if zone.Matches[0].Interface != "eth1" {
+		t.Errorf("Matches[0].Interface = %q, want %q", zone.Matches[0].Interface, "eth1")
+	}
+	// Src and VLAN stay global defaults?
+	// RuleMatch doesn't have VLAN? No, wait. RuleMatch HAS Src/VLAN.
+	// But Zone also has them.
+	// If `src` is top-level, it might NOT be cleared if it applies to all matches?
+	// `validate.go` shows `zone.Src` validation.
+	// `migrate_zones.go` ONLY handles `Interface`, `Interfaces`, `iface.Zone`.
+	// It does NOT appear to migrate `Src` or `VLAN` into matches.
+	// So checking `zone.Src` should be fine.
 	if zone.Src != "192.168.10.0/24" {
 		t.Errorf("Src = %q, want %q", zone.Src, "192.168.10.0/24")
 	}
@@ -152,7 +174,7 @@ zone "guest" {
 	}
 }
 
-func TestZone_DeprecatedInterfaces(t *testing.T) {
+func TestZone_InterfacesAttributeRejected(t *testing.T) {
 	hcl := `
 schema_version = "1.0"
 
@@ -160,27 +182,27 @@ zone "lan" {
   interfaces = ["eth1"]
 }
 `
-	result, err := LoadHCLWithOptions([]byte(hcl), "test.hcl", DefaultLoadOptions())
-	if err != nil {
-		t.Fatalf("LoadHCLWithOptions() error = %v", err)
+	// The interfaces attribute was removed and should now be rejected
+	_, err := LoadHCLWithOptions([]byte(hcl), "test.hcl", DefaultLoadOptions())
+	if err == nil {
+		t.Fatal("Expected error for removed 'interfaces' attribute, but got none")
 	}
 
-	// Should have a warning about deprecated syntax
-	hasWarning := false
-	for _, w := range result.Warnings {
-		if contains(w, "interfaces") || contains(w, "deprecated") {
-			hasWarning = true
-			break
+	// Verify the error message references the interfaces attribute
+	errStr := err.Error()
+	if !(len(errStr) >= 10 && (errStr[0:10] == "interfaces" || hasSubstr(errStr, "interfaces"))) {
+		t.Errorf("Error message should reference 'interfaces', got: %v", err)
+	}
+}
+
+// hasSubstr checks if s contains substr (simple inline check to avoid conflicts)
+func hasSubstr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
 		}
 	}
-	if !hasWarning {
-		t.Error("Expected deprecation warning for 'interfaces' field")
-	}
-
-	// Config should still parse
-	if len(result.Config.Zones) != 1 {
-		t.Fatalf("len(Zones) = %d, want 1", len(result.Config.Zones))
-	}
+	return false
 }
 
 func TestZone_WithIPAssignment(t *testing.T) {
@@ -201,8 +223,12 @@ zone "lan" {
 	}
 
 	zone := cfg.Zones[0]
-	if zone.Interface != "eth1" {
-		t.Errorf("Interface = %q, want %q", zone.Interface, "eth1")
+	// Normalized
+	if len(zone.Matches) != 1 {
+		t.Fatalf("len(Matches) = %d, want 1", len(zone.Matches))
+	}
+	if zone.Matches[0].Interface != "eth1" {
+		t.Errorf("Matches[0].Interface = %q, want %q", zone.Matches[0].Interface, "eth1")
 	}
 	if len(zone.IPv4) != 1 || zone.IPv4[0] != "192.168.1.1/24" {
 		t.Errorf("IPv4 = %v, want [192.168.1.1/24]", zone.IPv4)

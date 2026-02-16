@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package firewall
 
 import (
@@ -29,6 +31,14 @@ func BuildSafeModeScript(tableName string, trustedInterfaces []string) string {
 	sb.AddLine("flush ruleset")
 	sb.AddTable()
 
+	// Define blocked_ips set for fail2ban-style IP blocking
+	// This set is managed dynamically via RPC from the API server
+	// We define it in safe mode so the RPC calls don't fail when safe mode is active
+	sb.AddSet("blocked_ips", "ipv4_addr", "[ipset:blocked_ips]", 0)
+
+	// Add a comment to help debug
+	sb.AddLine("# blocked_ips set created for fail2ban IP blocking")
+
 	// INPUT chain - policy DROP
 	sb.AddChain("input", "filter", "input", 0, "drop")
 	// FORWARD chain - policy DROP (no forwarding in safe mode)
@@ -44,8 +54,11 @@ func BuildSafeModeScript(tableName string, trustedInterfaces []string) string {
 	// Forward: NO established accept - this kills all forwarded connections immediately
 
 	// Loopback always allowed
+	// Loopback always allowed (Paranoid rules)
 	sb.AddRule("input", "iifname \"lo\" accept")
 	sb.AddRule("output", "oifname \"lo\" accept")
+	sb.AddRule("input", "ip saddr 127.0.0.0/8 accept")
+	sb.AddRule("output", "ip daddr 127.0.0.0/8 accept")
 
 	// ICMP for diagnostics
 	sb.AddRule("input", "meta l4proto icmp accept")
@@ -80,13 +93,15 @@ func BuildSafeModeScript(tableName string, trustedInterfaces []string) string {
 		ifaceSet := strings.Join(quotedIfaces, ", ")
 
 		// Web UI / API ports
-		sb.AddRule("input", fmt.Sprintf("iifname { %s } tcp dport { 22, 80, 443, 8080, 8443 } accept", ifaceSet))
+		ports := "{ 22, 80, 443, 8080, 8082, 8083, 8443 }"
+		sb.AddRule("input", fmt.Sprintf("iifname { %s } tcp dport %s accept", ifaceSet, ports))
 		// DNS from LAN clients
 		sb.AddRule("input", fmt.Sprintf("iifname { %s } udp dport 53 accept", ifaceSet))
+
 		sb.AddRule("input", fmt.Sprintf("iifname { %s } tcp dport 53 accept", ifaceSet))
 	} else {
 		// Allow from any interface if none specified
-		sb.AddRule("input", "tcp dport { 22, 80, 443, 8080, 8443 } accept")
+		sb.AddRule("input", "tcp dport { 22, 80, 443, 8080, 8082, 8083, 8443 } accept")
 		sb.AddRule("input", "udp dport 53 accept")
 		sb.AddRule("input", "tcp dport 53 accept")
 	}

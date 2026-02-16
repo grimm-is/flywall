@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package scanner
 
 import (
@@ -7,14 +9,14 @@ import (
 
 // DeviceFingerprint represents the identity and behavior profile of a device.
 type DeviceFingerprint struct {
-	IP          string   `json:"ip"`
-	MAC         string   `json:"mac,omitempty"`
-	
+	IP  string `json:"ip"`
+	MAC string `json:"mac,omitempty"`
+
 	// DHCP Fingerprints
-	DHCPv4Vendor  string   `json:"dhcp_v4_vendor,omitempty"` // Option 60
-	DHCPv4Params  string   `json:"dhcp_v4_params,omitempty"` // Option 55 (Hex)
-	DHCPv6Vendor  string   `json:"dhcp_v6_vendor,omitempty"` // Option 16
-	DHCPv6Options string   `json:"dhcp_v6_options,omitempty"` // Option 6 (Hex)
+	DHCPv4Vendor  string `json:"dhcp_v4_vendor,omitempty"`  // Option 60
+	DHCPv4Params  string `json:"dhcp_v4_params,omitempty"`  // Option 55 (Hex)
+	DHCPv6Vendor  string `json:"dhcp_v6_vendor,omitempty"`  // Option 16
+	DHCPv6Options string `json:"dhcp_v6_options,omitempty"` // Option 6 (Hex)
 
 	// mDNS Fingerprints
 	MDNSNames    []string `json:"mdns_names,omitempty"`
@@ -26,11 +28,11 @@ type DeviceFingerprint struct {
 
 	// Flow Statistics (Passive)
 	// We aggregate these to match conntrack capabilities
-	FlowsSeen      int64   `json:"flows_seen"`
-	TotalBytesOut  uint64  `json:"total_bytes_out"`
-	TotalBytesIn   uint64  `json:"total_bytes_in"`
+	FlowsSeen       int64   `json:"flows_seen"`
+	TotalBytesOut   uint64  `json:"total_bytes_out"`
+	TotalBytesIn    uint64  `json:"total_bytes_in"`
 	AvgFlowDuration float64 `json:"avg_flow_duration"`
-	
+
 	mu sync.Mutex
 }
 
@@ -49,7 +51,7 @@ func NewDeviceFingerprint(ip string) *DeviceFingerprint {
 func (f *DeviceFingerprint) AddMDNS(name, service string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	
+
 	if name != "" && !contains(f.MDNSNames, name) {
 		f.MDNSNames = append(f.MDNSNames, name)
 	}
@@ -78,7 +80,7 @@ func (f *DeviceFingerprint) UpdateStats(bytesOut, bytesIn uint64, duration float
 
 	// Running average for duration
 	f.AvgFlowDuration = (f.AvgFlowDuration*float64(f.FlowsSeen) + duration) / float64(f.FlowsSeen+1)
-	
+
 	f.FlowsSeen++
 	f.TotalBytesOut += bytesOut
 	f.TotalBytesIn += bytesIn

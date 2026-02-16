@@ -46,14 +46,18 @@ schema_version = "1.0"
 ip_forwarding = true
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
   management {
     ssh = true
   }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 interface "veth-lan" {
@@ -95,7 +99,7 @@ setup_test_topology
 ok $? "Test topology created"
 
 # Test 2: Apply firewall rules
-apply_firewall_rules "$TEST_CONFIG" /tmp/service_access.log
+apply_firewall_rules "$TEST_CONFIG" /tmp/service_access_$$.log
 ok $? "Firewall rules applied"
 
 dilated_sleep 1

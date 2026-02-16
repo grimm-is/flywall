@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 // DNS is the top-level DNS configuration block.
@@ -41,7 +43,7 @@ type DNS struct {
 // The zone label supports wildcards (e.g., "internal-*").
 type DNSServe struct {
 	// Zone name (label) - can use wildcards
-	Zone string `hcl:"zone,label" json:"zone"`
+	Zone string `hcl:"name,label" json:"name"`
 
 	// Listen configuration
 	ListenPort int `hcl:"listen_port,optional" json:"listen_port,omitempty"` // Default 53
@@ -77,7 +79,7 @@ type DNSServe struct {
 
 	// Static entries and zones
 	Hosts []DNSHostEntry `hcl:"host,block" json:"hosts,omitempty"`
-	Zones []DNSZone      `hcl:"zone,block" json:"zones,omitempty"`
+	Zones []DNSZone      `hcl:"zone,block" json:"zone,omitempty"`
 }
 
 // DNSInspect configures DNS traffic inspection for a zone.

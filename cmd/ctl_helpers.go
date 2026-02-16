@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
@@ -14,16 +16,22 @@ import (
 	"syscall"
 	"time"
 
+	"grimm.is/flywall/internal/ebpf"
+	"grimm.is/flywall/internal/firewall"
+	"grimm.is/flywall/internal/host"
+	"grimm.is/flywall/internal/install"
+
 	"github.com/insomniacslk/dhcp/dhcpv4"
+	"github.com/zclconf/go-cty/cty"
 
 	"grimm.is/flywall/internal/alerting"
 	"grimm.is/flywall/internal/analytics"
+	"grimm.is/flywall/internal/auth"
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/ctlplane"
 	"grimm.is/flywall/internal/device"
 	fw "grimm.is/flywall/internal/firewall"
-	"grimm.is/flywall/internal/health"
 	"grimm.is/flywall/internal/identity"
 	"grimm.is/flywall/internal/learning"
 	"grimm.is/flywall/internal/logging"
@@ -33,9 +41,9 @@ import (
 	"grimm.is/flywall/internal/qos"
 	"grimm.is/flywall/internal/runtime"
 	"grimm.is/flywall/internal/sentinel"
+	"grimm.is/flywall/internal/ssh"
+	"grimm.is/flywall/internal/supervisor"
 	"grimm.is/flywall/internal/vpn"
-
-	// "grimm.is/flywall/internal/services/ddns"
 
 	"grimm.is/flywall/internal/services/dhcp"
 	"grimm.is/flywall/internal/services/discovery"
@@ -83,9 +91,12 @@ type ctlServices struct {
 	metricsCollector   *metrics.Collector
 	runtimeSvc         *runtime.DockerClient
 	haSvc              *ha.Service
+	authStore          *auth.Store
+	sshSvc             *ssh.Server
 	analyticsStore     *analytics.Store
 	analyticsCollector *analytics.Collector
 	queryLogStore      *querylog.Store
+	ebpfMgr            *ebpf.Manager
 
 	// Cleanup functions to call on shutdown
 	cleanupFuncs []func()
@@ -115,11 +126,29 @@ func initializeCtlLogging() {
 	}
 	logging.CaptureStdio(logFile)
 	logging.RedirectStdLog()
+
+	// Set log level from environment
+	if lvl := os.Getenv("FLYWALL_LOG_LEVEL"); lvl != "" {
+		var l logging.Level
+		switch strings.ToLower(lvl) {
+		case "debug":
+			l = logging.LevelDebug
+		case "info":
+			l = logging.LevelInfo
+		case "warn":
+			l = logging.LevelWarn
+		case "error":
+			l = logging.LevelError
+		default:
+			l = logging.LevelInfo
+		}
+		logging.Default().SetLevel(l)
+	}
 }
 
 // setupPIDFile creates and manages the PID file with watchdog.
 func setupPIDFile(monitorsCtx context.Context) (cleanup func(), err error) {
-	runDir := brand.GetRunDir()
+	runDir := install.GetRunDir()
 	if err := os.MkdirAll(runDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create run directory: %w", err)
 	}
@@ -169,21 +198,21 @@ func setupPIDFile(monitorsCtx context.Context) (cleanup func(), err error) {
 func loadConfiguration(rtCfg *CtlRuntimeConfig) (*config.Config, error) {
 	// Note: Config file existence is checked in RunCtl before logging starts
 
-	trackerPath := brand.GetStateDir()
+	trackerPath := install.GetStateDir()
 	if rtCfg.StateDir != "" {
 		trackerPath = rtCfg.StateDir
 	}
-	crashTracker := health.NewCrashTracker(trackerPath)
 
-	// Skip crash loop check during upgrade
+	// Skip crash loop check if:
+	// - Upgrade in progress
+	// - Test mode / interactive / non-service environment
 	if rtCfg.IsUpgrade {
 		logging.Info("Skipping crash loop check (upgrade in progress)")
+	} else if supervisor.ShouldSkipDetection() {
+		logging.Debug("Skipping crash loop check (test/interactive environment)")
 	} else {
-		safeMode, err := crashTracker.CheckCrashLoop()
-		if err != nil {
-			logging.Warn(fmt.Sprintf("Warning: failed to check crash loop: %v", err))
-		}
-		if safeMode {
+		sup := supervisor.New(trackerPath, supervisor.DefaultConfig())
+		if sup.ShouldEnterSafeMode() {
 			logging.Error("!!! CRASH LOOP DETECTED - ENTERING SAFE MODE !!!")
 			return &config.Config{
 				SchemaVersion: "SAFE_MODE",
@@ -191,7 +220,7 @@ func loadConfiguration(rtCfg *CtlRuntimeConfig) (*config.Config, error) {
 				IPForwarding:  false,
 			}, nil
 		}
-		crashTracker.StartStabilityTimer()
+		sup.StartStabilityTimer()
 	}
 
 	result, err := config.LoadFileWithOptions(rtCfg.ConfigFile, config.DefaultLoadOptions())
@@ -217,8 +246,8 @@ func loadConfiguration(rtCfg *CtlRuntimeConfig) (*config.Config, error) {
 			logging.Info("Use 'flywall config diff' or Web UI to see full details")
 		}
 
-		// Store the forgiving result for later API access
-		// TODO: Make this accessible via API/ctlplane
+		// Save for later injection into Server
+		rtCfg.ForgivingResult = forgiving
 		return forgiving.Config, nil
 	}
 
@@ -270,7 +299,7 @@ func configureSyslog(cfg *config.Config) {
 
 // initializeStateStore creates and configures the state store.
 func initializeStateStore(rtCfg *CtlRuntimeConfig, cfg *config.Config) (state.Store, error) {
-	dbPath := filepath.Join(brand.GetStateDir(), "state.db")
+	dbPath := filepath.Join(install.GetStateDir(), "state.db")
 	if rtCfg.StateDir != "" {
 		dbPath = filepath.Join(rtCfg.StateDir, "state.db")
 	} else if cfg.StateDir != "" {
@@ -316,6 +345,7 @@ func configureReplication(cfg *config.Config, stateStore state.Store) (*state.Re
 		Mode:           mode,
 		ListenAddr:     cfg.Replication.ListenAddr,
 		PrimaryAddr:    cfg.Replication.PrimaryAddr,
+		PeerAddr:       cfg.Replication.PeerAddr,
 		ReconnectDelay: 5 * time.Second,
 		SyncTimeout:    30 * time.Second,
 	}
@@ -335,7 +365,7 @@ func configureReplication(cfg *config.Config, stateStore state.Store) (*state.Re
 }
 
 // configureHA sets up high-availability failover if configured.
-func configureHA(cfg *config.Config, services *ctlServices) func() {
+func configureHA(cfg *config.Config, services *ctlServices, replicator *state.Replicator) func() {
 	if cfg.Replication == nil || cfg.Replication.HA == nil || !cfg.Replication.HA.Enabled {
 		return func() {}
 	}
@@ -372,12 +402,24 @@ func configureHA(cfg *config.Config, services *ctlServices) func() {
 		if services.dnsSvc != nil {
 			logging.Info("HA: DNS service continues")
 		}
+		// Switch replication to primary mode
+		if replicator != nil {
+			if err := replicator.SetMode(state.ModePrimary); err != nil {
+				logging.Error(fmt.Sprintf("Failed to switch replication to primary: %v", err))
+			}
+		}
 		return nil
 	})
 
 	haSvc.OnBecomeBackup(func() error {
 		logging.Info("HA: Becoming backup - stopping services")
 		// Services continue running but won't serve on VIPs
+		// Switch replication to replica mode
+		if replicator != nil {
+			if err := replicator.SetMode(state.ModeReplica); err != nil {
+				logging.Error(fmt.Sprintf("Failed to switch replication to replica: %v", err))
+			}
+		}
 		return nil
 	})
 
@@ -476,6 +518,14 @@ func initializeCoreServices(ctx context.Context, cfg *config.Config, netMgr *net
 	go services.metricsCollector.Start()
 	services.addCleanup(services.metricsCollector.Stop)
 
+	// Auth Store (needed for SSH)
+	authStore, err := auth.NewStore("")
+	if err != nil {
+		logging.Warn(fmt.Sprintf("Failed to initialize auth store: %v", err))
+	} else {
+		services.authStore = authStore
+	}
+
 	// Syslog Forwarding
 	if cfg.Syslog != nil && cfg.Syslog.Enabled {
 		syslogCfg := logging.SyslogConfig{
@@ -506,7 +556,7 @@ func initializeCoreServices(ctx context.Context, cfg *config.Config, netMgr *net
 	netMgr.SetDNSUpdater(services.dnsSvc)
 
 	// Query Logger
-	qlPath := filepath.Join(brand.GetStateDir(), "querylog.db")
+	qlPath := filepath.Join(install.GetStateDir(), "querylog.db")
 	if cfg.StateDir != "" {
 		qlPath = filepath.Join(cfg.StateDir, "querylog.db")
 	}
@@ -645,7 +695,7 @@ func initializeCoreServices(ctx context.Context, cfg *config.Config, netMgr *net
 
 	// Firewall
 	fwLogger := logging.WithComponent("firewall")
-	fwMgr, err := fw.NewManager(fwLogger, "")
+	fwMgr, err := fw.NewManager(fwLogger, install.GetCacheDir())
 	if err != nil {
 		logging.Error(fmt.Sprintf("Error initializing firewall manager: %v", err))
 	} else {
@@ -691,9 +741,9 @@ func initializeCoreServices(ctx context.Context, cfg *config.Config, netMgr *net
 	// Ensure required nftables chains exist (UplinkManager fallback mode expects them)
 	// mark_prerouting: for connection marking
 	// nat_postrouting: for SNAT
-	exec.Command("nft", "add", "table", "inet", "flywall").Run()
-	exec.Command("nft", "add", "chain", "inet", "flywall", "mark_prerouting", "{ type filter hook prerouting priority -150; policy accept; }").Run()
-	exec.Command("nft", "add", "chain", "inet", "flywall", "nat_postrouting", "{ type nat hook postrouting priority 100; policy accept; }").Run()
+	exec.Command("nft", "add", "table", "inet", brand.LowerName).Run()
+	exec.Command("nft", "add", "chain", "inet", brand.LowerName, "mark_prerouting", "{ type filter hook prerouting priority -150; policy accept; }").Run()
+	exec.Command("nft", "add", "chain", "inet", brand.LowerName, "nat_postrouting", "{ type nat hook postrouting priority 100; policy accept; }").Run()
 
 	// Convert MultiWAN config to UplinkGroups
 	var uplinkGroups []config.UplinkGroup
@@ -776,7 +826,123 @@ func initializeCoreServices(ctx context.Context, cfg *config.Config, netMgr *net
 
 // initializeAdditionalServices creates secondary services (DDNS, Threat Intel, etc.)
 func initializeAdditionalServices(ctx context.Context, cfg *config.Config, services *ctlServices) {
+	// Alerting Engine
+	services.alertEngine = alerting.NewEngine()
+	if cfg.Notifications != nil {
+		services.alertEngine.UpdateConfig(cfg.Notifications)
+	}
+	services.alertEngine.Start(ctx)
+
+	// eBPF Manager (high-performance packet processing)
+	if cfg.EBPF != nil && cfg.EBPF.Enabled {
+		logging.Info("Initializing eBPF subsystem...")
+		ebpfCfg := ebpf.ConfigFromGlobal(cfg.EBPF)
+		ebpfCfg.Enabled = cfg.EBPF.Enabled
+
+		// Copy performance settings if available
+		if cfg.EBPF.Performance != nil {
+			ebpfCfg.Performance.MaxCPUPercent = cfg.EBPF.Performance.MaxCPUPercent
+			ebpfCfg.Performance.MaxMemoryMB = cfg.EBPF.Performance.MaxMemoryMB
+			ebpfCfg.Performance.MaxEventsPerSec = cfg.EBPF.Performance.MaxEventsPerSec
+			ebpfCfg.Performance.MaxPPS = cfg.EBPF.Performance.MaxPPS
+		}
+
+		// Copy adaptive settings if available
+		if cfg.EBPF.Adaptive != nil {
+			ebpfCfg.Adaptive.Enabled = cfg.EBPF.Adaptive.Enabled
+			ebpfCfg.Adaptive.ScaleBackThreshold = cfg.EBPF.Adaptive.ScaleBackThreshold
+			ebpfCfg.Adaptive.ScaleBackRate = cfg.EBPF.Adaptive.ScaleBackRate
+			ebpfCfg.Adaptive.MinimumFeatures = cfg.EBPF.Adaptive.MinimumFeatures
+			if cfg.EBPF.Adaptive.Sampling != nil {
+				ebpfCfg.Adaptive.SamplingConfig.Enabled = cfg.EBPF.Adaptive.Sampling.Enabled
+				ebpfCfg.Adaptive.SamplingConfig.MinSampleRate = cfg.EBPF.Adaptive.Sampling.MinSampleRate
+				ebpfCfg.Adaptive.SamplingConfig.MaxSampleRate = cfg.EBPF.Adaptive.Sampling.MaxSampleRate
+				ebpfCfg.Adaptive.SamplingConfig.AdaptiveRate = cfg.EBPF.Adaptive.Sampling.AdaptiveRate
+			}
+		}
+
+		// Copy feature settings
+		if cfg.EBPF.Features != nil {
+			for _, feature := range cfg.EBPF.Features {
+				configMap := make(map[string]interface{})
+				if !feature.Config.IsNull() {
+					// Convert cty.Value to map[string]interface{}
+					if err := cty.Walk(feature.Config, func(path cty.Path, value cty.Value) (bool, error) {
+						if len(path) == 1 {
+							if name, ok := path[0].(cty.GetAttrStep); ok {
+								configMap[name.Name] = value.AsString()
+							}
+						}
+						return true, nil
+					}); err != nil {
+						logging.Error(fmt.Sprintf("Failed to convert feature config: %v", err))
+					}
+				}
+
+				ebpfCfg.Features[feature.Name] = ebpf.FeatureConfig{
+					Enabled:  feature.Enabled,
+					Priority: feature.Priority,
+					Config:   configMap,
+				}
+			}
+		}
+
+		// Check system requirements
+		issues := host.VerifyBPFSupport()
+		for _, issue := range issues {
+			if issue.Fatal {
+				logging.Error("Fatal eBPF requirement missing", "feature", issue.Feature, "error", issue.Message)
+			} else {
+				logging.Warn("eBPF performance warning", "feature", issue.Feature, "message", issue.Message)
+			}
+		}
+
+		ebpfMgr, err := ebpf.NewManager(ebpfCfg, services.alertEngine)
+		if err != nil {
+			logging.Error(fmt.Sprintf("Failed to initialize eBPF manager: %v", err))
+			logging.Warn("eBPF features will be disabled - falling back to userspace processing")
+		} else {
+			if err := ebpfMgr.Load(); err != nil {
+				logging.Error(fmt.Sprintf("Failed to load eBPF programs: %v", err))
+				logging.Warn("eBPF features will be disabled - falling back to userspace processing")
+			} else {
+				if err := ebpfMgr.Start(); err != nil {
+					logging.Error(fmt.Sprintf("Failed to start eBPF manager: %v", err))
+				} else {
+					logging.Info("eBPF subsystem initialized successfully")
+					services.ebpfMgr = ebpfMgr
+
+					// Inject eBPF manager into API server
+					services.ctlServer.SetEBPFManager(ebpfMgr)
+
+					services.addCleanup(func() {
+						if err := ebpfMgr.Stop(); err != nil {
+							logging.Error(fmt.Sprintf("Error stopping eBPF manager: %v", err))
+						}
+					})
+				}
+			}
+		}
+	}
+
 	// Disabled services for debugging hang
+	// SSH Service
+	if cfg.SSH != nil && cfg.SSH.Enabled {
+		sshSvc, err := ssh.NewServer(cfg, services.authStore)
+		if err != nil {
+			logging.Error(fmt.Sprintf("Failed to initialize SSH server: %v", err))
+		} else {
+			sshSvc.SetMetricsCollector(services.metricsCollector)
+			if err := sshSvc.Start(ctx); err != nil {
+				logging.Error(fmt.Sprintf("Failed to start SSH server: %v", err))
+			} else {
+				logging.Info("SSH Service started.")
+				services.sshSvc = sshSvc
+				services.addCleanup(func() { sshSvc.Stop(context.Background()) })
+			}
+		}
+	}
+
 	// DDNS
 	if cfg.DDNS != nil && cfg.DDNS.Enabled {
 		// services.ddnsSvc = ddns.NewService(cfg.DDNS, services.netMgr.GetPublicIP, logging.WithComponent("ddns"))
@@ -808,19 +974,16 @@ func initializeAdditionalServices(ctx context.Context, cfg *config.Config, servi
 	if cfg.Notifications != nil {
 		services.dispatcher = notification.NewDispatcher(cfg.Notifications, logging.WithComponent("notification"))
 	}
-
-	// Alerting Engine
-	services.alertEngine = alerting.NewEngine()
-	if cfg.Notifications != nil {
-		services.alertEngine.UpdateConfig(cfg.Notifications)
-	}
-	services.alertEngine.Start(ctx)
 }
 
 // initializeDeviceServices sets up device management and discovery.
 func initializeDeviceServices(ctx context.Context, cfg *config.Config, services *ctlServices) {
 	// Device Manager
-	network.InitOUI()
+	ouiPath := ""
+	if cfg.System != nil {
+		ouiPath = cfg.System.OUIDBPath
+	}
+	network.InitOUI(ouiPath)
 	devMgr, err := device.NewManager(services.stateStore, network.LookupVendor)
 	if err != nil {
 		logging.Error(fmt.Sprintf("Failed to initialize device manager: %v", err))
@@ -851,7 +1014,7 @@ func initializeDeviceServices(ctx context.Context, cfg *config.Config, services 
 	services.addCleanup(services.sentinelSvc.Stop)
 
 	// Analytics Service (Historical Flow Tracking)
-	analyticsPath := filepath.Join(brand.GetStateDir(), "analytics.db")
+	analyticsPath := filepath.Join(install.GetStateDir(), "analytics.db")
 	analyticsStore, err := analytics.Open(analyticsPath)
 	if err != nil {
 		logging.Error(fmt.Sprintf("Failed to initialize analytics store: %v", err))
@@ -882,7 +1045,7 @@ func initializeDeviceServices(ctx context.Context, cfg *config.Config, services 
 	// Note: SetAlertEngine is called in startControlPlaneServer
 
 	// IPSet Service
-	iplistCacheDir := filepath.Join(brand.GetStateDir(), "iplists")
+	iplistCacheDir := filepath.Join(install.GetStateDir(), "iplists")
 	ipsetService := fw.NewIPSetService(brand.LowerName, iplistCacheDir, services.stateStore, logging.WithComponent("ipsets"))
 	services.ctlServer.SetIPSetService(ipsetService)
 	services.identitySvc.SetFirewallDependencies(services.fwMgr, ipsetService)
@@ -901,8 +1064,12 @@ func initializeDeviceServices(ctx context.Context, cfg *config.Config, services 
 		}
 	}
 
-	// NFLog Reader - captures packet events for device discovery
-	services.nflogReader = ctlplane.NewNFLogReader(10000, ctlplane.NFLogGroup)
+	// Start NFLog reader for device discovery using configured group
+	logGroup := ctlplane.DefaultLogGroup
+	if cfg.RuleLearning != nil {
+		logGroup = cfg.RuleLearning.LogGroup
+	}
+	services.nflogReader = ctlplane.NewNFLogReader(10000, uint16(logGroup))
 	if err := services.nflogReader.Start(); err != nil {
 		logging.Warn(fmt.Sprintf("Warning: failed to start NFLog reader: %v", err))
 	} else {
@@ -920,7 +1087,7 @@ func initializeDeviceServices(ctx context.Context, cfg *config.Config, services 
 				dev.Alias = info.Device.Alias
 			}
 		}
-	}, filepath.Join(brand.GetStateDir(), "discovery.json"))
+	}, filepath.Join(install.GetStateDir(), "discovery.json"))
 	services.deviceCollector.Start()
 	services.ctlServer.SetDeviceCollector(services.deviceCollector)
 	services.addCleanup(services.deviceCollector.Stop)
@@ -1006,7 +1173,7 @@ func initializeLearningService(cfg *config.Config, services *ctlServices) {
 		return
 	}
 
-	dbPath := filepath.Join(brand.GetStateDir(), "flow.db")
+	dbPath := filepath.Join(install.GetStateDir(), "flow.db")
 	learningSvc, err := learning.NewService(cfg.RuleLearning, dbPath)
 	if err != nil {
 		logging.Error(fmt.Sprintf("Error initializing learning service: %v", err))
@@ -1030,6 +1197,15 @@ func initializeLearningService(cfg *config.Config, services *ctlServices) {
 	}
 
 	services.addCleanup(learningSvc.Stop)
+
+	// If inline mode is enabled, reload firewall rules to generate NFQUEUE rules
+	// (firewall rules were applied before learning service was initialized)
+	if cfg.RuleLearning.InlineMode {
+		logging.Info("Reloading firewall rules for inline IPS mode...")
+		if err := services.fwMgr.ApplyConfig(fw.FromGlobalConfig(cfg)); err != nil {
+			logging.Error(fmt.Sprintf("Failed to reload firewall rules for inline mode: %v", err))
+		}
+	}
 
 	// Bridge NFLog -> Learning Service
 	go func() {
@@ -1083,6 +1259,7 @@ func startControlPlaneServer(cfg *config.Config, configFile string, netMgr *netw
 	services.ctlServer.SetUplinkManager(services.uplinkManager)
 	services.dhcpSvc.SetLeaseListener(services.ctlServer)
 	if services.haSvc != nil {
+		services.haSvc.SetReplicator(replicator)
 		services.ctlServer.SetHAService(services.haSvc)
 	}
 
@@ -1182,11 +1359,26 @@ func runMainEventLoop(ctx context.Context, cancel context.CancelFunc, configFile
 }
 
 // runTestMode runs the control plane in test mode and exits.
-// It outputs the current nftables ruleset and returns immediately.
+// It applies firewall rules and outputs the current nftables ruleset.
 func runTestMode(cfg *config.Config, netMgr *network.Manager) error {
 	// Wait for IP if routes depend on DHCP
 	if len(cfg.Routes) > 0 {
 		netMgr.WaitForLinkIP("eth0", 10)
+	}
+
+	// Initialize firewall manager to apply rules
+	logging.Info("Test mode: Initializing firewall manager...")
+	fwLogger := logging.WithComponent("firewall")
+	fwMgr, err := firewall.NewManager(fwLogger, install.GetCacheDir())
+	if err != nil {
+		return fmt.Errorf("failed to initialize firewall manager: %w", err)
+	}
+
+	// Apply firewall configuration
+	logging.Info("Test mode: Applying firewall rules...")
+	fwCfg := firewall.FromGlobalConfig(cfg)
+	if err := fwMgr.ApplyConfig(fwCfg); err != nil {
+		return fmt.Errorf("failed to apply firewall rules: %w", err)
 	}
 
 	logging.Info("Test mode: Firewall rules applied successfully")

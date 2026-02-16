@@ -19,7 +19,7 @@ Single-binary Linux firewall with privilege separation:
 └───────────────────────────────────────▲─────────────────────┘
                                         │ RPC
 ┌───────────────────────────────────────┴─────────────────────┐
-│                 flywall api (nobody, sandboxed)               │
+│                 flywall api (unprivileged, sandboxed)       │
 │  REST API │ WebSocket │ Web UI │ Auth │ EventHub            │
 │                 Network namespace 169.254.255.2              │
 └─────────────────────────────────────────────────────────────┘
@@ -32,7 +32,7 @@ Single-binary Linux firewall with privilege separation:
 | Process | User | Responsibilities |
 |---------|------|------------------|
 | `flywall ctl` | root | Firewall, networking, services, state |
-| `flywall api` | nobody | REST API, auth, Web UI (sandboxed) |
+| `flywall api` | unprivileged | REST API, auth, Web UI (sandboxed) |
 
 Communication: Unix socket RPC at `/run/flywall/ctl.sock`
 
@@ -58,7 +58,7 @@ internal/
 ## Design Decisions
 
 ### Privilege Separation
-API runs as `nobody` in isolated network namespace. All privileged ops go through RPC.
+API runs as `unprivileged` user in isolated network namespace. All privileged ops go through RPC.
 
 ### Atomic Firewall Updates
 Rules written as complete nftables script, applied with `nft -f`. No vulnerability window.
@@ -84,8 +84,8 @@ HTTP Request → Middleware (CSRF, Auth) → Handler → RPC Client → CTL → 
 
 | Type | Location | Command |
 |------|----------|---------|
-| Unit | `*_test.go` | `make test` |
-| Integration | `integration_tests/linux/` | `make test-int` |
+| Unit | `*_test.go` | `fw test unit` |
+| Integration | `integration_tests/linux/` | `fw test int` |
 
 Integration tests run in QEMU VMs via the **Orca** orchestrator.
 

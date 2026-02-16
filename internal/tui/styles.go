@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package tui
 
 import "github.com/charmbracelet/lipgloss"
@@ -97,4 +99,9 @@ var (
 	StyleMenuKey = lipgloss.NewStyle().
 			Foreground(ColorMuted).
 			Faint(true)
+
+	// Aliases & Missing
+	StyleStatusOk  = StyleStatusGood
+	StyleStatusErr = StyleStatusBad
+	StyleSubtle    = lipgloss.NewStyle().Foreground(ColorMuted)
 )

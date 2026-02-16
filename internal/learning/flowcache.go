@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package learning
 
 import (
@@ -11,9 +13,10 @@ import (
 
 // FlowCacheEntry represents a cached flow with its computed verdict.
 type FlowCacheEntry struct {
-	Flow    *flowdb.Flow
-	Verdict bool // Cached verdict for quick return
-	Dirty   bool // Needs DB write (updated since last flush)
+	Flow        *flowdb.Flow
+	Verdict     bool // Cached verdict for quick return
+	Dirty       bool // Needs DB write (updated since last flush)
+	PacketCount int  // Number of packets processed in this flow
 }
 
 // cacheNode wraps an entry for LRU tracking

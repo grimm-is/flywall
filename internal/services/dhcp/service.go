@@ -1,14 +1,19 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package dhcp
 
 import (
 	"context"
 	"fmt"
-	"log"
+	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
 	"grimm.is/flywall/internal/clock"
+	"grimm.is/flywall/internal/errors"
+	"grimm.is/flywall/internal/logging"
 
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/services"
@@ -22,17 +27,18 @@ import (
 )
 
 type dhcpInstance struct {
-	conn    net.PacketConn
-	handler func(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4)
+	conn       net.PacketConn
+	handler    func(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4)
+	auxClosers []io.Closer
 }
 
-// DNSUpdater is an interface for updating DNS records
+// DNSUpdater updates DNS records.
 type DNSUpdater interface {
 	AddRecord(name string, ip net.IP)
 	RemoveRecord(name string)
 }
 
-// LeaseListener is an interface for listening to DHCP lease events
+// LeaseListener reacts to DHCP lease events.
 type LeaseListener interface {
 	OnLease(mac string, ip net.IP, hostname string)
 }
@@ -43,10 +49,15 @@ type ExpirationListener interface {
 	OnLeaseExpired(mac string, ip net.IP, hostname string)
 }
 
-// PacketListener is a callback for observing DHCP packets
+// PacketListener for observing DHCP packets.
 type PacketListener func(pkt *dhcpv4.DHCPv4, iface string, src net.Addr)
 
 // Service manages DHCP servers for multiple scopes.
+// It integrates with:
+// - State Store: Persisting leases across restarts.
+// - DNS Service: Updating DNS records for leased hostnames.
+// - Listeners: Broadcasting lease events for UI/Logging.
+// - Upgrade Manager: Handing off sockets during hot upgrades.
 type Service struct {
 	mu             sync.RWMutex
 	servers        []*dhcpInstance
@@ -81,7 +92,6 @@ func (s *Service) SetPacketListener(l PacketListener) {
 	s.packetListener = l
 }
 
-// NewService creates a new DHCP service.
 func NewService(dnsUpdater DNSUpdater, store state.Store) *Service {
 	return &Service{
 		dnsUpdater: dnsUpdater,
@@ -89,12 +99,10 @@ func NewService(dnsUpdater DNSUpdater, store state.Store) *Service {
 	}
 }
 
-// Name returns the service name.
 func (s *Service) Name() string {
 	return "DHCP"
 }
 
-// Start starts the service.
 func (s *Service) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,15 +113,14 @@ func (s *Service) Start(ctx context.Context) error {
 
 	for _, srv := range s.servers {
 		go func(inst *dhcpInstance) {
-			log.Printf("[DHCP] Starting server instance...")
-			s.serveDHCP(inst.conn, inst.handler)
+			logging.WithComponent("dhcp").Debug("Starting server instance")
+			s.serveDHCP(ctx, inst.conn, inst.handler)
 		}(srv)
 	}
 	s.running = true
 	return nil
 }
 
-// Stop stops the service.
 func (s *Service) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -126,7 +133,10 @@ func (s *Service) Stop(ctx context.Context) error {
 
 	for _, srv := range s.servers {
 		if err := srv.conn.Close(); err != nil {
-			log.Printf("[DHCP] Failed to stop server: %v", err)
+			logging.WithComponent("dhcp").WithError(err).Error("Failed to stop server")
+		}
+		for _, c := range srv.auxClosers {
+			c.Close()
 		}
 	}
 	s.running = false
@@ -148,6 +158,9 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 
 		for _, srv := range s.servers {
 			srv.conn.Close()
+			for _, c := range srv.auxClosers {
+				c.Close()
+			}
 		}
 		s.running = false
 	}
@@ -160,16 +173,69 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 
 	// Check mode
 	if cfg.DHCP.Mode == "external" || cfg.DHCP.Mode == "import" {
-		log.Printf("[DHCP] Configured in '%s' mode. Skipping built-in server startup.", cfg.DHCP.Mode)
+		logging.WithComponent("dhcp").Info("Configured in external/import mode, skipping built-in server startup", "mode", cfg.DHCP.Mode)
 		return true, nil
 	}
 
 	// Parse scopes (only if built-in)
 	for _, scope := range cfg.DHCP.Scopes {
-		srv, ls, err := s.createServer(scope)
-		if err != nil {
-			return true, fmt.Errorf("failed to create DHCP server for scope %s: %w", scope.Name, err)
+		var srv *dhcpInstance
+		var ls *LeaseStore
+		var err error
+
+		if len(scope.RelayTo) > 0 {
+			// Relay Mode
+			logging.WithComponent("dhcp").Info("Configuring scope as Relay", "scope", scope.Name, "targets", scope.RelayTo)
+
+			// For relay, we need to make sure we reuse the LeaseStore if we want to snoop?
+			// createRelayHandler will snoop into *all* lease stores if we pass s.leaseStores?
+			// But relay handler is a method on *Service so it has access to s.leaseStores.
+			// However, we still need a LeaseStore for this subnet/scope so we can persist leases.
+
+			// We can reuse createServer logic partially but swap the handler?
+			// Let's refactor createServer to optionally return a relay handler.
+
+			// Or just handle it here:
+			ls, err = s.createLeaseStore(scope)
+			if err != nil {
+				return true, fmt.Errorf("failed to create lease store for scope %s: %w", scope.Name, err)
+			}
+
+			conn, err := s.bindSocket(scope)
+			if err != nil {
+				return true, fmt.Errorf("failed to bind socket for scope %s: %w", scope.Name, err)
+			}
+
+			// Create upstream listener for ingress traffic (replies)
+			// We bind to 0.0.0.0:67 using server4 helper which enables SO_REUSEADDR,
+			// allowing it to coexist with specific interface binds.
+			addr := &net.UDPAddr{Port: 67}
+			upstreamConn, err := server4.NewIPv4UDPConn("", addr)
+			if err != nil {
+				conn.Close()
+				return true, fmt.Errorf("failed to bind upstream listener: %w", err)
+			}
+
+			handler, err := s.createRelayHandler(scope, scope.RelayTo, conn, upstreamConn)
+			if err != nil {
+				conn.Close()
+				upstreamConn.Close()
+				return true, fmt.Errorf("failed to create relay handler for scope %s: %w", scope.Name, err)
+			}
+
+			srv = &dhcpInstance{
+				conn:       conn,
+				handler:    handler,
+				auxClosers: []io.Closer{upstreamConn},
+			}
+		} else {
+			// Normal Server Mode
+			srv, ls, err = s.createServer(scope, cfg.DHCP.VendorClasses)
+			if err != nil {
+				return true, fmt.Errorf("failed to create DHCP server for scope %s: %w", scope.Name, err)
+			}
 		}
+
 		s.servers = append(s.servers, srv)
 		s.leaseStores = append(s.leaseStores, ls)
 	}
@@ -177,8 +243,8 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 	// Restart servers
 	for _, srv := range s.servers {
 		go func(inst *dhcpInstance) {
-			log.Printf("[DHCP] Starting server instance...")
-			s.serveDHCP(inst.conn, inst.handler)
+			logging.WithComponent("dhcp").Debug("Starting server instance")
+			s.serveDHCP(context.Background(), inst.conn, inst.handler) // Background ctx for Handover
 		}(srv)
 	}
 
@@ -200,7 +266,7 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 		reaperInterval = 1 * time.Second
 	}
 
-	log.Printf("[DHCP] Starting expiration reaper (interval: %v)", reaperInterval)
+	logging.WithComponent("dhcp").Debug("Starting expiration reaper", "interval", reaperInterval)
 
 	s.stopReaper = make(chan struct{})
 	go s.runExpirationReaper(s.stopReaper, reaperInterval)
@@ -215,14 +281,15 @@ func (s *Service) runExpirationReaper(stop <-chan struct{}, interval time.Durati
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	log.Printf("[DHCP] Expiration reaper started")
+	logger := logging.WithComponent("dhcp")
+	logger.Debug("Expiration reaper started")
 
 	for {
 		select {
 		case <-ticker.C:
 			s.expireLeases()
 		case <-stop:
-			log.Printf("[DHCP] Expiration reaper stopped")
+			logger.Debug("Expiration reaper stopped")
 			return
 		}
 	}
@@ -249,18 +316,16 @@ func (s *Service) expireLeases() {
 	}
 
 	if totalExpired > 0 {
-		log.Printf("[DHCP] Expired %d leases", totalExpired)
+		logging.WithComponent("dhcp").Info("Expired leases", "count", totalExpired)
 	}
 }
 
-// IsRunning returns true if the service is running.
 func (s *Service) IsRunning() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.running
 }
 
-// Status returns the current status of the service.
 func (s *Service) Status() services.ServiceStatus {
 	return services.ServiceStatus{
 		Name:    s.Name(),
@@ -268,7 +333,6 @@ func (s *Service) Status() services.ServiceStatus {
 	}
 }
 
-// LeaseExpiry stores the expiration info for a lease
 type LeaseExpiry struct {
 	IP       net.IP
 	Hostname string
@@ -276,6 +340,10 @@ type LeaseExpiry struct {
 }
 
 // Lease storage (simple in-memory)
+// Handles allocation strategy:
+// 1. Static Reservations
+// 2. Existing Lease reuse
+// 3. First-available IP from pool
 type LeaseStore struct {
 	sync.Mutex
 	Leases       map[string]net.IP                 // MAC -> IP
@@ -284,6 +352,7 @@ type LeaseStore struct {
 	ReservedIPs  map[string]string                 // IP (string) -> MAC
 	RangeStart   net.IP
 	RangeEnd     net.IP
+	Subnet       *net.IPNet        // Interface subnet for validation
 	bucket       *state.DHCPBucket // Persistent storage
 
 	// Expiration support
@@ -302,18 +371,34 @@ func (s *LeaseStore) Allocate(mac string) (net.IP, error) {
 		// Parse IP from reservation
 		ip := net.ParseIP(res.IP).To4()
 		if ip != nil {
+			// Validate reservation is in subnet
+			if s.Subnet != nil && !s.Subnet.Contains(ip) {
+				return nil, fmt.Errorf("reserved IP %s is not in subnet %s", ip, s.Subnet)
+			}
 			return ip, nil
 		}
 	}
 
 	// 2. Check existing dynamic lease
 	if ip, ok := s.Leases[mac]; ok {
-		return ip, nil
+		// Re-validate against current subnet in case of config change
+		if s.Subnet == nil || s.Subnet.Contains(ip) {
+			return ip, nil
+		}
+		// If no longer in subnet, proceed to re-allocate
+		logging.WithComponent("dhcp").Warn("Existing lease no longer in subnet", "ip", ip, "mac", mac, "subnet", s.Subnet)
+		delete(s.Leases, mac)
+		delete(s.TakenIPs, ip.String())
 	}
 
 	// 3. Allocate new dynamic IP (Naive linear scan)
 	for ip := s.RangeStart; !ipMatches(ip, s.RangeEnd); ip = incIP(ip) {
 		ipStr := ip.String()
+
+		// Validate against subnet if configured
+		if s.Subnet != nil && !s.Subnet.Contains(ip) {
+			continue
+		}
 
 		// Skip if this IP is reserved for another MAC
 		if _, reserved := s.ReservedIPs[ipStr]; reserved {
@@ -327,9 +412,9 @@ func (s *LeaseStore) Allocate(mac string) (net.IP, error) {
 
 			// Persist first
 			if err := s.persistLease(mac, newIP, "hostname-unknown"); err != nil {
-				log.Printf("[DHCP] Failed to persist lease: %v", err)
+				logging.WithComponent("dhcp").WithError(err).Error("Failed to persist lease")
 				// Continue anyway or fail? Fail to ensure safety.
-				return nil, fmt.Errorf("failed to persist lease: %w", err)
+				return nil, errors.Wrap(err, errors.KindInternal, "failed to persist lease")
 			}
 
 			s.Leases[mac] = newIP
@@ -340,19 +425,21 @@ func (s *LeaseStore) Allocate(mac string) (net.IP, error) {
 	}
 
 	// Check the last one (RangeEnd)
-	if _, reserved := s.ReservedIPs[s.RangeEnd.String()]; !reserved && !s.isTaken(s.RangeEnd) {
-		newIP := make(net.IP, len(s.RangeEnd))
-		copy(newIP, s.RangeEnd)
+	if s.Subnet == nil || s.Subnet.Contains(s.RangeEnd) {
+		if _, reserved := s.ReservedIPs[s.RangeEnd.String()]; !reserved && !s.isTaken(s.RangeEnd) {
+			newIP := make(net.IP, len(s.RangeEnd))
+			copy(newIP, s.RangeEnd)
 
-		// Persist
-		if err := s.persistLease(mac, newIP, "hostname-unknown"); err != nil {
-			return nil, fmt.Errorf("failed to persist lease: %w", err)
+			// Persist
+			if err := s.persistLease(mac, newIP, "hostname-unknown"); err != nil {
+				return nil, errors.Wrap(err, errors.KindInternal, "failed to persist lease")
+			}
+
+			s.Leases[mac] = newIP
+			s.TakenIPs[newIP.String()] = mac // Maintain reverse lookup
+			s.setLeaseExpiry(mac)
+			return newIP, nil
 		}
-
-		s.Leases[mac] = newIP
-		s.TakenIPs[newIP.String()] = mac // Maintain reverse lookup
-		s.setLeaseExpiry(mac)
-		return newIP, nil
 	}
 
 	return nil, fmt.Errorf("no IPs available")
@@ -395,9 +482,9 @@ func (s *LeaseStore) persistLease(mac string, ip net.IP, hostname string) error 
 
 	// Synchronous write to ensure persistence
 	if err := s.bucket.Set(lease); err != nil {
-		return err
+		return errors.Wrap(err, errors.KindInternal, "failed to persist lease to state store")
 	}
-	log.Printf("[DHCP] Persisted lease for %s: %s", mac, ip.String())
+	logging.WithComponent("dhcp").Debug("Persisted lease", "mac", mac, "ip", ip)
 	return nil
 }
 
@@ -414,7 +501,7 @@ func (s *LeaseStore) getLeaseTime() time.Duration {
 	if s.leaseTime > 0 {
 		return s.leaseTime
 	}
-	log.Printf("[DHCP] DEBUG: getLeaseTime returning default 24h (s.leaseTime=%v)", s.leaseTime)
+	logging.WithComponent("dhcp").Debug("getLeaseTime returning default 24h", "lease_time", s.leaseTime)
 	return 24 * time.Hour
 }
 
@@ -452,7 +539,7 @@ func (s *LeaseStore) RenewLease(mac string) error {
 	}
 	s.leaseExpiry[mac] = s.getNow().Add(s.getLeaseTime())
 
-	log.Printf("[DHCP] Renewed lease for %s, new expiry: %v", mac, s.leaseExpiry[mac])
+	logging.WithComponent("dhcp").Info("Renewed lease", "mac", mac, "expiry", s.leaseExpiry[mac])
 	return nil
 }
 
@@ -477,13 +564,19 @@ func (s *LeaseStore) ExpireLeases(dnsUpdater DNSUpdater, listener ExpirationList
 				hostname = s.hostnames[mac]
 			}
 
-			// Remove lease
-			delete(s.Leases, mac)
+			// Delete from persistent store first. If this fails (e.g. SQLITE_BUSY
+			// under I/O pressure), skip the in-memory cleanup and let the reaper
+			// retry on the next tick. This prevents state divergence where the
+			// allocator thinks an IP is free but the DB still has the lease.
 			if s.bucket != nil {
 				if err := s.bucket.Delete(mac); err != nil {
-					log.Printf("[DHCP] Warning: Failed to delete expired lease from store: %v", err)
+					logging.WithComponent("dhcp").WithError(err).Warn("Failed to delete expired lease from store, will retry", "mac", mac)
+					continue
 				}
 			}
+
+			// DB delete succeeded (or no bucket) — now clean up in-memory state
+			delete(s.Leases, mac)
 			if ip != nil {
 				delete(s.TakenIPs, ip.String()) // Maintain reverse lookup
 			}
@@ -502,7 +595,7 @@ func (s *LeaseStore) ExpireLeases(dnsUpdater DNSUpdater, listener ExpirationList
 				listener.OnLeaseExpired(mac, ip, hostname)
 			}
 
-			log.Printf("[DHCP] Expired lease for %s (%s)", mac, ip)
+			logging.WithComponent("dhcp").Info("Expired lease", "mac", mac, "ip", ip)
 			expired++
 		}
 	}
@@ -510,75 +603,16 @@ func (s *LeaseStore) ExpireLeases(dnsUpdater DNSUpdater, listener ExpirationList
 	return expired
 }
 
-func (s *Service) createServer(scope config.DHCPScope) (*dhcpInstance, *LeaseStore, error) {
-	startIP := net.ParseIP(scope.RangeStart).To4()
-	endIP := net.ParseIP(scope.RangeEnd).To4()
+func (s *Service) createServer(scope config.DHCPScope, vendorClasses []config.DHCPVendorClass) (*dhcpInstance, *LeaseStore, error) {
+	ls, err := s.createLeaseStore(scope)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// We need routerIP for handler
 	routerIP := net.ParseIP(scope.Router).To4()
 
-	if startIP == nil || endIP == nil || routerIP == nil {
-		return nil, nil, fmt.Errorf("invalid IP configuration")
-	}
-
-	// Setup Lease Store with Reservations
-	ls := &LeaseStore{
-		Leases:       make(map[string]net.IP),
-		TakenIPs:     make(map[string]string), // O(1) reverse lookup
-		Reservations: make(map[string]config.DHCPReservation),
-		ReservedIPs:  make(map[string]string),
-		RangeStart:   startIP,
-		RangeEnd:     endIP,
-	}
-
-	// Parse lease time
-	log.Printf("[DHCP] DEBUG: Scope '%s' Config LeaseTime='%s'", scope.Name, scope.LeaseTime)
-	if scope.LeaseTime != "" {
-		d, err := time.ParseDuration(scope.LeaseTime)
-		if err != nil {
-			log.Printf("[DHCP] Warning: invalid lease_time '%s' for scope %s: %v. Using default 24h.", scope.LeaseTime, scope.Name, err)
-		} else {
-			ls.leaseTime = d
-		}
-	}
-
-	// Initialize bucket and load existing leases
-	if s.store != nil {
-		bucket, err := state.NewDHCPBucket(s.store)
-		if err != nil {
-			log.Printf("[DHCP] Warning: Failed to create/open DHCP bucket: %v", err)
-		} else {
-			ls.bucket = bucket
-			leases, err := bucket.List()
-			if err != nil {
-				log.Printf("[DHCP] Warning: Failed to list existing leases: %v", err)
-			} else {
-				// Load leases into memory
-				for _, l := range leases {
-					ip := net.ParseIP(l.IP).To4()
-					if ip != nil {
-						// Note: We intentionally don't check if IP is within this scope's range.
-						// Leases may span pool boundaries if config changed, and we preserve them.
-						ls.Leases[l.MAC] = ip
-						ls.TakenIPs[ip.String()] = l.MAC // Populate reverse lookup
-					}
-				}
-				log.Printf("[DHCP] Loaded %d leases from state store", len(leases))
-			}
-		}
-	}
-
-	// Populate reservations
-	for _, res := range scope.Reservations {
-		ip := net.ParseIP(res.IP).To4()
-		if ip != nil {
-			ls.Reservations[res.MAC] = res
-			ls.ReservedIPs[ip.String()] = res.MAC
-		}
-	}
-
 	handler := func(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
-		// Basic logging
-		// log.Printf("[DHCP] Received packet: %v", m.Summary())
-
 		// Notify passive packet listener
 		s.mu.RLock()
 		pl := s.packetListener
@@ -597,69 +631,36 @@ func (s *Service) createServer(scope config.DHCPScope) (*dhcpInstance, *LeaseSto
 					IP:   net.IPv4bcast,
 					Port: 68,
 				}
-				// log.Printf("[DHCP] Peer is 0.0.0.0, forcing broadcast reply to 255.255.255.255:68")
+				// logging.Debug("[DHCP] Peer is 0.0.0.0, forcing broadcast reply to 255.255.255.255:68")
 			}
 		}
 
 		switch m.MessageType() {
 		case dhcpv4.MessageTypeDiscover:
-			offer, err := handleDiscover(m, ls, scope, routerIP)
+			offer, err := handleDiscover(m, ls, scope, routerIP, vendorClasses)
 			if err != nil {
-				log.Printf("[DHCP] Discover error: %v", err)
+				logging.WithComponent("dhcp").WithError(err).Error("Discover error")
 				return
 			}
 			if _, err := conn.WriteTo(offer.ToBytes(), dest); err != nil {
-				log.Printf("[DHCP] WriteOffer error: %v (dest=%v)", err, dest)
+				logging.WithComponent("dhcp").WithError(err).Error("WriteOffer error", "dest", dest)
 			}
 		case dhcpv4.MessageTypeRequest:
-			ack, err := handleRequest(m, ls, scope, routerIP, s.dnsUpdater, s.leaseListener)
+			ack, err := handleRequest(m, ls, scope, routerIP, s.dnsUpdater, s.leaseListener, vendorClasses)
 			if err != nil {
-				log.Printf("[DHCP] Request error: %v", err)
+				logging.WithComponent("dhcp").WithError(err).Error("Request error")
 				return
 			}
 			if _, err := conn.WriteTo(ack.ToBytes(), dest); err != nil {
-				log.Printf("[DHCP] WriteAck error: %v (dest=%v)", err, dest)
+				logging.WithComponent("dhcp").WithError(err).Error("WriteAck error", "dest", dest)
 			}
 		}
 	}
 
-	// Listen on the interface address (standard DHCP port 67)
-	// Bind to 0.0.0.0 to receive broadcast packets (unless inherited)
-
-	linkName := "dhcp-v4" // Single listener for now (0.0.0.0)
-	// If we supported per-interface binding properly, we would name it "dhcp-v4-<iface>"
-
-	var conn net.PacketConn
-	if s.upgradeMgr != nil {
-		if existing, ok := s.upgradeMgr.GetPacketConn(linkName); ok {
-			conn = existing
-			log.Printf("[DHCP] Inherited socket %s", linkName)
-		}
-	}
-
-	if conn == nil {
-		addr := &net.UDPAddr{
-			IP:   net.IPv4zero,
-			Port: 67,
-		}
-
-		// Use standard library or custom binder?
-		// server4.NewIPv4UDPConn allows SO_BROADCAST etc.
-		// net.ListenPacket usually sets SO_BROADCAST by default?
-		// Actually, standard net.ListenPacket udp4 might not set SO_BROADCAST on some OS.
-		// Safe to use server4 helper if possible? No, it returns *net.UDPConn which IS a PacketConn.
-		// server4.NewIPv4UDPConn(iface, addr)
-
-		// To be safe and reuse library logic for socket options:
-		udpConn, err := server4.NewIPv4UDPConn(scope.Interface, addr)
-		if err != nil {
-			return nil, nil, err
-		}
-		conn = udpConn
-
-		if s.upgradeMgr != nil {
-			s.upgradeMgr.RegisterPacketConn(linkName, conn)
-		}
+	// Bind socket
+	conn, err := s.bindSocket(scope)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// Manually construct server instance
@@ -670,49 +671,159 @@ func (s *Service) createServer(scope config.DHCPScope) (*dhcpInstance, *LeaseSto
 
 	return srv, ls, nil
 }
+func (s *Service) createLeaseStore(scope config.DHCPScope) (*LeaseStore, error) {
+	startIP := net.ParseIP(scope.RangeStart).To4()
+	endIP := net.ParseIP(scope.RangeEnd).To4()
+	routerIP := net.ParseIP(scope.Router).To4()
+
+	if startIP == nil || endIP == nil || routerIP == nil {
+		return nil, errors.New(errors.KindValidation, "invalid IP configuration for scope")
+	}
+
+	// Setup Lease Store with Reservations
+	ls := &LeaseStore{
+		Leases:       make(map[string]net.IP),
+		TakenIPs:     make(map[string]string), // O(1) reverse lookup
+		Reservations: make(map[string]config.DHCPReservation),
+		ReservedIPs:  make(map[string]string),
+		RangeStart:   startIP,
+		RangeEnd:     endIP,
+	}
+
+	logger := logging.WithComponent("dhcp")
+
+	// Determine subnet from router IP and interface mask
+	mask, err := getInterfaceMask(scope.Interface, routerIP)
+	if err != nil {
+		// Fallback to /24 if interface lookup fails (safe default, logs warning)
+		logger.WithError(err).Warn("Failed to get interface mask, falling back to /24", "interface", scope.Interface)
+		mask = net.IPv4Mask(255, 255, 255, 0)
+	}
+	ls.Subnet = &net.IPNet{
+		IP:   routerIP.Mask(mask),
+		Mask: mask,
+	}
+
+	// Parse lease time
+	logger.Debug("Scope Config LeaseTime", "scope", scope.Name, "lease_time", scope.LeaseTime)
+	if scope.LeaseTime != "" {
+		d, err := time.ParseDuration(scope.LeaseTime)
+		if err != nil {
+			logger.WithError(err).Warn("Invalid lease_time for scope, using default 24h", "scope", scope.Name, "lease_time", scope.LeaseTime)
+		} else {
+			ls.leaseTime = d
+		}
+	}
+
+	// Initialize bucket and load existing leases
+	if s.store != nil {
+		bucket, err := state.NewDHCPBucket(s.store)
+		if err != nil {
+			logger.WithError(err).Warn("Failed to create/open DHCP bucket")
+		} else {
+			ls.bucket = bucket
+			leases, err := bucket.List()
+			if err != nil {
+				logger.WithError(err).Warn("Failed to list existing leases")
+			} else {
+				// Load leases into memory
+				for _, l := range leases {
+					ip := net.ParseIP(l.IP).To4()
+					if ip != nil {
+						// Note: We intentionally don't check if IP is within this scope's range.
+						// Leases may span pool boundaries if config changed, and we preserve them.
+						ls.Leases[l.MAC] = ip
+						ls.TakenIPs[ip.String()] = l.MAC // Populate reverse lookup
+					}
+				}
+				logger.Info("Loaded leases from state store", "count", len(leases))
+			}
+		}
+	}
+
+	// Populate reservations
+	for _, res := range scope.Reservations {
+		ip := net.ParseIP(res.IP).To4()
+		if ip != nil {
+			ls.Reservations[res.MAC] = res
+			ls.ReservedIPs[ip.String()] = res.MAC
+		}
+	}
+
+	return ls, nil
+}
+
+func (s *Service) bindSocket(scope config.DHCPScope) (net.PacketConn, error) {
+	logger := logging.WithComponent("dhcp")
+	linkName := "dhcp-v4" // Single listener for now (0.0.0.0)
+
+	var conn net.PacketConn
+	if s.upgradeMgr != nil {
+		if existing, ok := s.upgradeMgr.GetPacketConn(linkName); ok {
+			conn = existing
+			logger.Info("Inherited socket", "link", linkName)
+		}
+	}
+
+	if conn == nil {
+		addr := &net.UDPAddr{
+			IP:   net.IPv4zero,
+			Port: 67,
+		}
+
+		udpConn, err := server4.NewIPv4UDPConn(scope.Interface, addr)
+		if err != nil {
+			return nil, err
+		}
+		conn = udpConn
+
+		if s.upgradeMgr != nil {
+			s.upgradeMgr.RegisterPacketConn(linkName, conn)
+		}
+	}
+	return conn, nil
+}
 
 // serveDHCP runs the read loop for a DHCP server instance
-func (s *Service) serveDHCP(conn net.PacketConn, handler func(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4)) {
+func (s *Service) serveDHCP(ctx context.Context, conn net.PacketConn, handler func(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4)) {
 	buf := make([]byte, 4096) // Standard UDP buffer
+	logger := logging.WithComponent("dhcp")
+
 	for {
-		// Set read deadline to allow clean shutdown if conn closed
-		// Actually conn.Close() causes ReadFrom to return error immediately.
-
-		n, addr, err := conn.ReadFrom(buf)
-		if err != nil {
-			if s.running { // Log only if we expect to be running
-				// Check for closed error
-				log.Printf("[DHCP] Read error: %v", err)
-			}
+		select {
+		case <-ctx.Done():
+			logger.Debug("Server loop stopping due to context cancellation")
 			return
+		default:
+			// Set a short deadline to check context periodically
+			conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			n, addr, err := conn.ReadFrom(buf)
+			if err != nil {
+				if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+					continue
+				}
+				if s.running {
+					logger.WithError(err).Error("Read error")
+				}
+				return
+			}
+
+			pkt, err := dhcpv4.FromBytes(buf[:n])
+			if err != nil {
+				continue
+			}
+
+			handler(conn, addr, pkt)
 		}
-
-		// Make a copy of data for async handling?
-		// dhcpv4.FromBytes usually parsers it.
-		// If handler runs async, we need copy.
-		// Current handler logic seems synchronous enough or safe?
-		// "go pl(m, ...)" in handler.
-		// We'll pass the slice. FromBytes parses it.
-
-		pkt, err := dhcpv4.FromBytes(buf[:n])
-		if err != nil {
-			// Malformed packet
-			continue
-		}
-
-		// Run handler
-		// We run it synchronously to preserve packet order per interface?
-		// Or async? server4 runs it synchronously in loop usually.
-		handler(conn, addr, pkt)
 	}
 }
 
-func handleDiscover(m *dhcpv4.DHCPv4, store *LeaseStore, scope config.DHCPScope, routerIP net.IP) (*dhcpv4.DHCPv4, error) {
+func handleDiscover(m *dhcpv4.DHCPv4, store *LeaseStore, scope config.DHCPScope, routerIP net.IP, vendorClasses []config.DHCPVendorClass) (*dhcpv4.DHCPv4, error) {
 	// Allocate IP
 	mac := m.ClientHWAddr.String()
 	ip, err := store.Allocate(mac)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to allocate IP during discover")
 	}
 
 	// Prepare options
@@ -726,11 +837,15 @@ func handleDiscover(m *dhcpv4.DHCPv4, store *LeaseStore, scope config.DHCPScope,
 		dhcpv4.WithLeaseTime(uint32(store.getLeaseTime().Seconds())),
 	}
 
+	if scope.Domain != "" {
+		opts = append(opts, dhcpv4.WithDomainSearchList(scope.Domain))
+	}
+
 	// Add scope custom options
 	for k, v := range scope.Options {
 		opt, err := parseOption(k, v)
 		if err != nil {
-			log.Printf("[DHCP] Warning: failed to parse option %s=%s: %v", k, v, err)
+			logging.WithComponent("dhcp").WithError(err).Warn("Failed to parse scope option", "option", k, "value", v)
 			continue
 		}
 		opts = append(opts, dhcpv4.WithOption(opt))
@@ -745,17 +860,22 @@ func handleDiscover(m *dhcpv4.DHCPv4, store *LeaseStore, scope config.DHCPScope,
 		for k, v := range res.Options {
 			opt, err := parseOption(k, v)
 			if err != nil {
-				log.Printf("[DHCP] Warning: failed to parse host option %s=%s: %v", k, v, err)
-				continue
+				logging.WithComponent("dhcp").WithError(err).Warn("Failed to parse host option", "mac", mac, "option", k, "value", v)
 			}
 			opts = append(opts, dhcpv4.WithOption(opt))
 		}
 	}
 
+	// Add vendor class options (Option 60)
+	applyVendorOptions(m, vendorClasses, &opts)
+
 	return dhcpv4.NewReplyFromRequest(m, opts...)
 }
 
-func handleRequest(m *dhcpv4.DHCPv4, store *LeaseStore, scope config.DHCPScope, routerIP net.IP, dnsUpdater DNSUpdater, listener LeaseListener) (*dhcpv4.DHCPv4, error) {
+// handleRequest processes a DHCP Request packet.
+// It finalizes the lease allocation, updates DNS records (if enabled),
+// and sends a DHCP ACK or NAK.
+func handleRequest(m *dhcpv4.DHCPv4, store *LeaseStore, scope config.DHCPScope, routerIP net.IP, dnsUpdater DNSUpdater, listener LeaseListener, vendorClasses []config.DHCPVendorClass) (*dhcpv4.DHCPv4, error) {
 	mac := m.ClientHWAddr.String()
 
 	// Verify the requested IP matches what we would allocate (or have allocated)
@@ -766,13 +886,13 @@ func handleRequest(m *dhcpv4.DHCPv4, store *LeaseStore, scope config.DHCPScope, 
 
 	allocatedIP, err := store.Allocate(mac)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to allocate IP during request")
 	}
 
 	if !allocatedIP.Equal(requestedIP) && !requestedIP.IsUnspecified() {
 		// Send DHCP NAK to tell client their IP is invalid
 		// This causes immediate DISCOVER rather than waiting for timeout
-		log.Printf("[DHCP] NAK: client %s requested %v but should get %v", mac, requestedIP, allocatedIP)
+		logging.WithComponent("dhcp").Warn("Sending NAK: client requested invalid IP", "mac", mac, "requested", requestedIP, "expected", allocatedIP)
 		nakOpts := []dhcpv4.Modifier{
 			dhcpv4.WithMessageType(dhcpv4.MessageTypeNak),
 			dhcpv4.WithServerIP(routerIP),
@@ -810,11 +930,15 @@ func handleRequest(m *dhcpv4.DHCPv4, store *LeaseStore, scope config.DHCPScope, 
 		dhcpv4.WithLeaseTime(uint32(store.getLeaseTime().Seconds())),
 	}
 
+	if scope.Domain != "" {
+		opts = append(opts, dhcpv4.WithDomainSearchList(scope.Domain))
+	}
+
 	// Add scope custom options
 	for k, v := range scope.Options {
 		opt, err := parseOption(k, v)
 		if err != nil {
-			log.Printf("[DHCP] Warning: failed to parse option %s=%s: %v", k, v, err)
+			logging.WithComponent("dhcp").WithError(err).Warn("Failed to parse scope option", "option", k, "value", v)
 			continue
 		}
 		opts = append(opts, dhcpv4.WithOption(opt))
@@ -825,12 +949,15 @@ func handleRequest(m *dhcpv4.DHCPv4, store *LeaseStore, scope config.DHCPScope, 
 		for k, v := range res.Options {
 			opt, err := parseOption(k, v)
 			if err != nil {
-				log.Printf("[DHCP] Warning: failed to parse host option %s=%s: %v", k, v, err)
+				logging.WithComponent("dhcp").WithError(err).Warn("Failed to parse host option", "mac", mac, "option", k, "value", v)
 				continue
 			}
 			opts = append(opts, dhcpv4.WithOption(opt))
 		}
 	}
+
+	// Add vendor class options (Option 60)
+	applyVendorOptions(m, vendorClasses, &opts)
 
 	// Trigger listener
 	if listener != nil {
@@ -878,4 +1005,55 @@ func (s *Service) GetLeases() []Lease {
 		store.Unlock()
 	}
 	return leases
+}
+
+// applyVendorOptions checks if the message has a Vendor Class Identifier (Option 60)
+// and applies matching vendor class options to the response modifiers.
+func applyVendorOptions(m *dhcpv4.DHCPv4, vendorClasses []config.DHCPVendorClass, opts *[]dhcpv4.Modifier) {
+	vendorClassID := m.GetOneOption(dhcpv4.OptionClassIdentifier)
+	if vendorClassID == nil {
+		return
+	}
+
+	vcStr := string(vendorClassID)
+	for _, vc := range vendorClasses {
+		// Use partial match (contains) as many vendors append version info
+		if strings.Contains(vcStr, vc.Identifier) {
+			for k, v := range vc.Options {
+				opt, err := parseOption(k, v)
+				if err != nil {
+					logging.WithComponent("dhcp").WithError(err).Warn("Failed to parse vendor class option", "vendor", vc.Name, "option", k, "value", v)
+					continue
+				}
+				*opts = append(*opts, dhcpv4.WithOption(opt))
+			}
+			// Only apply first matching vendor class
+			break
+		}
+	}
+}
+
+// getInterfaceMask retrieves the subnet mask for the given interface and IP.
+func getInterfaceMask(ifaceName string, ip net.IP) (net.IPMask, error) {
+	iface, err := net.InterfaceByName(ifaceName)
+	if err != nil {
+		return nil, fmt.Errorf("interface not found: %w", err)
+	}
+
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get addresses: %w", err)
+	}
+
+	for _, addr := range addrs {
+		// Check if this is an IPNet (should be)
+		if ipNet, ok := addr.(*net.IPNet); ok {
+			// Check if IP matches (ignoring mask)
+			if ipNet.IP.Equal(ip) {
+				return ipNet.Mask, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("IP %s not found on interface %s", ip, ifaceName)
 }

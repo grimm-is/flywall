@@ -142,7 +142,6 @@ policy "lan" "vpn" { action = "accept" }
 # Force transmission client (running as user 'debian-transmission') to use VPN
 uid_routing "torrent-vpn" {
   username = "debian-transmission"
-  uplink   = "wg-primary" # Matches uplink name
-  vpn_link = "wg-primary" # For backwards compatibility/required field
+  uplink   = "wg-primary" # Matches uplink name in secure-vpn group
   enabled  = true
 }

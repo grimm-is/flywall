@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package scanner
 
 import (
@@ -14,7 +16,7 @@ func ExtractTLS(packet gopacket.Packet, record *DeviceFingerprint) {
 	if tcpLayer == nil {
 		return
 	}
-	
+
 	// Check for Client Hello (Handshake Type 1)
 	// TLS Record Protocol (0x16) + Version (0x0301/02/03) + Length (2 bytes) + Handshake (0x01)
 	tcp, _ := tcpLayer.(*layers.TCP)
@@ -37,10 +39,10 @@ func ExtractTLS(packet gopacket.Packet, record *DeviceFingerprint) {
 	digest := ja3.DigestPacket(packet)
 	// Check for empty digest (matches empty MD5 128 bit)
 	// d41d8cd98f00b204e9800998ecf8427e is md5("")
-	
+
 	// Convert to hex
 	ja3Hash := hex.EncodeToString(digest[:])
-	
+
 	if ja3Hash != "d41d8cd98f00b204e9800998ecf8427e" && ja3Hash != "00000000000000000000000000000000" {
 		record.AddTLS(ja3Hash, "")
 	}
@@ -49,6 +51,6 @@ func ExtractTLS(packet gopacket.Packet, record *DeviceFingerprint) {
 	// For this MVP, we rely on the fact that JA3 hash usually implies a unique client implementation.
 	// Extracting SNI robustly requires a full TLS parser (like cryptobyte or golang.org/x/crypto/cryptobyte)
 	// or `dreadl0ck/tlsx`.
-	// For now, we omit SNI to keep dependencies minimal as per user preference, 
+	// For now, we omit SNI to keep dependencies minimal as per user preference,
 	// unless we want to do a basic string extract.
 }

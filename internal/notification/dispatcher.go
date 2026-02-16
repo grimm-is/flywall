@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package notification
 
 import (
@@ -8,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"net/smtp"
 
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/logging"
@@ -35,7 +39,14 @@ type Dispatcher struct {
 	logger *logging.Logger
 	mu     sync.RWMutex
 
-	// Rate limiting state could go here
+	// Rate limiting state
+	lastSent map[string]time.Time
+
+	// HTTP client with timeout
+	httpClient *http.Client
+
+	// Email sender (injectable for testing)
+	emailSender func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
 }
 
 // NewDispatcher creates a new notification dispatcher
@@ -44,8 +55,13 @@ func NewDispatcher(cfg *config.NotificationsConfig, logger *logging.Logger) *Dis
 		logger = logging.Default().WithComponent("notification")
 	}
 	return &Dispatcher{
-		config: cfg,
-		logger: logger,
+		config:   cfg,
+		logger:   logger,
+		lastSent: make(map[string]time.Time),
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+		emailSender: smtp.SendMail,
 	}
 }
 
@@ -82,6 +98,15 @@ func (d *Dispatcher) Send(n Notification) {
 			continue
 		}
 
+		// Rate limiting (deduplication)
+		// Skip if sent within last 60s for same title on same channel
+		// CRITICAL alerts bypass rate limiting? Ideally yes, but duplicating 100 critical alerts is also bad.
+		// Let's rate limit per minute to avoid storms.
+		if d.isRateLimited(ch.Name, n.Title) {
+			d.logger.Debug("notification rate limited", "channel", ch.Name, "title", n.Title)
+			continue
+		}
+
 		wg.Add(1)
 		go func(channel config.NotificationChannel) {
 			defer wg.Done()
@@ -95,6 +120,33 @@ func (d *Dispatcher) Send(n Notification) {
 	}
 
 	wg.Wait()
+}
+
+// isRateLimited checks if a notification should be skipped due to rate limiting
+func (d *Dispatcher) isRateLimited(channelName, title string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	key := channelName + ":" + title
+	last, ok := d.lastSent[key]
+	now := time.Now()
+
+	if ok && now.Sub(last) < 60*time.Second {
+		return true
+	}
+
+	d.lastSent[key] = now
+
+	// Cleanup old entries occasionally?
+	// For now, map grows unbounded but keys are limited by unique titles.
+	// We could add a cleanup goroutine or check map size.
+	if len(d.lastSent) > 1000 {
+		// naive cleanup: clear all
+		d.lastSent = make(map[string]time.Time)
+		d.lastSent[key] = now
+	}
+
+	return false
 }
 
 // SendSimple is a helper for simple messages
@@ -134,8 +186,7 @@ func (d *Dispatcher) sendToChannel(ch config.NotificationChannel, n Notification
 	case "pushover":
 		return d.sendPushover(ch, n)
 	case "email":
-		d.logger.Warn("email notifications not yet implemented")
-		return nil
+		return d.sendEmail(ch, n)
 	default:
 		return fmt.Errorf("unknown channel type: %s", ch.Type)
 	}
@@ -174,7 +225,7 @@ func (d *Dispatcher) sendWebhook(ch config.NotificationChannel, n Notification) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := d.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -236,7 +287,7 @@ func (d *Dispatcher) sendNtfy(ch config.NotificationChannel, n Notification) err
 		req.Header.Set(k, v)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := d.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -280,7 +331,13 @@ func (d *Dispatcher) sendPushover(ch config.NotificationChannel, n Notification)
 		return err
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := d.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -290,4 +347,49 @@ func (d *Dispatcher) sendPushover(ch config.NotificationChannel, n Notification)
 		return fmt.Errorf("pushover failed with status: %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func (d *Dispatcher) sendEmail(ch config.NotificationChannel, n Notification) error {
+	if ch.SMTPHost == "" || len(ch.To) == 0 {
+		return fmt.Errorf("missing smtp_host or recipients")
+	}
+
+	host := ch.SMTPHost
+	port := ch.SMTPPort
+	if port == 0 {
+		port = 587
+	}
+	addr := fmt.Sprintf("%s:%d", host, port)
+
+	var auth smtp.Auth
+	if ch.SMTPUser != "" {
+		auth = smtp.PlainAuth("", ch.SMTPUser, string(ch.SMTPPassword), host)
+	}
+
+	// Prepare email body
+	// Headers
+	headers := make(map[string]string)
+	headers["From"] = ch.From
+	if headers["From"] == "" {
+		headers["From"] = "flywall@localhost"
+	}
+	headers["To"] = strings.Join(ch.To, ",")
+	headers["Subject"] = fmt.Sprintf("[%s] %s", n.Level, n.Title)
+	headers["MIME-Version"] = "1.0"
+	headers["Content-Type"] = "text/plain; charset=\"utf-8\""
+
+	headerStr := ""
+	for k, v := range headers {
+		headerStr += fmt.Sprintf("%s: %s\r\n", k, v)
+	}
+
+	msg := []byte(headerStr + "\r\n" + n.Message + "\r\n")
+
+	// Use d.emailSender (allows mocking)
+	if d.emailSender != nil {
+		return d.emailSender(addr, auth, headers["From"], ch.To, msg)
+	}
+
+	// Fallback to real smtp.SendMail (though NewDispatcher sets it)
+	return smtp.SendMail(addr, auth, headers["From"], ch.To, msg)
 }

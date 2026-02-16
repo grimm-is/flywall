@@ -19,3 +19,4 @@ export { default as Toggle } from './Toggle.svelte';
 export { default as PillInput } from './PillInput.svelte';
 export { default as TopologyGraph } from './TopologyGraph.svelte';
 export { default as NetworkInput } from './NetworkInput.svelte';
+export { default as ZoneTypeSelector } from './ZoneTypeSelector.svelte';

@@ -12,7 +12,7 @@ require_root
 require_binary
 cleanup_on_exit
 
-CONFIG_FILE="/tmp/sni_snoop.hcl"
+CONFIG_FILE="/tmp/sni_snoop_$$.hcl"
 
 cat > "$CONFIG_FILE" <<EOF
 schema_version = "1.0"
@@ -42,7 +42,7 @@ response=$(curl --max-time 5 -s -o /dev/null -w "%{http_code}" "http://127.0.0.1
 pass "SNI flows endpoint accessible (status: $response)"
 if [ "$response" != "200" ]; then
     diag "API log output (Runtime):"
-    cat /tmp/api_sni.log
+    cat /tmp/api_sni_$$.log
 fi
 
 # Test 2: Connections with SNI

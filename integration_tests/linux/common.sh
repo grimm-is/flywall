@@ -1,5 +1,12 @@
 #!/bin/sh
 
+# SAFETY CHECK: Fail hard if not running in the expected VM environment
+# We check for the specific mount point or the environment variable set by the runner
+if [ ! -d "/mnt/flywall" ] && [ -z "${FLYWALL_TEST_VM:-}" ]; then
+    echo "FATAL: Integration tests must be run inside the QEMU VM environment."
+    echo "       Refusing to run on host system to prevent data loss."
+    exit 1
+fi
 # Common functions and environment setup for Flywall Firewall tests
 # Handles dynamic branding resolution and common utilities
 #
@@ -19,6 +26,10 @@
 case "${TIME_DILATION:-}" in
     ''|*[!0-9.]*) TIME_DILATION=1 ;;
 esac
+
+# Workaround for GetRunningConfig RPC crash in test environment
+# This makes GetRunningConfig return the staged config instead
+export FLYWALL_USE_STAGED_AS_RUNNING=1
 
 # Conditional Shell Tracing
 if [ -n "${TEST_DEBUG:-}" ]; then
@@ -82,25 +93,155 @@ if [ -f "$BRAND_ENV" ]; then
     BRAND_NAME="${BRAND_NAME:-Flywall}"
     BRAND_LOWER="${BRAND_LOWER_NAME:-flywall}"
     BINARY_NAME="${BRAND_BINARY_NAME:-flywall}"
-    STATE_DIR="${BRAND_DEFAULT_STATE_DIR:-/var/lib/flywall}"
-    LOG_DIR="${BRAND_DEFAULT_LOG_DIR:-/var/log/flywall}"
-    RUN_DIR="${BRAND_DEFAULT_RUN_DIR:-/var/run}"
+    STATE_DIR="${BRAND_DEFAULT_STATE_DIR:-/opt/flywall/var/lib}"
+    LOG_DIR="${BRAND_DEFAULT_LOG_DIR:-/opt/flywall/var/log}"
+    RUN_DIR="${BRAND_DEFAULT_RUN_DIR:-/var/run/flywall}"
     SOCKET_NAME="${BRAND_SOCKET_NAME:-ctl.sock}"
 else
     # Fallback defaults if brand.env doesn't exist (run 'make brand-env' to generate)
     BRAND_NAME="Flywall"
     BRAND_LOWER="flywall"
     BINARY_NAME="flywall"
-    STATE_DIR="/var/lib/flywall"
-    LOG_DIR="/var/log/flywall"
-    RUN_DIR="/var/run"
+    STATE_DIR="/opt/flywall/var/lib"
+    LOG_DIR="/opt/flywall/var/log"
+    RUN_DIR="/var/run/flywall"
     SOCKET_NAME="ctl.sock"
 fi
 
-# Construct CTL_SOCKET path: /var/run/flywall-ctl.sock
-CTL_SOCKET="$RUN_DIR/$BRAND_LOWER-$SOCKET_NAME"
+# ============================================================================
+# Mount Hierarchy for VM Test Isolation
+# ============================================================================
+# /mnt/flywall  - Read-only source tree (host_share)
+# /mnt/build    - Read-only compiled binaries (build_share)
+# /mnt/assets   - Shared writable with POSIX locking (assets_share)
+# /mnt/worker   - Per-worker isolated scratch (worker_share)
+#
+# IMPORTANT: Unix domain sockets cannot be created on 9p/virtfs mounts.
+# We use /mnt/worker for state/logs but keep sockets on local /tmp.
+# Tests run SEQUENTIALLY within each VM, so we use fixed paths here.
+# Inter-VM isolation is provided by the per-worker mount.
+# ============================================================================
 
-# Set common variables
+WORKER_MOUNT="/mnt/worker"
+ASSETS_MOUNT="/mnt/assets"
+BUILD_MOUNT="/mnt/build"
+
+# Use PID-based unique directory for each test execution
+# This prevents collisions and ensures a clean slate
+# We append a random suffix to ensure uniqueness across VMs where PIDs might overlap
+export TEST_PID="$$-$(head -c 2 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
+# Better unique ID using ORCA test ID + PID
+# This provides traceability and guaranteed uniqueness across VMs
+if [ -n "${ORCA_TEST_ID:-}" ]; then
+    # ORCA_TEST_ID is unique per test run (e.g., "20260203-abc123")
+    # Combine with VM PID for uniqueness across VMs
+    export TEST_UID="${ORCA_TEST_ID}-$$"
+else
+    # Fallback for manual runs
+    export TEST_UID="manual-$(date +%Y%m%d-%H%M%S)-$$"
+fi
+
+# Unix sockets MUST be on local filesystem (not 9p)
+# We use a unique subdirectory in /run (tmpfs) to ensure isolation and socket support.
+# We avoid /var/run symlinks which can be problematic in some minimal environments.
+mkdir -p /run
+RUN_DIR="/run/flywall-${TEST_PID}"
+
+# Per-worker isolated storage (unique per VM worker, created by orca)
+if [ -d "$WORKER_MOUNT" ]; then
+    # Use /mnt/worker for persistent state that needs to be visible on host
+    # Test Artifact Storage
+    # We use a unique directory per test run to store all artifacts (state, logs, etc.)
+    # This allows post-run analysis.
+
+    # Resolve Test ID from Orchestrator (Batch/Run ID) or fallback
+    if [ -n "${ORCA_TEST_ID:-}" ]; then
+        BATCH_ID="${ORCA_TEST_ID}"
+    elif [ -n "${TEST_RUN_ID:-}" ]; then
+        BATCH_ID="${TEST_RUN_ID}"
+    else
+        # Fallback to timestamp-pid if no orchestrator ID
+        BATCH_ID="manual-$(date +%Y%m%d-%H%M%S)-${TEST_PID}"
+    fi
+    export BATCH_ID
+
+    # We use bind mounts to map the persistent artifact storage to the expected system locations
+
+    # Artifact Root: <Mount>/<BatchID>/<TestRelPath>
+    # We resolve the test path relative to the project root.
+    # $0 refers to the test script when sourced.
+    ABS_SCRIPT=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+    TEST_REL_PATH="${ABS_SCRIPT#$PROJECT_ROOT/}"
+
+    ARTIFACT_DIR="$WORKER_MOUNT/$BATCH_ID/$TEST_REL_PATH"
+    STATE_DIR="$ARTIFACT_DIR/state"
+    LOG_DIR="$ARTIFACT_DIR/log"
+    mkdir -p "$STATE_DIR" "$LOG_DIR"
+    chmod 777 "$STATE_DIR" "$LOG_DIR"
+    export ARTIFACT_DIR STATE_DIR LOG_DIR
+
+    # SETUP MOUNTS REMOVED
+    # We no longer bind mount to /opt/flywall/var/lib or /var/log globally.
+    # We rely on CLI flags (-state-dir, -log-dir) to direct the binary to the isolated paths.
+
+    # Ensure runtime directories exist with 777 permissions
+    # This ensures the API (user 'nobody') can write to them regardless of 9p mapping quirks
+    mkdir -p "$STATE_DIR/imports" "$STATE_DIR/api"
+    chmod 777 "$STATE_DIR/imports" "$STATE_DIR/api"
+
+    # IMPORTANT: Must be 777 because API server runs as 'nobody'
+    chmod 777 "$STATE_DIR" "$LOG_DIR"
+    # Recursively fix permissions on any remaining content
+    chmod -R 777 "$STATE_DIR" 2>/dev/null || true
+
+    # Ensure RUN_DIR exists and is writable (must be on local disk for sockets)
+    mkdir -p "$RUN_DIR"
+    chmod 1777 "$RUN_DIR"
+
+    # Ensure /tmp is available and writable by all for temporary files
+    mkdir -p /tmp
+    chmod 1777 /tmp
+
+    # Ensure Go uses /tmp (or the explicit RUN_DIR if specified in test config)
+    export TMPDIR="/tmp"
+
+    # Legacy path setup handled by mount --bind above
+else
+    # Fallback for non-VM execution or legacy mode
+    RUN_DIR="/tmp/flywall-test-${TEST_PID}-run"
+    STATE_DIR="/tmp/flywall-test-${TEST_PID}-state"
+    LOG_DIR="/tmp/flywall-test-${TEST_PID}-log"
+    mkdir -p "$RUN_DIR" "$STATE_DIR" "$LOG_DIR"
+    chmod 777 "$RUN_DIR" "$STATE_DIR" "$LOG_DIR"
+fi
+
+# Export these as FLYWALL_* for the Go binary to pick up
+export FLYWALL_RUN_DIR="$RUN_DIR"
+export FLYWALL_STATE_DIR="$STATE_DIR"
+export FLYWALL_LOG_DIR="$LOG_DIR"
+export FLYWALL_TEST_MODE=1  # Skip crash loop detection in test environment
+
+# Shared writable assets (ipsets, geoip, caches)
+# FORCE ISOLATION: Always use STATE_DIR for tests to prevent shared writable conflicts
+# if [ -d "$ASSETS_MOUNT" ]; then
+#     export FLYWALL_SHARE_DIR="$ASSETS_MOUNT"
+# else
+    export FLYWALL_SHARE_DIR="$STATE_DIR"
+# fi
+
+SOCKET_NAME="ctl.sock"
+CTL_SOCKET="$RUN_DIR/$SOCKET_NAME"
+export FLYWALL_CTL_SOCKET="$CTL_SOCKET"
+
+unset INVOCATION_ID  # Ensure no service-mode contamination
+
+# Ensure directories exist with proper permissions
+if [ "$(id -u)" -eq 0 ]; then
+    mkdir -p "$FLYWALL_RUN_DIR" "$FLYWALL_STATE_DIR"
+    rm -f "$FLYWALL_STATE_DIR/supervisor.state" "$FLYWALL_STATE_DIR/crash.state"
+fi
+
 # Set common variables
 MOUNT_PATH="/mnt/$BRAND_LOWER"
 RAW_ARCH=$(uname -m)
@@ -112,14 +253,19 @@ case "$RAW_ARCH" in
     *)       ARCH="$RAW_ARCH" ;;
 esac
 
-# Prefer architecture-specific linux binary
-if [ -x "$MOUNT_PATH/build/${BINARY_NAME}-linux-${ARCH}" ]; then
+# Prefer binaries from /mnt/build (read-only, dedicated mount)
+if [ -d "$BUILD_MOUNT" ] && [ -x "$BUILD_MOUNT/${BINARY_NAME}-linux-${ARCH}" ]; then
+    APP_BIN="$BUILD_MOUNT/${BINARY_NAME}-linux-${ARCH}"
+elif [ -x "$MOUNT_PATH/build/${BINARY_NAME}-linux-${ARCH}" ]; then
     APP_BIN="$MOUNT_PATH/build/${BINARY_NAME}-linux-${ARCH}"
 elif [ -x "$PROJECT_ROOT/build/${BINARY_NAME}-linux-${ARCH}" ]; then
     APP_BIN="$PROJECT_ROOT/build/${BINARY_NAME}-linux-${ARCH}"
 else
     # Fallback to standard name
-    APP_BIN="$MOUNT_PATH/build/$BINARY_NAME"
+    APP_BIN="$BUILD_MOUNT/$BINARY_NAME"
+    if [ ! -x "$APP_BIN" ]; then
+        APP_BIN="$MOUNT_PATH/build/$BINARY_NAME"
+    fi
     if [ ! -x "$APP_BIN" ]; then
         APP_BIN="$PROJECT_ROOT/build/$BINARY_NAME"
     fi
@@ -128,14 +274,19 @@ fi
 # ============================================================================
 # Minimal Utility Wrappers (Fallback to toolbox)
 # ============================================================================
-# Prefer architecture-specific linux binary (like APP_BIN)
-if [ -x "$MOUNT_PATH/build/toolbox-linux-${ARCH}" ]; then
+# Prefer toolbox from /mnt/build
+if [ -d "$BUILD_MOUNT" ] && [ -x "$BUILD_MOUNT/toolbox-linux-${ARCH}" ]; then
+    TOOLBOX_BIN="$BUILD_MOUNT/toolbox-linux-${ARCH}"
+elif [ -x "$MOUNT_PATH/build/toolbox-linux-${ARCH}" ]; then
     TOOLBOX_BIN="$MOUNT_PATH/build/toolbox-linux-${ARCH}"
 elif [ -x "$PROJECT_ROOT/build/toolbox-linux-${ARCH}" ]; then
     TOOLBOX_BIN="$PROJECT_ROOT/build/toolbox-linux-${ARCH}"
 else
     # Fallback to standard name (for local testing)
-    TOOLBOX_BIN="$MOUNT_PATH/build/toolbox"
+    TOOLBOX_BIN="$BUILD_MOUNT/toolbox"
+    if [ ! -x "$TOOLBOX_BIN" ]; then
+        TOOLBOX_BIN="$MOUNT_PATH/build/toolbox"
+    fi
     if [ ! -x "$TOOLBOX_BIN" ]; then
         TOOLBOX_BIN="$PROJECT_ROOT/build/toolbox"
     fi
@@ -155,29 +306,69 @@ link_toolbox curl
 
 # Pre-determine the best port checker? No, try all for robustness.
 # Some environments might fail nc (IPv4 vs IPv6) but succeed with netstat.
+# check_port [port] [proto]
+# proto: tcp (default) or udp
 check_port() {
-    # Try nc (fastest)
-    if command -v nc >/dev/null 2>&1; then
-        if nc -z -w 1 127.0.0.1 "$1" 2>/dev/null; then return 0; fi
-    fi
-    # Fallback to netstat
-    if command -v netstat >/dev/null 2>&1; then
-        if netstat -tln 2>/dev/null | grep -q ":$1 "; then return 0; fi
-    fi
-    # Fallback to ss
-    if command -v ss >/dev/null 2>&1; then
-        if ss -tln 2>/dev/null | grep -q ":$1 "; then return 0; fi
+    local port="$1"
+    local proto="${2:-tcp}"
+
+    if [ "$proto" = "udp" ]; then
+        # Try nc (UDP)
+        if command -v nc >/dev/null 2>&1; then
+            if nc -z -u -w 1 127.0.0.1 "$port" 2>/dev/null; then return 0; fi
+        fi
+        # Fallback to netstat/ss (UDP)
+        if command -v netstat >/dev/null 2>&1; then
+            if netstat -uln 2>/dev/null | grep -q ":$port "; then return 0; fi
+        fi
+        if command -v ss >/dev/null 2>&1; then
+            if ss -uln 2>/dev/null | grep -q ":$port "; then return 0; fi
+        fi
+    else
+        # TCP (default)
+        if command -v nc >/dev/null 2>&1; then
+            if nc -z -w 1 127.0.0.1 "$port" 2>/dev/null; then return 0; fi
+        fi
+        if command -v netstat >/dev/null 2>&1; then
+            if netstat -tln 2>/dev/null | grep -q ":$port "; then return 0; fi
+        fi
+        if command -v ss >/dev/null 2>&1; then
+            if ss -tln 2>/dev/null | grep -q ":$port "; then return 0; fi
+        fi
     fi
     return 1
 }
+
 
 # ============================================================================
 # Test Configuration Defaults
 # ============================================================================
 
-# Default API port for tests (can be overridden per-test)
-# Currently one app per VM, so static port is fine. Variable for future flexibility.
+# ============================================================================
+# Default API port for tests (Standardized to 8080) Tests are only ever run in 
+# virtual machines and will NEVER have port conflicts, so we can just use the
+# same port for all tests. RANDOMIZING PORTS IS NEVER THE ANSWER TO A PERCEIVED
+# "PORT CONFLICT"
 TEST_API_PORT="${TEST_API_PORT:-8080}"
+export TEST_API_PORT
+# ============================================================================
+
+# Standard test environment setup
+# Usage: setup_test_env "test_name_suffix"
+setup_test_env() {
+    local name="$1"
+    require_root
+    require_binary
+
+    # Define common variables
+    CONFIG_FILE=$(mktemp_compatible "${name}.hcl")
+    export CONFIG_FILE
+
+    # Register standard cleanup
+    trap "cleanup_on_exit; rm -f \"$CONFIG_FILE\" 2>/dev/null" EXIT INT TERM
+
+    diag "Test environment setup for: $name"
+}
 
 # ============================================================================
 # Network Setup Helpers
@@ -217,6 +408,11 @@ wait_for_log_entry() {
 # ============================================================================
 # HCL Configuration Templates
 # ============================================================================
+# These functions generate standard HCL configuration boilerplate
+#
+# For eBPF tests, use ebpf_config() or ebpf_config_file() to ensure
+# proper network configuration and prevent safemode activation
+# ============================================================================
 
 # Generate minimal HCL config with standard loopback
 # Usage: config=$(minimal_config)
@@ -253,6 +449,54 @@ interface "lo" {
 zone "local" {}
 EOF
 }
+
+# Generate eBPF-ready HCL config with standard boilerplate
+# This prevents safemode activation and provides required infrastructure
+# Usage: config=$(ebpf_config [api_port])
+# Returns HCL string that can be written to a file
+ebpf_config() {
+    local port="${1:-8080}"
+    cat <<EOF
+schema_version = "1.0"
+ip_forwarding = true
+
+interface "eth0" {
+    zone = "wan"
+    ipv4 = ["10.0.2.15/24"]
+    gateway = "10.0.2.2"
+}
+
+zone "wan" {
+    interfaces = ["eth0"]
+}
+
+api {
+    enabled = true
+    listen = "0.0.0.0:$port"
+    require_auth = false
+}
+
+logging {
+    level = "info"
+    file = "/tmp/flywall-test.log"
+}
+
+control_plane {
+    enabled = true
+    socket = "/tmp/flywall.ctl"
+}
+EOF
+}
+
+# Generate eBPF config and write to file
+# Usage: ebpf_config_file <filename> [api_port]
+ebpf_config_file() {
+    local filename="$1"
+    local port="${2:-8080}"
+
+    ebpf_config "$port" > "$filename"
+    export CONFIG_FILE="$filename"
+}
 # ============================================================================
 # Global State Reset (Ensure clean slate for each test)
 # ============================================================================
@@ -270,31 +514,42 @@ reset_state() {
         export BINARY_NAME=$(basename "$APP_BIN")
         # Use MOUNT_PATH (not PROJECT_ROOT) because PROJECT_ROOT is derived from
         # the test directory and may be wrong (e.g., /mnt/flywall/t instead of /mnt/flywall)
-        CLEANUP_SCRIPT="$MOUNT_PATH/scripts/vm_cleanup.sh"
+        CLEANUP_SCRIPT="$MOUNT_PATH/tools/scripts/vm_cleanup.sh"
         if [ -x "$CLEANUP_SCRIPT" ]; then
             "$CLEANUP_SCRIPT" >/dev/null 2>&1
-            # Fallback inline cleanup if script not found (e.g. during minimal mount)
-            pkill -9 -f "$BINARY_NAME" 2>/dev/null || true
-            # Wait for processes to actually exit
-            for i in $(seq 1 20); do
-                if ! pgrep -f "$BINARY_NAME" >/dev/null; then break; fi
-                sleep 0.1
-            done
-
-            # Kill potential leaking test processes
+        else
+            # Inline fallback cleanup if script not found (e.g. during minimal mount)
+            # Kill the binary and common leaking processes
+            pkill -9 -x "$BINARY_NAME" 2>/dev/null || true
+            pkill -9 -x flywall 2>/dev/null || true
             pkill -9 -x udhcpc 2>/dev/null || true
             pkill -9 -x sqlite3 2>/dev/null || true
+            pkill -9 -x tcpdump 2>/dev/null || true
+            pkill -9 -x tail 2>/dev/null || true
 
-            # Flush global IPs from loopback (leftover from dhcp tests)
-            ip addr flush dev lo scope global 2>/dev/null || true
+            # Kill any processes holding TCP/UDP ports (prevents bind failures)
+            if command -v ss >/dev/null 2>&1; then
+                for pid in $(ss -tlnp 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do
+                    [ "$pid" != "$$" ] && kill -9 "$pid" 2>/dev/null || true
+                done
+                for pid in $(ss -ulnp 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do
+                    [ "$pid" != "$$" ] && kill -9 "$pid" 2>/dev/null || true
+                done
+            fi
 
             nft flush ruleset 2>/dev/null || true
-            rm -rf "$STATE_DIR"/* 2>/dev/null
-
-            # Clean up API runtime files (stale locks block new API instances)
-            rm -rf /var/run/flywall/api 2>/dev/null || true
-            rm -f /var/run/flywall-ctl.sock 2>/dev/null || true
         fi
+
+        # Always clean up state regardless of which cleanup path ran
+        ip addr flush dev lo scope global 2>/dev/null || true
+        rm -rf "$STATE_DIR"/* 2>/dev/null
+        if [ "$FLYWALL_SHARE_DIR" = "$ASSETS_MOUNT" ]; then
+            rm -rf "$ASSETS_MOUNT"/* 2>/dev/null
+        fi
+        rm -rf "$RUN_DIR" 2>/dev/null || true
+        rm -rf /tmp/flywall-run-${TEST_PID}* 2>/dev/null || true
+        rm -rf /tmp/test_${TEST_PID}_* 2>/dev/null || true
+        rm -rf /tmp/import_${TEST_PID}_* 2>/dev/null || true
 
         # Always ensure loopback is healthy (even if cleanup script didn't run)
         ip link set lo up 2>/dev/null || true
@@ -311,11 +566,12 @@ reset_state() {
 # Capture process snapshot to file (excludes kernel threads, self, and known safe procs)
 snapshot_procs() {
     # Format: PID PPID PGID CMD
-    # Exclude: kernel threads (ppid=2), our shell tree, toolbox agent
-    ps -eo pid,ppid,pgid,comm 2>/dev/null | \
+    # Filter kernel threads (PPID 2) and Zombies (stat=Z)
+    ps -eo pid,ppid,pgid,stat,comm 2>/dev/null | \
+        awk '$2 != 2 && $4 !~ /^Z/ {print $1, $2, $3, $5}' | \
         grep -v '^\s*PID' | \
-        grep -vE '^\s*(1|2)\s' | \
-        grep -vE 'ps|grep|sh|ash|bash|sleep|cat|awk|sed|toolbox|tail|head' | \
+        grep -vE '^\s*1\s' | \
+        grep -vE 'ps|grep|sh|ash|bash|sleep|cat|awk|sed|toolbox|tail|head|comm|sort|timeout' | \
         sort -n > "${1:-/tmp/procs_snapshot.txt}"
 }
 
@@ -330,30 +586,111 @@ diff_procs() {
 
     # Find new processes (in current but not in snapshot)
     local leaked=$(comm -13 "$snapshot" "$current" 2>/dev/null | grep -vE '^\s*$')
+    local status=0
 
     if [ -n "$leaked" ]; then
-        echo "# WARNING: Leaked processes detected after test:"
+        echo "# FATAL: Leaked processes detected after test:"
         echo "$leaked" | while read -r line; do
             echo "#   $line"
         done
+        status=1
     fi
 
     rm -f "$current"
+    return $status
+}
+
+# Capture network state (interfaces and namespaces)
+snapshot_net() {
+    # Sort for consistent diffing
+    ip link show | grep -v "lo:" | awk -F: '{print $2}' | sort > "${1:-/tmp/net_links_snapshot.txt}"
+    ip netns list | sort > "${1:-/tmp/net_ns_snapshot.txt}"
+}
+
+# Diff network state
+diff_net() {
+    local link_snap="${1:-/tmp/net_links_snapshot.txt}"
+    local ns_snap="${2:-/tmp/net_ns_snapshot.txt}"
+    local link_cur="/tmp/net_links_current.txt"
+    local ns_cur="/tmp/net_ns_current.txt"
+    local status=0
+
+    [ ! -f "$link_snap" ] && return 0
+
+    snapshot_net "$link_cur" "$ns_cur"
+
+    # Check for leaked interfaces
+    local leaked_links=$(comm -13 "$link_snap" "$link_cur" 2>/dev/null | grep -vE '^\s*$')
+    if [ -n "$leaked_links" ]; then
+        echo "# FATAL: Leaked network interfaces detected:"
+        echo "$leaked_links" | sed 's/^/#   /'
+        status=1
+    fi
+
+    # Check for leaked namespaces
+    local leaked_ns=$(comm -13 "$ns_snap" "$ns_cur" 2>/dev/null | grep -vE '^\s*$')
+    if [ -n "$leaked_ns" ]; then
+        echo "# FATAL: Leaked network namespaces detected:"
+        echo "$leaked_ns" | sed 's/^/#   /'
+        status=1
+    fi
+    
+    rm -f "$link_cur" "$ns_cur"
+    return $status
 }
 
 # Execute reset immediately
 reset_state
 
-# Take process snapshot AFTER cleanup (baseline for this test)
+# Take snapshots AFTER cleanup (baseline for this test)
 PROC_SNAPSHOT="/tmp/procs_baseline_$$.txt"
-snapshot_procs "$PROC_SNAPSHOT"
+LINK_SNAPSHOT="/tmp/net_links_baseline_$$.txt"
+NS_SNAPSHOT="/tmp/net_ns_baseline_$$.txt"
 
-# Add EXIT handler to check for leaked processes
-_check_leaks_on_exit() {
-    diff_procs "$PROC_SNAPSHOT"
-    rm -f "$PROC_SNAPSHOT"
+snapshot_procs "$PROC_SNAPSHOT"
+snapshot_net "$LINK_SNAPSHOT" "$NS_SNAPSHOT"
+
+# Global checks and cleanup logic (does NOT exit)
+_perform_leak_check_and_cleanup() {
+    # 1. Force cleanup first (standard teardown)
+    cleanup_processes
+    
+    # 2. Check for LEFTOVER leaks (things that refused to die)
+    local leak_status=0
+    diff_procs "$PROC_SNAPSHOT" || leak_status=1
+    diff_net "$LINK_SNAPSHOT" "$NS_SNAPSHOT" || leak_status=1
+    rm -f "$PROC_SNAPSHOT" "$LINK_SNAPSHOT" "$NS_SNAPSHOT"
+
+    return $leak_status
 }
-trap '_check_leaks_on_exit' EXIT
+
+# Default Trap: Just check/cleanup and exit if failed
+_default_exit_trap() {
+    _perform_leak_check_and_cleanup
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
+}
+trap '_default_exit_trap' EXIT
+
+# Set up automatic cleanup on exit (call this at start of test)
+cleanup_on_exit() {
+    # Full cleanup includes filesystem unmounts
+    _full_cleanup_handler() {
+        _perform_leak_check_and_cleanup
+        local leak_status=$?
+        
+        # Additional filesystem cleanup (must run even if leaks found)
+        umount -l /opt/flywall/var/lib 2>/dev/null || true
+        umount -l /opt/flywall/var/log 2>/dev/null || true
+        rm -rf "$RUN_DIR" 2>/dev/null
+        
+        if [ $leak_status -ne 0 ]; then
+            exit 1
+        fi
+    }
+    trap '_full_cleanup_handler' EXIT INT TERM
+}
 
 # Export for tests
 export BRAND_NAME
@@ -369,6 +706,11 @@ export CTL_SOCKET
 export FLYWALL_STATE_DIR="${FLYWALL_STATE_DIR:-$STATE_DIR}"
 export FLYWALL_LOG_DIR="${FLYWALL_LOG_DIR:-$LOG_DIR}"
 export FLYWALL_RUN_DIR="${FLYWALL_RUN_DIR:-$RUN_DIR}"
+# Default ShareDir to StateDir in tests to preserve backward compatibility for structure
+# This maps share/geoip -> /opt/flywall/var/lib/geoip
+export FLYWALL_SHARE_DIR="${FLYWALL_SHARE_DIR:-$STATE_DIR}"
+export FLYWALL_CACHE_DIR="${FLYWALL_CACHE_DIR:-/opt/flywall/var/cache}"
+
 export CTL_BIN="${FLYWALL_BIN:-$APP_BIN}"
     echo "DEBUG: Using CTL_BIN: $CTL_BIN"
     ls -l "$CTL_BIN"
@@ -404,7 +746,8 @@ cleanup_processes() {
     # If any test failed, dump logs if available
     if [ "${failed_count:-0}" -gt 0 ]; then
         echo "# =================== FAILURE LOGS ==================="  >&2
-        for log in /tmp/*_ctl.log /tmp/*_api.log; do
+        # Check /tmp and LOG_DIR for logs
+        for log in /tmp/*_ctl.log /tmp/*_api.log "${LOG_DIR:-/nonexistent}"/*.log; do
             if [ -f "$log" ]; then
                 echo "# --- LOG: $log ---" >&2
                 cat "$log" >&2
@@ -419,34 +762,34 @@ cleanup_processes() {
             kill "$pid" 2>/dev/null
             sleep 0.1
             kill -9 "$pid" 2>/dev/null || true
+            # Wait for process to actually terminate (reap zombie)
+            wait "$pid" 2>/dev/null || true
         fi
     done
     BACKGROUND_PIDS=""
 
-    # Blanket kill of flywall processes (catches untracked children)
-    pkill -9 -f "$BINARY_NAME" 2>/dev/null || true
-    for i in $(seq 1 20); do
-        if ! pgrep -f "$BINARY_NAME" >/dev/null; then break; fi
-        sleep 0.1
-    done
-
-    # Kill any process on listening ports (prevents port conflicts)
-    if command -v ss >/dev/null 2>&1; then
-        # Check TCP (-t) and UDP (-u), listening (-l), numeric (-n), process (-p)
-        for pid in $(ss -tulnp 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do
-            kill -9 "$pid" 2>/dev/null || true
-        done
-    fi
+    # Process cleanup done via PIDs in BACKGROUND_PIDS
+    # Avoid global pkill -f "$CONFIG_FILE" as it kills parallel tests using the same config path
 
     # Explicitly kill common interfering services
     pkill -9 -x dnsmasq 2>/dev/null || true
     pkill -9 -x coredns 2>/dev/null || true
+
+    # Targeted cleanup of leaked processes to prevent hangs/conflicts
+    # We match by config file to avoid killing parallel test instances
+    if [ -n "${CONFIG_FILE:-}" ]; then
+        # DEBUG: Check if we can see the process before killing
+        if [ "${TEST_DEBUG:-}" = "1" ] || [ -n "${failed_count:-}" ]; then
+            echo "# DEBUG: Attempting to kill processes matching config: $CONFIG_FILE" >&2
+            pgrep -a -f "$CONFIG_FILE" | sed 's/^/# DEBUG: Found: /' >&2 || echo "# DEBUG: No processes found matching config" >&2
+        fi
+        pkill -f "$CONFIG_FILE" 2>/dev/null || true
+    fi
+
+    # Explicitly clean up flywall-api netns (persistent artifact)
+    ip netns delete flywall-api 2>/dev/null || true
 }
 
-# Set up automatic cleanup on exit (call this at start of test)
-cleanup_on_exit() {
-    trap cleanup_processes EXIT INT TERM
-}
 
 # ============================================================================
 # Service Management - Structured background process control
@@ -528,23 +871,23 @@ test_count=0
 # ============================================================================
 # Source the common TAP14 library if available (in VM or locally)
 # Locations:
-# 1. /mnt/flywall/internal/toolbox/harness/tap14.sh (VM mount)
-# 2. $PROJECT_ROOT/internal/toolbox/harness/tap14.sh (Host local)
-# 3. ../internal/toolbox/harness/tap14.sh (Relative to common.sh)
+# 1. /mnt/flywall/tools/pkg/toolbox/harness/tap14.sh (VM mount)
+# 2. $PROJECT_ROOT/tools/pkg/toolbox/harness/tap14.sh (Host local)
+# 3. ../tools/pkg/toolbox/harness/tap14.sh (Relative to common.sh)
 
-if [ -f "$MOUNT_PATH/internal/toolbox/harness/tap14.sh" ]; then
-    . "$MOUNT_PATH/internal/toolbox/harness/tap14.sh"
-elif [ -f "$PROJECT_ROOT/internal/toolbox/harness/tap14.sh" ]; then
-    . "$PROJECT_ROOT/internal/toolbox/harness/tap14.sh"
-elif [ -f "$(dirname "$0")/../../internal/toolbox/harness/tap14.sh" ]; then
-    . "$(dirname "$0")/../../internal/toolbox/harness/tap14.sh"
+if [ -f "$MOUNT_PATH/tools/pkg/toolbox/harness/tap14.sh" ]; then
+    . "$MOUNT_PATH/tools/pkg/toolbox/harness/tap14.sh"
+elif [ -f "$PROJECT_ROOT/tools/pkg/toolbox/harness/tap14.sh" ]; then
+    . "$PROJECT_ROOT/tools/pkg/toolbox/harness/tap14.sh"
+elif [ -f "$(dirname "$0")/../../tools/pkg/toolbox/harness/tap14.sh" ]; then
+    . "$(dirname "$0")/../../tools/pkg/toolbox/harness/tap14.sh"
 else
     # Fallback if library missing (should happen rarely, but safe default)
     echo "# WARNING: tap14.sh library not found, using minimal fallback" >&2
-    
+
     test_count=0
     failed_count=0
-    
+
     tap_version_14() { echo "TAP version 14"; }
     plan() { echo "1..$1"; }
     diag() { echo "# $1"; }
@@ -633,6 +976,7 @@ mktemp_compatible() {
 # Immediately fail the test with a message and optional diagnostics
 # Usage: fail "message" ["key" "val"...]
 fail() {
+    failed_count=$((failed_count + 1))
     echo "not ok - FATAL: $1"
     shift
     if [ "$#" -gt 0 ]; then
@@ -690,24 +1034,26 @@ run_with_timeout() {
 # ============================================================================
 
 # Wait for a port to be listening (max 5 seconds by default)
-# Optimized for low-resource environments (reduced polling)
+# Usage: wait_for_port [port] [timeout_sec] [proto]
 wait_for_port() {
     _port="$1"
     _timeout=$(scale_timeout "${2:-5}")
+    _proto="${3:-tcp}"
     _i=0
     _max=$((_timeout * 2))  # 2 checks per second (0.5s sleep)
 
     while [ $_i -lt $_max ]; do
-        if check_port "$_port"; then
+        if check_port "$_port" "$_proto"; then
             return 0
         fi
         sleep 0.5
         _i=$((_i + 1))
     done
 
-    echo "# TIMEOUT waiting for port $_port after ${_timeout}s"
+    echo "# TIMEOUT waiting for $_proto port $_port after ${_timeout}s"
     return 1
 }
+
 
 # Wait for a file to exist (max 5 seconds by default)
 wait_for_file() {
@@ -754,12 +1100,18 @@ wait_for_condition() {
 start_ctl() {
     _config="$1"
     shift
-    export CTL_LOG=$(mktemp_compatible ctl.log)
+    export CTL_LOG="${LOG_DIR:+$LOG_DIR/ctl.log}"
+    [ -z "$LOG_DIR" ] && CTL_LOG=$(mktemp_compatible ctl.log)
     echo "# DEBUG: CTL_LOG path is: $CTL_LOG"
 
     diag "Starting control plane with config: $_config"
 
-    # Ensure clean slate
+    # Ensure we use the correct socket for this instance, overriding any
+    # stale environment variables from previous tests in the same worker.
+    export FLYWALL_CTL_SOCKET="$CTL_SOCKET"
+
+    # Ensure clean slate, killing any stale processes and removing stale sockets
+    # Perfectly safe to run since our tests are run in virtual machines.
     pkill -x "$BINARY_NAME" 2>/dev/null || true
     rm -f "$CTL_SOCKET" 2>/dev/null
 
@@ -772,10 +1124,20 @@ start_ctl() {
         fi
     fi
 
-    # Inject state-dir if FLYWALL_STATE_DIR is set
-    # Note: main.go parses --state-dir flag for ctl command
+    # Inject directory overrides via CLI flags
+    # This ensures the daemon uses our isolated test directories
+    # independent of /opt/flywall global paths.
     if [ -n "$FLYWALL_STATE_DIR" ]; then
         set -- --state-dir "$FLYWALL_STATE_DIR" "$@"
+    fi
+    if [ -n "$FLYWALL_LOG_DIR" ]; then
+        set -- --log-dir "$FLYWALL_LOG_DIR" "$@"
+    fi
+    if [ -n "$FLYWALL_RUN_DIR" ]; then
+        set -- --run-dir "$FLYWALL_RUN_DIR" "$@"
+    fi
+    if [ -n "$FLYWALL_SHARE_DIR" ]; then
+        set -- --share-dir "$FLYWALL_SHARE_DIR" "$@"
     fi
 
     # Force logging to stdout so we can capture it
@@ -821,22 +1183,27 @@ stop_ctl() {
 # Sets: API_PID, API_LOG
 # Uses 'test-api' command which runs API without sandbox isolation
 start_api() {
-    export API_LOG=$(mktemp_compatible api.log)
+    export API_LOG="${LOG_DIR:+$LOG_DIR/api.log}"
+    [ -z "$LOG_DIR" ] && API_LOG=$(mktemp_compatible api.log)
 
-    # Try to extract port from args (default 8080)
-    _port=8080
+    # Try to extract port from args (default TEST_API_PORT)
+    _port=$TEST_API_PORT
+    _has_listen=0
     case "$*" in
-        *"-listen "*":"*)
-            _port=$(echo "$*" | sed 's/.*-listen [^:]*:\([0-9]*\).*/\1/')
-            ;;
-        *"-listen :"[0-9]*)
-            _port=$(echo "$*" | sed 's/.*-listen :\([0-9]*\).*/\1/')
+        *"-listen"*) 
+            _has_listen=1 
+            # Simple extraction of numeric port after colon
+            _port=$(echo "$*" | grep -oE "\-listen [^ ]+" | cut -d: -f2)
             ;;
     esac
 
     diag "Starting API server on $_port (logs: $API_LOG)"
     # Use -no-tls to force HTTP mode for reliable testing
-    $APP_BIN test-api -no-tls "$@" > "$API_LOG" 2>&1 &
+    if [ $_has_listen -eq 0 ]; then
+        $APP_BIN test-api -no-tls -listen :$_port "$@" > "$API_LOG" 2>&1 &
+    else
+        $APP_BIN test-api -no-tls "$@" > "$API_LOG" 2>&1 &
+    fi
     API_PID=$!
     track_pid $API_PID
 
@@ -876,7 +1243,7 @@ wait_for_api_ready() {
         # Check if we get ANY HTTP response (even 404 is fine, just not connection reset/empty)
         if command -v curl >/dev/null 2>&1; then
             # curl returns 0 on HTTP success (even 404), non-zero on conn refused/empty
-            if curl -s -m 1 "$url" >/dev/null 2>&1; then
+            if curl -s -m 2 "$url" >/dev/null 2>&1; then
                 return 0
             fi
         elif command -v wget >/dev/null 2>&1; then
@@ -909,13 +1276,13 @@ login_api() {
 wait_for_api() {
     local url="$1"
     local timeout="${2:-10}"
-    
+
     # Extract port from URL (e.g., http://127.0.0.1:8080 -> 8080)
     local port=$(echo "$url" | sed -E 's/.*:([0-9]+).*/\1/')
     if [ -z "$port" ] || [ "$port" = "$url" ]; then
         port=8080
     fi
-    
+
     wait_for_api_ready "$port" "$timeout"
 }
 

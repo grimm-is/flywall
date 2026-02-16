@@ -1,0 +1,2556 @@
+{
+    "language": "de",
+    "messages": [
+        {
+            "id": "Waiting for previous API instance to release lock... ({I}/{LockRetryCount})",
+            "message": "Waiting for previous API instance to release lock... ({I}/{LockRetryCount})",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "I",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "i"
+                },
+                {
+                    "id": "LockRetryCount",
+                    "string": "%[2]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 2,
+                    "expr": "lockRetryCount"
+                }
+            ]
+        },
+        {
+            "id": "{Name} API Key Management\n\nUsage:\n  {BinaryName} apikey \u003ccommand\u003e [options]\n\nCommands:\n  generate    Generate a new API key\n  list        List all API keys\n  revoke      Revoke an API key\n  help        Show this help\n\nGenerate Options:\n  --name \u003cname\u003e           Name for the key (required)\n  --permissions \u003cperms\u003e   Comma-separated permissions (required)\n  --expires \u003cduration\u003e    Expiration (e.g., \"24h\", \"7d\", \"30d\")\n  --allowed-ips \u003cips\u003e     Comma-separated allowed IPs\n  --rate-limit \u003crpm\u003e      Requests per minute limit\n  --description \u003cdesc\u003e    Description\n  --json, -j              Output in JSON format (for scripting)\n\nPermission Values:\n  Read:   config:read, uplinks:read, firewall:read, dhcp:read, dns:read,\n          learning:read, metrics:read, health:read, logs:read, read:*\n  Write:  config:write, uplinks:write, firewall:write, dhcp:write,\n          dns:write, learning:write, write:*\n  Admin:  admin:keys, admin:system, admin:backup, admin:*\n  All:    * (full access)\n\nPreset Permissions:\n  --preset readonly       Read-only access to all resources\n  --preset uplink         Uplink management (read/write uplinks, read health)\n  --preset monitoring     Metrics, health, and logs (read-only)\n  --preset admin          Full administrative access\n\nExamples:\n  # Generate a read-only key\n  {BinaryName_1} apikey generate --name \"monitoring\" --preset readonly\n\n  # Generate an uplink control key for your script\n  {BinaryName_2} apikey generate --name \"vpn-switcher\" --preset uplink --expires 365d\n\n  # Generate a full admin key\n  {BinaryName_3} apikey generate --name \"admin-key\" --preset admin\n\n  # Generate a key with specific permissions\n  {BinaryName_4} apikey generate --name \"custom\" --permissions \"uplinks:read,uplinks:write\"\n\n  # Generate a key restricted to specific IPs\n  {BinaryName_5} apikey generate --name \"local-only\" --preset admin --allowed-ips \"127.0.0.1,192.168.1.0/24\"",
+            "message": "{Name} API Key Management\n\nUsage:\n  {BinaryName} apikey \u003ccommand\u003e [options]\n\nCommands:\n  generate    Generate a new API key\n  list        List all API keys\n  revoke      Revoke an API key\n  help        Show this help\n\nGenerate Options:\n  --name \u003cname\u003e           Name for the key (required)\n  --permissions \u003cperms\u003e   Comma-separated permissions (required)\n  --expires \u003cduration\u003e    Expiration (e.g., \"24h\", \"7d\", \"30d\")\n  --allowed-ips \u003cips\u003e     Comma-separated allowed IPs\n  --rate-limit \u003crpm\u003e      Requests per minute limit\n  --description \u003cdesc\u003e    Description\n  --json, -j              Output in JSON format (for scripting)\n\nPermission Values:\n  Read:   config:read, uplinks:read, firewall:read, dhcp:read, dns:read,\n          learning:read, metrics:read, health:read, logs:read, read:*\n  Write:  config:write, uplinks:write, firewall:write, dhcp:write,\n          dns:write, learning:write, write:*\n  Admin:  admin:keys, admin:system, admin:backup, admin:*\n  All:    * (full access)\n\nPreset Permissions:\n  --preset readonly       Read-only access to all resources\n  --preset uplink         Uplink management (read/write uplinks, read health)\n  --preset monitoring     Metrics, health, and logs (read-only)\n  --preset admin          Full administrative access\n\nExamples:\n  # Generate a read-only key\n  {BinaryName_1} apikey generate --name \"monitoring\" --preset readonly\n\n  # Generate an uplink control key for your script\n  {BinaryName_2} apikey generate --name \"vpn-switcher\" --preset uplink --expires 365d\n\n  # Generate a full admin key\n  {BinaryName_3} apikey generate --name \"admin-key\" --preset admin\n\n  # Generate a key with specific permissions\n  {BinaryName_4} apikey generate --name \"custom\" --permissions \"uplinks:read,uplinks:write\"\n\n  # Generate a key restricted to specific IPs\n  {BinaryName_5} apikey generate --name \"local-only\" --preset admin --allowed-ips \"127.0.0.1,192.168.1.0/24\"",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Name",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "brand.Name"
+                },
+                {
+                    "id": "BinaryName",
+                    "string": "%[2]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 2,
+                    "expr": "brand.BinaryName"
+                },
+                {
+                    "id": "BinaryName_1",
+                    "string": "%[3]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 3,
+                    "expr": "brand.BinaryName"
+                },
+                {
+                    "id": "BinaryName_2",
+                    "string": "%[4]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 4,
+                    "expr": "brand.BinaryName"
+                },
+                {
+                    "id": "BinaryName_3",
+                    "string": "%[5]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 5,
+                    "expr": "brand.BinaryName"
+                },
+                {
+                    "id": "BinaryName_4",
+                    "string": "%[6]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 6,
+                    "expr": "brand.BinaryName"
+                },
+                {
+                    "id": "BinaryName_5",
+                    "string": "%[7]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 7,
+                    "expr": "brand.BinaryName"
+                }
+            ]
+        },
+        {
+            "id": "API Key: {FullKey}",
+            "message": "API Key: {FullKey}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "FullKey",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "fullKey"
+                }
+            ]
+        },
+        {
+            "id": "ID:          {ID}",
+            "message": "ID:          {ID}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "ID",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "keyInfo.ID"
+                }
+            ]
+        },
+        {
+            "id": "Name:        {Name}",
+            "message": "Name:        {Name}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Name",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "keyInfo.Name"
+                }
+            ]
+        },
+        {
+            "id": "Prefix:      {KeyPrefix}",
+            "message": "Prefix:      {KeyPrefix}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "KeyPrefix",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "keyInfo.KeyPrefix"
+                }
+            ]
+        },
+        {
+            "id": "Permissions: {Permissions}",
+            "message": "Permissions: {Permissions}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Permissions",
+                    "string": "%[1]v",
+                    "type": "[]grimm.is/flywall/internal/api/storage.Permission",
+                    "underlyingType": "[]grimm.is/flywall/internal/api/storage.Permission",
+                    "argNum": 1,
+                    "expr": "keyInfo.Permissions"
+                }
+            ]
+        },
+        {
+            "id": "Expires:     {RFC3339}",
+            "message": "Expires:     {RFC3339}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "RFC3339",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "keyInfo.ExpiresAt.Format(time.RFC3339)"
+                }
+            ]
+        },
+        {
+            "id": "Allowed IPs: {AllowedIPs}",
+            "message": "Allowed IPs: {AllowedIPs}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "AllowedIPs",
+                    "string": "%[1]v",
+                    "type": "[]string",
+                    "underlyingType": "[]string",
+                    "argNum": 1,
+                    "expr": "keyInfo.AllowedIPs"
+                }
+            ]
+        },
+        {
+            "id": "Rate Limit:  {RateLimit} req/min",
+            "message": "Rate Limit:  {RateLimit} req/min",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "RateLimit",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "keyInfo.RateLimit"
+                }
+            ]
+        },
+        {
+            "id": "curl -H \"Authorization: Bearer {FullKey}\" http://localhost:8080/api/...",
+            "message": "curl -H \"Authorization: Bearer {FullKey}\" http://localhost:8080/api/...",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "FullKey",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "fullKey"
+                }
+            ]
+        },
+        {
+            "id": "curl -H \"X-API-Key: {FullKey}\" http://localhost:8080/api/...",
+            "message": "curl -H \"X-API-Key: {FullKey}\" http://localhost:8080/api/...",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "FullKey",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "fullKey"
+                }
+            ]
+        },
+        {
+            "id": "Key {Id} revoked.",
+            "message": "Key {Id} revoked.",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Id",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "id"
+                }
+            ]
+        },
+        {
+            "id": "Error: {Err}",
+            "message": "Error: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Configuration valid!",
+            "message": "Configuration valid!",
+            "translation": ""
+        },
+        {
+            "id": "Schema Version: {SchemaVersion}",
+            "message": "Schema Version: {SchemaVersion}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "SchemaVersion",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "cfg.SchemaVersion"
+                }
+            ]
+        },
+        {
+            "id": "Interfaces: {Interfaces}",
+            "message": "Interfaces: {Interfaces}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Interfaces",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "len(cfg.Interfaces)"
+                }
+            ]
+        },
+        {
+            "id": "Zones: {Zones}",
+            "message": "Zones: {Zones}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Zones",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "len(cfg.Zones)"
+                }
+            ]
+        },
+        {
+            "id": "Policies: {Policies}",
+            "message": "Policies: {Policies}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Policies",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "len(cfg.Policies)"
+                }
+            ]
+        },
+        {
+            "id": "Migration: {OriginalVersion} -\u003e {CurrentVersion}",
+            "message": "Migration: {OriginalVersion} -\u003e {CurrentVersion}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "OriginalVersion",
+                    "string": "%[1]s",
+                    "type": "grimm.is/flywall/internal/config.SchemaVersion",
+                    "underlyingType": "struct{Major int; Minor int}",
+                    "argNum": 1,
+                    "expr": "result.OriginalVersion"
+                },
+                {
+                    "id": "CurrentVersion",
+                    "string": "%[2]s",
+                    "type": "grimm.is/flywall/internal/config.SchemaVersion",
+                    "underlyingType": "struct{Major int; Minor int}",
+                    "argNum": 2,
+                    "expr": "result.CurrentVersion"
+                }
+            ]
+        },
+        {
+            "id": "Error generating firewall rules: {Err}",
+            "message": "Error generating firewall rules: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Error initializing firewall manager: {Err}",
+            "message": "Error initializing firewall manager: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "{Name}\t{VLANs}\t{Dhcp}\t{Ipv4}\t{Ipv6}\t{Zone}",
+            "message": "{Name}\t{VLANs}\t{Dhcp}\t{Ipv4}\t{Ipv6}\t{Zone}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Name",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "iface.Name"
+                },
+                {
+                    "id": "VLANs",
+                    "string": "%[2]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 2,
+                    "expr": "len(iface.VLANs)"
+                },
+                {
+                    "id": "Dhcp",
+                    "string": "%[3]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 3,
+                    "expr": "dhcp"
+                },
+                {
+                    "id": "Ipv4",
+                    "string": "%[4]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 4,
+                    "expr": "ipv4"
+                },
+                {
+                    "id": "Ipv6",
+                    "string": "%[5]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 5,
+                    "expr": "ipv6"
+                },
+                {
+                    "id": "Zone",
+                    "string": "%[6]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 6,
+                    "expr": "zone"
+                }
+            ]
+        },
+        {
+            "id": "{Name}\t{Ifaces}",
+            "message": "{Name}\t{Ifaces}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Name",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "z.Name"
+                },
+                {
+                    "id": "Ifaces",
+                    "string": "%[2]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 2,
+                    "expr": "ifaces"
+                }
+            ]
+        },
+        {
+            "id": "{From}\t{To}\t{Rules}",
+            "message": "{From}\t{To}\t{Rules}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "From",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "p.From"
+                },
+                {
+                    "id": "To",
+                    "string": "%[2]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 2,
+                    "expr": "p.To"
+                },
+                {
+                    "id": "Rules",
+                    "string": "%[3]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 3,
+                    "expr": "len(p.Rules)"
+                }
+            ]
+        },
+        {
+            "id": "Unknown config command: {Args0}",
+            "message": "Unknown config command: {Args0}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Args0",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "args[0]"
+                }
+            ]
+        },
+        {
+            "id": "Failed to connect to control plane: {Err}",
+            "message": "Failed to connect to control plane: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Make sure 'firewall ctl' is running first.",
+            "message": "Make sure 'firewall ctl' is running first.",
+            "translation": ""
+        },
+        {
+            "id": "Failed to get configuration: {Err}",
+            "message": "Failed to get configuration: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "{HCL}",
+            "message": "{HCL}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "HCL",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "reply.HCL"
+                }
+            ]
+        },
+        {
+            "id": "Invalid output format: {Output}",
+            "message": "Invalid output format: {Output}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Output",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "*output"
+                }
+            ]
+        },
+        {
+            "id": "Failed to read config file: {Err}",
+            "message": "Failed to read config file: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Failed to read from stdin: {Err}",
+            "message": "Failed to read from stdin: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Configuration validation failed: {Err}",
+            "message": "Configuration validation failed: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Apply this configuration? [y/N]:",
+            "message": "Apply this configuration? [y/N]:",
+            "translation": ""
+        },
+        {
+            "id": "Warning: Failed to create backup: {Err}",
+            "message": "Warning: Failed to create backup: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Warning: Failed to create backup: {Error}",
+            "message": "Warning: Failed to create backup: {Error}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Error",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "backupReply.Error"
+                }
+            ]
+        },
+        {
+            "id": "Backup created: version {Version}",
+            "message": "Backup created: version {Version}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Version",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "backupReply.Backup.Version"
+                }
+            ]
+        },
+        {
+            "id": "Failed to set configuration: {Err}",
+            "message": "Failed to set configuration: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Error applying configuration: {Error}",
+            "message": "Error applying configuration: {Error}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Error",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "reply.Error"
+                }
+            ]
+        },
+        {
+            "id": "You can restore from backup version {Version} if needed",
+            "message": "You can restore from backup version {Version} if needed",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Version",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "backupReply.Backup.Version"
+                }
+            ]
+        },
+        {
+            "id": "Validation failed: {Err}",
+            "message": "Validation failed: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Failed to create temporary file: {Err}",
+            "message": "Failed to create temporary file: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Failed to write temporary file: {Err}",
+            "message": "Failed to write temporary file: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Editor failed: {Err}",
+            "message": "Editor failed: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Failed to read edited file: {Err}",
+            "message": "Failed to read edited file: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Options: [r]etry, [a]bort, [e]dit again:",
+            "message": "Options: [r]etry, [a]bort, [e]dit again:",
+            "translation": ""
+        },
+        {
+            "id": "Failed to apply configuration: {Err}",
+            "message": "Failed to apply configuration: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Usage: firewall config delete \u003csection-type\u003e [label1] [label2]...",
+            "message": "Usage: firewall config delete \u003csection-type\u003e [label1] [label2]...",
+            "translation": ""
+        },
+        {
+            "id": "Examples: firewall config delete dhcp",
+            "message": "Examples: firewall config delete dhcp",
+            "translation": ""
+        },
+        {
+            "id": "firewall config delete interface eth0",
+            "message": "firewall config delete interface eth0",
+            "translation": ""
+        },
+        {
+            "id": "firewall config delete policy lan wan",
+            "message": "firewall config delete policy lan wan",
+            "translation": ""
+        },
+        {
+            "id": "firewall config delete policy \"allow ssh\" (by name)",
+            "message": "firewall config delete policy \"allow ssh\" (by name)",
+            "translation": ""
+        },
+        {
+            "id": "Delete {SectionType}",
+            "message": "Delete {SectionType}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "SectionType",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "sectionType"
+                }
+            ]
+        },
+        {
+            "id": "with labels {Labels}",
+            "message": "with labels {Labels}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Labels",
+                    "string": "%[1]v",
+                    "type": "[]string",
+                    "underlyingType": "[]string",
+                    "argNum": 1,
+                    "expr": "labels"
+                }
+            ]
+        },
+        {
+            "id": "? [y/N]:",
+            "message": "? [y/N]:",
+            "translation": ""
+        },
+        {
+            "id": "Failed to delete section: {Err}",
+            "message": "Failed to delete section: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Error deleting section: {Error}",
+            "message": "Error deleting section: {Error}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Error",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "reply.Error"
+                }
+            ]
+        },
+        {
+            "id": "Successfully deleted {SectionType}",
+            "message": "Successfully deleted {SectionType}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "SectionType",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "sectionType"
+                }
+            ]
+        },
+        {
+            "id": "Failed to load config file: {Err}",
+            "message": "Failed to load config file: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Migration failed: {Err}",
+            "message": "Migration failed: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Canonicalization failed: {Err}",
+            "message": "Canonicalization failed: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Failed to generate HCL: {Err}",
+            "message": "Failed to generate HCL: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Failed to save migrated config: {Err}",
+            "message": "Failed to save migrated config: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Successfully migrated {TargetFile} to schema version {SchemaVersion}",
+            "message": "Successfully migrated {TargetFile} to schema version {SchemaVersion}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "TargetFile",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "targetFile"
+                },
+                {
+                    "id": "SchemaVersion",
+                    "string": "%[2]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 2,
+                    "expr": "cf.Config.SchemaVersion"
+                }
+            ]
+        },
+        {
+            "id": "Failed to enable debug logging: {Err}",
+            "message": "Failed to enable debug logging: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Error: --api-key is required for remote connection",
+            "message": "Error: --api-key is required for remote connection",
+            "translation": ""
+        },
+        {
+            "id": "Error running console: {Err}",
+            "message": "Error running console: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Clock anchor loaded: {RFC3339}",
+            "message": "Clock anchor loaded: {RFC3339}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "RFC3339",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "savedTime.Format(time.RFC3339)"
+                }
+            ]
+        },
+        {
+            "id": "Warning: System time ({RFC3339}) appears unreasonable. Last known good time was {RFC3339_1}. Waiting for NTP sync.",
+            "message": "Warning: System time ({RFC3339}) appears unreasonable. Last known good time was {RFC3339_1}. Waiting for NTP sync.",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "RFC3339",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "now.Format(time.RFC3339)"
+                },
+                {
+                    "id": "RFC3339_1",
+                    "string": "%[2]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 2,
+                    "expr": "savedTime.Format(time.RFC3339)"
+                }
+            ]
+        },
+        {
+            "id": "Warning: System time ({RFC3339}) appears unreasonable and no anchor file exists.",
+            "message": "Warning: System time ({RFC3339}) appears unreasonable and no anchor file exists.",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "RFC3339",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "now.Format(time.RFC3339)"
+                }
+            ]
+        },
+        {
+            "id": "Error: --input is required",
+            "message": "Error: --input is required",
+            "translation": ""
+        },
+        {
+            "id": "Error: unsupported type '{ImportType}'",
+            "message": "Error: unsupported type '{ImportType}'",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "ImportType",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "importType"
+                }
+            ]
+        },
+        {
+            "id": "Parsed backup file: {InputFile} (Type: {ImportType})",
+            "message": "Parsed backup file: {InputFile} (Type: {ImportType})",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "InputFile",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "inputFile"
+                },
+                {
+                    "id": "ImportType",
+                    "string": "%[2]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 2,
+                    "expr": "importType"
+                }
+            ]
+        },
+        {
+            "id": "Error parsing backup: {Err}",
+            "message": "Error parsing backup: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Found: {Interfaces} interfaces, {FilterRules} filter rules, {NATRules} NAT rules",
+            "message": "Found: {Interfaces} interfaces, {FilterRules} filter rules, {NATRules} NAT rules",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Interfaces",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "len(result.Interfaces)"
+                },
+                {
+                    "id": "FilterRules",
+                    "string": "%[2]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 2,
+                    "expr": "len(result.FilterRules)"
+                },
+                {
+                    "id": "NATRules",
+                    "string": "%[3]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 3,
+                    "expr": "len(result.NATRules)"
+                }
+            ]
+        },
+        {
+            "id": "Error writing config: {Err}",
+            "message": "Error writing config: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Configuration written to {OutputConfig}",
+            "message": "Configuration written to {OutputConfig}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "OutputConfig",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "outputConfig"
+                }
+            ]
+        },
+        {
+            "id": "- {Step}",
+            "message": "- {Step}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Step",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "step"
+                }
+            ]
+        },
+        {
+            "id": "Unknown ipset command: {Args0}",
+            "message": "Unknown ipset command: {Args0}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Args0",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "args[0]"
+                }
+            ]
+        },
+        {
+            "id": "Error: Failed to connect to API server: {Err}",
+            "message": "Error: Failed to connect to API server: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Error: API server returned status {StatusCode}",
+            "message": "Error: API server returned status {StatusCode}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "StatusCode",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "resp.StatusCode"
+                }
+            ]
+        },
+        {
+            "id": "Error: Failed to read response: {Err}",
+            "message": "Error: Failed to read response: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Error: Failed to parse response: {Err}",
+            "message": "Error: Failed to parse response: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "IPSets ({Count} total):",
+            "message": "IPSets ({Count} total):",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Count",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "listResp.Count"
+                }
+            ]
+        },
+        {
+            "id": "{NAME} {TYPE} {SOURCE} {ENTRIES} {AGE} {NEXT_UPDATE}",
+            "message": "{NAME} {TYPE} {SOURCE} {ENTRIES} {AGE} {NEXT_UPDATE}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "NAME",
+                    "string": "%-20[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "\"NAME\""
+                },
+                {
+                    "id": "TYPE",
+                    "string": "%-12[2]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 2,
+                    "expr": "\"TYPE\""
+                },
+                {
+                    "id": "SOURCE",
+                    "string": "%-12[3]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 3,
+                    "expr": "\"SOURCE\""
+                },
+                {
+                    "id": "ENTRIES",
+                    "string": "%-10[4]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 4,
+                    "expr": "\"ENTRIES\""
+                },
+                {
+                    "id": "AGE",
+                    "string": "%-15[5]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 5,
+                    "expr": "\"AGE\""
+                },
+                {
+                    "id": "NEXT_UPDATE",
+                    "string": "%[6]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 6,
+                    "expr": "\"NEXT UPDATE\""
+                }
+            ]
+        },
+        {
+            "id": "{Name} {Type} {Source} {EntriesCount} {Age} {NextUpdate}",
+            "message": "{Name} {Type} {Source} {EntriesCount} {Age} {NextUpdate}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Name",
+                    "string": "%-20[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "ipset.Name"
+                },
+                {
+                    "id": "Type",
+                    "string": "%-12[2]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 2,
+                    "expr": "ipset.Type"
+                },
+                {
+                    "id": "Source",
+                    "string": "%-12[3]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 3,
+                    "expr": "ipset.Source"
+                },
+                {
+                    "id": "EntriesCount",
+                    "string": "%-10[4]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 4,
+                    "expr": "ipset.EntriesCount"
+                },
+                {
+                    "id": "Age",
+                    "string": "%-15[5]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 5,
+                    "expr": "ipset.Age"
+                },
+                {
+                    "id": "NextUpdate",
+                    "string": "%[6]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 6,
+                    "expr": "nextUpdate"
+                }
+            ]
+        },
+        {
+            "id": "Error: IPSet name is required",
+            "message": "Error: IPSet name is required",
+            "translation": ""
+        },
+        {
+            "id": "Usage: firewall ipset show \u003cname\u003e",
+            "message": "Usage: firewall ipset show \u003cname\u003e",
+            "translation": ""
+        },
+        {
+            "id": "Error: IPSet '{Name}' not found",
+            "message": "Error: IPSet '{Name}' not found",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Name",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "name"
+                }
+            ]
+        },
+        {
+            "id": "IPSet Details:",
+            "message": "IPSet Details:",
+            "translation": ""
+        },
+        {
+            "id": "Name:         {Name}",
+            "message": "Name:         {Name}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Name",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "ipset.Name"
+                }
+            ]
+        },
+        {
+            "id": "Type:         {Type}",
+            "message": "Type:         {Type}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Type",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "ipset.Type"
+                }
+            ]
+        },
+        {
+            "id": "Source:       {Source}",
+            "message": "Source:       {Source}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Source",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "ipset.Source"
+                }
+            ]
+        },
+        {
+            "id": "Source URL:   {SourceURL}",
+            "message": "Source URL:   {SourceURL}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "SourceURL",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "ipset.SourceURL"
+                }
+            ]
+        },
+        {
+            "id": "Entries:      {EntriesCount}",
+            "message": "Entries:      {EntriesCount}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "EntriesCount",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "ipset.EntriesCount"
+                }
+            ]
+        },
+        {
+            "id": "Last Update:  {Format2006_01_02_150405}",
+            "message": "Last Update:  {Format2006_01_02_150405}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Format2006_01_02_150405",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "ipset.LastUpdate.Format(\"2006-01-02 15:04:05\")"
+                }
+            ]
+        },
+        {
+            "id": "Age:          {Age}",
+            "message": "Age:          {Age}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Age",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "ipset.Age"
+                }
+            ]
+        },
+        {
+            "id": "Next Update:  {Format2006_01_02_150405}",
+            "message": "Next Update:  {Format2006_01_02_150405}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Format2006_01_02_150405",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "ipset.NextUpdate.Format(\"2006-01-02 15:04:05\")"
+                }
+            ]
+        },
+        {
+            "id": "Usage: firewall ipset update \u003cname\u003e",
+            "message": "Usage: firewall ipset update \u003cname\u003e",
+            "translation": ""
+        },
+        {
+            "id": "Usage: firewall ipset refresh \u003cname\u003e",
+            "message": "Usage: firewall ipset refresh \u003cname\u003e",
+            "translation": ""
+        },
+        {
+            "id": "Error: Cache command is required",
+            "message": "Error: Cache command is required",
+            "translation": ""
+        },
+        {
+            "id": "Usage: firewall ipset cache \u003cinfo|clear\u003e",
+            "message": "Usage: firewall ipset cache \u003cinfo|clear\u003e",
+            "translation": ""
+        },
+        {
+            "id": "Unknown cache command: {Args0}",
+            "message": "Unknown cache command: {Args0}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Args0",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "args[0]"
+                }
+            ]
+        },
+        {
+            "id": "IPSet Cache Information:",
+            "message": "IPSet Cache Information:",
+            "translation": ""
+        },
+        {
+            "id": "Cached Lists: {CachedLists}",
+            "message": "Cached Lists: {CachedLists}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "CachedLists",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "cacheInfo.CachedLists"
+                }
+            ]
+        },
+        {
+            "id": "Total Size:   {TotalSize} bytes",
+            "message": "Total Size:   {TotalSize} bytes",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "TotalSize",
+                    "string": "%[1]d",
+                    "type": "int64",
+                    "underlyingType": "int64",
+                    "argNum": 1,
+                    "expr": "cacheInfo.TotalSize"
+                }
+            ]
+        },
+        {
+            "id": "Cache Dir:    {CacheDir}",
+            "message": "Cache Dir:    {CacheDir}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "CacheDir",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "cacheInfo.CacheDir"
+                }
+            ]
+        },
+        {
+            "id": "Error: Failed to create request: {Err}",
+            "message": "Error: Failed to create request: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Connected to {RemoteURL}",
+            "message": "Connected to {RemoteURL}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "RemoteURL",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "remoteURL"
+                }
+            ]
+        },
+        {
+            "id": "Server Certificate Fingerprint: {SeenFingerprint}",
+            "message": "Server Certificate Fingerprint: {SeenFingerprint}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "SeenFingerprint",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "apiClient.SeenFingerprint"
+                }
+            ]
+        },
+        {
+            "id": "To pin this certificate, use --fingerprint {SeenFingerprint}",
+            "message": "To pin this certificate, use --fingerprint {SeenFingerprint}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "SeenFingerprint",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "apiClient.SeenFingerprint"
+                }
+            ]
+        },
+        {
+            "id": "Error polling logs: {Err}",
+            "message": "Error polling logs: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "{Timestamp} [{Level}] {Source}: {Message}",
+            "message": "{Timestamp} [{Level}] {Source}: {Message}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Timestamp",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "e.Timestamp"
+                },
+                {
+                    "id": "Level",
+                    "string": "%[2]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 2,
+                    "expr": "e.Level"
+                },
+                {
+                    "id": "Source",
+                    "string": "%[3]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 3,
+                    "expr": "e.Source"
+                },
+                {
+                    "id": "Message",
+                    "string": "%[4]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 4,
+                    "expr": "e.Message"
+                }
+            ]
+        },
+        {
+            "id": "Failed to determine executable path: {Err}",
+            "message": "Failed to determine executable path: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Monitor: Failed to start child: {Err}",
+            "message": "Monitor: Failed to start child: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Monitor: Started flywall ctl (pid={Pid})",
+            "message": "Monitor: Started flywall ctl (pid={Pid})",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Pid",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "cmd.Process.Pid"
+                }
+            ]
+        },
+        {
+            "id": "Monitor: Forwarding signal {Sig} to child...",
+            "message": "Monitor: Forwarding signal {Sig} to child...",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Sig",
+                    "string": "%[1]v",
+                    "type": "os.Signal",
+                    "underlyingType": "interface{Signal(); String() string}",
+                    "argNum": 1,
+                    "expr": "sig"
+                }
+            ]
+        },
+        {
+            "id": "Monitor: Child crashed with exit code {ExitCode} (err: {Err}). Restarting...",
+            "message": "Monitor: Child crashed with exit code {ExitCode} (err: {Err}). Restarting...",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "ExitCode",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "exitCode"
+                },
+                {
+                    "id": "Err",
+                    "string": "%[2]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 2,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Monitor: Detected crash loop ({FastCrashCount} fast crashes). Backing off for 30s...",
+            "message": "Monitor: Detected crash loop ({FastCrashCount} fast crashes). Backing off for 30s...",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "FastCrashCount",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "fastCrashCount"
+                }
+            ]
+        },
+        {
+            "id": "Validating configuration: {ConfigFile}",
+            "message": "Validating configuration: {ConfigFile}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "ConfigFile",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "configFile"
+                }
+            ]
+        },
+        {
+            "id": "Sending SIGHUP to process {Pid}...",
+            "message": "Sending SIGHUP to process {Pid}...",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Pid",
+                    "string": "%[1]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 1,
+                    "expr": "pid"
+                }
+            ]
+        },
+        {
+            "id": "Error: setup must run as root",
+            "message": "Error: setup must run as root",
+            "translation": ""
+        },
+        {
+            "id": "Setup failed: {Err}",
+            "message": "Setup failed: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Warning: failed to initialize auth: {Err}",
+            "message": "Warning: failed to initialize auth: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Warning: failed to create admin user: {Err}",
+            "message": "Warning: failed to create admin user: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "1. Start the firewall:  {LowerName} start",
+            "message": "1. Start the firewall:  {LowerName} start",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "LowerName",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "brand.LowerName"
+                }
+            ]
+        },
+        {
+            "id": "2. Access the UI:       https://{LANIP}/",
+            "message": "2. Access the UI:       https://{LANIP}/",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "LANIP",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "result.LANIP"
+                }
+            ]
+        },
+        {
+            "id": "Error: reset must run as root",
+            "message": "Error: reset must run as root",
+            "translation": ""
+        },
+        {
+            "id": "Error reading config dir: {Err}",
+            "message": "Error reading config dir: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Warning: failed to remove {Path}: {Err}",
+            "message": "Warning: failed to remove {Path}: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Path",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "path"
+                },
+                {
+                    "id": "Err",
+                    "string": "%[2]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 2,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Warning: Removing stale PID file {PidFile}",
+            "message": "Warning: Removing stale PID file {PidFile}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "PidFile",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "pidFile"
+                }
+            ]
+        },
+        {
+            "id": "Started {Name} (PID: {Pid})",
+            "message": "Started {Name} (PID: {Pid})",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Name",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "brand.Name"
+                },
+                {
+                    "id": "Pid",
+                    "string": "%[2]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 2,
+                    "expr": "pid"
+                }
+            ]
+        },
+        {
+            "id": "Logs: {LogFile}",
+            "message": "Logs: {LogFile}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "LogFile",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "logFile"
+                }
+            ]
+        },
+        {
+            "id": "Error: Daemon exited immediately.",
+            "message": "Error: Daemon exited immediately.",
+            "translation": ""
+        },
+        {
+            "id": "Log output:",
+            "message": "Log output:",
+            "translation": ""
+        },
+        {
+            "id": "{Line}",
+            "message": "{Line}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Line",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "line"
+                }
+            ]
+        },
+        {
+            "id": "Is the daemon running? Start with: flywall ctl \u003cconfig\u003e",
+            "message": "Is the daemon running? Start with: flywall ctl \u003cconfig\u003e",
+            "translation": ""
+        },
+        {
+            "id": "Failed to get status: {Err}",
+            "message": "Failed to get status: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "Uptime:  {Uptime}",
+            "message": "Uptime:  {Uptime}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Uptime",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "status.Uptime"
+                }
+            ]
+        },
+        {
+            "id": "Config:  {ConfigFile}",
+            "message": "Config:  {ConfigFile}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "ConfigFile",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "status.ConfigFile"
+                }
+            ]
+        },
+        {
+            "id": "Warning: Failed to get services: {Err}",
+            "message": "Warning: Failed to get services: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "{Name__} {State}",
+            "message": "{Name__} {State}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Name__",
+                    "string": "%-12[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "svc.Name + \":\""
+                },
+                {
+                    "id": "State",
+                    "string": "%[2]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 2,
+                    "expr": "state"
+                }
+            ]
+        },
+        {
+            "id": "Warning: Failed to get interfaces: {Err}",
+            "message": "Warning: Failed to get interfaces: {Err}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Err",
+                    "string": "%[1]v",
+                    "type": "error",
+                    "underlyingType": "interface{Error() string}",
+                    "argNum": 1,
+                    "expr": "err"
+                }
+            ]
+        },
+        {
+            "id": "{Name} {Zone} {State} {Ips}",
+            "message": "{Name} {Zone} {State} {Ips}",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Name",
+                    "string": "%-10[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "iface.Name"
+                },
+                {
+                    "id": "Zone",
+                    "string": "%-6[2]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 2,
+                    "expr": "iface.Zone"
+                },
+                {
+                    "id": "State",
+                    "string": "%-8[3]s",
+                    "type": "grimm.is/flywall/internal/ctlplane.InterfaceState",
+                    "underlyingType": "string",
+                    "argNum": 3,
+                    "expr": "iface.State"
+                },
+                {
+                    "id": "Ips",
+                    "string": "%[4]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 4,
+                    "expr": "ips"
+                }
+            ]
+        },
+        {
+            "id": "Stopping {Name} (PID: {Pid})...",
+            "message": "Stopping {Name} (PID: {Pid})...",
+            "translation": "",
+            "placeholders": [
+                {
+                    "id": "Name",
+                    "string": "%[1]s",
+                    "type": "string",
+                    "underlyingType": "string",
+                    "argNum": 1,
+                    "expr": "brand.Name"
+                },
+                {
+                    "id": "Pid",
+                    "string": "%[2]d",
+                    "type": "int",
+                    "underlyingType": "int",
+                    "argNum": 2,
+                    "expr": "pid"
+                }
+            ]
+        },
+        {
+            "id": "Method not allowed",
+            "message": "Method not allowed",
+            "translation": ""
+        },
+        {
+            "id": "Version is required",
+            "message": "Version is required",
+            "translation": ""
+        },
+        {
+            "id": "Version parameter required",
+            "message": "Version parameter required",
+            "translation": ""
+        },
+        {
+            "id": "Invalid version",
+            "message": "Invalid version",
+            "translation": ""
+        },
+        {
+            "id": "max_backups must be at least 1",
+            "message": "max_backups must be at least 1",
+            "translation": ""
+        },
+        {
+            "id": "Control plane not connected",
+            "message": "Control plane not connected",
+            "translation": ""
+        },
+        {
+            "id": "Invalid request body",
+            "message": "Invalid request body",
+            "translation": ""
+        },
+        {
+            "id": "Task ID required",
+            "message": "Task ID required",
+            "translation": ""
+        },
+        {
+            "id": "Control plane client not connected",
+            "message": "Control plane client not connected",
+            "translation": ""
+        },
+        {
+            "id": "Task not found",
+            "message": "Task not found",
+            "translation": ""
+        },
+        {
+            "id": "Failed to clone config",
+            "message": "Failed to clone config",
+            "translation": ""
+        },
+        {
+            "id": "Failed to read request body",
+            "message": "Failed to read request body",
+            "translation": ""
+        },
+        {
+            "id": "Invalid DNS configuration format",
+            "message": "Invalid DNS configuration format",
+            "translation": ""
+        },
+        {
+            "id": "src_ip and dst_ip are required",
+            "message": "src_ip and dst_ip are required",
+            "translation": ""
+        },
+        {
+            "id": "Invalid src_ip",
+            "message": "Invalid src_ip",
+            "translation": ""
+        },
+        {
+            "id": "Invalid dst_ip",
+            "message": "Invalid dst_ip",
+            "translation": ""
+        },
+        {
+            "id": "Configuration not loaded",
+            "message": "Configuration not loaded",
+            "translation": ""
+        },
+        {
+            "id": "Interface is required",
+            "message": "Interface is required",
+            "translation": ""
+        },
+        {
+            "id": "Capture is currently running. Stop it first.",
+            "message": "Capture is currently running. Stop it first.",
+            "translation": ""
+        },
+        {
+            "id": "No capture file found",
+            "message": "No capture file found",
+            "translation": ""
+        },
+        {
+            "id": "Device MAC or ID is required",
+            "message": "Device MAC or ID is required",
+            "translation": ""
+        },
+        {
+            "id": "MAC and IdentityID are required",
+            "message": "MAC and IdentityID are required",
+            "translation": ""
+        },
+        {
+            "id": "MAC is required",
+            "message": "MAC is required",
+            "translation": ""
+        },
+        {
+            "id": "Too many requests in batch",
+            "message": "Too many requests in batch",
+            "translation": ""
+        },
+        {
+            "id": "Rate limit exceeded for batch",
+            "message": "Rate limit exceeded for batch",
+            "translation": ""
+        },
+        {
+            "id": "Section type required (use ?type=dhcp)",
+            "message": "Section type required (use ?type=dhcp)",
+            "translation": ""
+        },
+        {
+            "id": "Missing group ID",
+            "message": "Missing group ID",
+            "translation": ""
+        },
+        {
+            "id": "Invalid group ID",
+            "message": "Invalid group ID",
+            "translation": ""
+        },
+        {
+            "id": "Interface name required",
+            "message": "Interface name required",
+            "translation": ""
+        },
+        {
+            "id": "name parameter required",
+            "message": "name parameter required",
+            "translation": ""
+        },
+        {
+            "id": "Collector not initialized",
+            "message": "Collector not initialized",
+            "translation": ""
+        },
+        {
+            "id": "policy_name and relative_to are required",
+            "message": "policy_name and relative_to are required",
+            "translation": ""
+        },
+        {
+            "id": "Policy not found",
+            "message": "Policy not found",
+            "translation": ""
+        },
+        {
+            "id": "policy_name is required",
+            "message": "policy_name is required",
+            "translation": ""
+        },
+        {
+            "id": "rule_name and relative_to are required",
+            "message": "rule_name and relative_to are required",
+            "translation": ""
+        },
+        {
+            "id": "Rule not found",
+            "message": "Rule not found",
+            "translation": ""
+        },
+        {
+            "id": "runtime service not available",
+            "message": "runtime service not available",
+            "translation": ""
+        },
+        {
+            "id": "CIDR is required",
+            "message": "CIDR is required",
+            "translation": ""
+        },
+        {
+            "id": "IP address is required",
+            "message": "IP address is required",
+            "translation": ""
+        },
+        {
+            "id": "Control Plane Disconnected",
+            "message": "Control Plane Disconnected",
+            "translation": ""
+        },
+        {
+            "id": "Too many login attempts. Please try again later.",
+            "message": "Too many login attempts. Please try again later.",
+            "translation": ""
+        },
+        {
+            "id": "Auth not configured",
+            "message": "Auth not configured",
+            "translation": ""
+        },
+        {
+            "id": "Invalid credentials",
+            "message": "Invalid credentials",
+            "translation": ""
+        },
+        {
+            "id": "Too many setup attempts. Please try again later.",
+            "message": "Too many setup attempts. Please try again later.",
+            "translation": ""
+        },
+        {
+            "id": "Admin already exists",
+            "message": "Admin already exists",
+            "translation": ""
+        },
+        {
+            "id": "Username and password required",
+            "message": "Username and password required",
+            "translation": ""
+        },
+        {
+            "id": "Failed to initialize auth",
+            "message": "Failed to initialize auth",
+            "translation": ""
+        },
+        {
+            "id": "Username required",
+            "message": "Username required",
+            "translation": ""
+        },
+        {
+            "id": "User not found",
+            "message": "User not found",
+            "translation": ""
+        },
+        {
+            "id": "Cannot delete admin user",
+            "message": "Cannot delete admin user",
+            "translation": ""
+        },
+        {
+            "id": "Missing 'checksum' field",
+            "message": "Missing 'checksum' field",
+            "translation": ""
+        },
+        {
+            "id": "Missing 'arch' field",
+            "message": "Missing 'arch' field",
+            "translation": ""
+        },
+        {
+            "id": "MAC address is required",
+            "message": "MAC address is required",
+            "translation": ""
+        },
+        {
+            "id": "Certificate not found",
+            "message": "Certificate not found",
+            "translation": ""
+        },
+        {
+            "id": "Page not found",
+            "message": "Page not found",
+            "translation": ""
+        }
+    ]
+}

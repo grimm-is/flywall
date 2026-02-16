@@ -1,0 +1,1116 @@
+# Flywall Configuration Quick Reference
+# Schema Version: 1.0
+
+# Global Attributes
+schema_version = <1.0>  # default="1.0"
+ip_forwarding = <bool>  # default=false
+mss_clamping = <bool>  # default=false
+enable_flow_offload = <bool>  # default=false
+state_dir = <string>  # optional
+
+anomaly_detection {
+  enabled = <bool>  # optional
+  baseline_window = <string>  # optional
+  min_samples = <number>  # optional
+  spike_stddev = <number>  # optional
+  drop_stddev = <number>  # optional
+  alert_cooldown = <string>  # optional
+  port_scan_threshold = <number>  # optional
+}
+
+api {
+  enabled = <bool>  # optional
+  disable_sandbox = <bool>  # optional
+  listen = <string>  # optional DEPRECATED
+  tls_listen = <string>  # optional DEPRECATED
+  tls_cert = <string>  # optional DEPRECATED
+  tls_key = <string>  # optional DEPRECATED
+  disable_http_redirect = <bool>  # optional DEPRECATED
+  require_auth = <bool>  # optional
+  bootstrap_key = <string>  # optional
+  key_store_path = <string>  # optional
+  cors_origins = <list(string)>  # optional
+  key "<name>" {
+    key = <string>  # required
+    permissions = <list(string)>  # required
+    allowed_ips = <list(string)>  # optional
+    allowed_paths = <list(string)>  # optional
+    rate_limit = <number>  # optional
+    enabled = <bool>  # optional
+    description = <string>  # optional
+  }
+
+  letsencrypt {
+    enabled = <bool>  # optional
+    email = <string>  # required
+    domain = <string>  # required
+    cache_dir = <string>  # optional
+    staging = <bool>  # optional
+  }
+
+}
+
+audit {
+  enabled = <bool>  # optional
+  retention_days = <number>  # optional
+  kernel_audit = <bool>  # optional
+  database_path = <string>  # optional
+}
+
+ddns {
+  enabled = <bool>  # optional
+  provider = <string>  # required
+  hostname = <string>  # required
+  token = <string>  # optional
+  username = <string>  # optional
+  zone_id = <string>  # optional
+  record_id = <string>  # optional
+  interface = <string>  # optional
+  interval = <number>  # optional
+}
+
+dhcp {
+  enabled = <bool>  # optional
+  mode = <string>  # optional
+  external_lease_file = <string>  # optional
+  scope "<name>" {
+    interface = <string>  # required
+    range_start = <string>  # required
+    range_end = <string>  # required
+    router = <string>  # required
+    dns = <list(string)>  # optional
+    lease_time = <string>  # optional
+    domain = <string>  # optional
+    options = <str:tftp.boot|150>  # optional
+    range_start_v6 = <string>  # optional
+    range_end_v6 = <string>  # optional
+    dns_v6 = <list(string)>  # optional
+    reservation "<mac>" {
+      ip = <string>  # required
+      hostname = <string>  # optional
+      description = <string>  # optional
+      options = <map>  # optional
+      register_dns = <bool>  # optional
+    }
+
+  }
+
+}
+
+dns {
+  mode = <string>  # optional
+  forwarders = <list(string)>  # optional
+  upstream_timeout = <number>  # optional
+  dnssec = <bool>  # optional
+  egress_filter = <bool>  # optional
+  egress_filter_ttl = <number>  # optional
+  conditional_forward "<domain>" {
+    servers = <list(string)>  # required
+  }
+
+  upstream_doh "<name>" {
+    url = <string>  # required
+    bootstrap = <string>  # optional
+    server_name = <string>  # optional
+    enabled = <bool>  # optional
+    priority = <number>  # optional
+  }
+
+  upstream_dot "<name>" {
+    server = <string>  # required
+    server_name = <string>  # optional
+    enabled = <bool>  # optional
+    priority = <number>  # optional
+  }
+
+  upstream_dnscrypt "<name>" {
+    stamp = <string>  # optional
+    provider_name = <string>  # optional
+    server_addr = <string>  # optional
+    public_key = <string>  # optional
+    enabled = <bool>  # optional
+    priority = <number>  # optional
+  }
+
+  recursive {
+    root_hints_file = <string>  # optional
+    auto_update_root_hints = <bool>  # optional
+    max_depth = <number>  # optional
+    query_timeout = <number>  # optional
+    max_concurrent = <number>  # optional
+    harden_glue = <bool>  # optional
+    harden_dnssec_stripped = <bool>  # optional
+    harden_below_nxdomain = <bool>  # optional
+    harden_referral_path = <bool>  # optional
+    qname_minimisation = <bool>  # optional
+    aggressive_nsec = <bool>  # optional
+    prefetch = <bool>  # optional
+    prefetch_key = <bool>  # optional
+  }
+
+  serve "<zone>" {
+    listen_port = <number>  # optional
+    local_domain = <string>  # optional
+    expand_hosts = <bool>  # optional
+    dhcp_integration = <bool>  # optional
+    authoritative_for = <string>  # optional
+    rebind_protection = <bool>  # optional
+    query_logging = <bool>  # optional
+    rate_limit_per_sec = <number>  # optional
+    allowlist = <list(string)>  # optional
+    blocked_ttl = <number>  # optional
+    blocked_address = <string>  # optional
+    cache_enabled = <bool>  # optional
+    cache_size = <number>  # optional
+    cache_min_ttl = <number>  # optional
+    cache_max_ttl = <number>  # optional
+    negative_cache_ttl = <number>  # optional
+    blocklist "<name>" {
+      url = <string>  # optional
+      file = <string>  # optional
+      format = <string>  # optional
+      enabled = <bool>  # optional
+      refresh_hours = <number>  # optional
+    }
+
+    doh_server {
+      enabled = <bool>  # optional
+      listen_addr = <string>  # optional
+      path = <string>  # optional
+      cert_file = <string>  # optional
+      key_file = <string>  # optional
+      use_letsencrypt = <bool>  # optional
+      domain = <string>  # optional
+    }
+
+    dot_server {
+      enabled = <bool>  # optional
+      listen_addr = <string>  # optional
+      cert_file = <string>  # optional
+      key_file = <string>  # optional
+    }
+
+    dnscrypt_server {
+      enabled = <bool>  # optional
+      listen_addr = <string>  # optional
+      provider_name = <string>  # optional
+      public_key_file = <string>  # optional
+      secret_key_file = <string>  # optional
+      cert_file = <string>  # optional
+      cert_ttl = <number>  # optional
+      es_version = <number>  # optional
+    }
+
+    host "<ip>" {
+      hostnames = <list(string)>  # required
+    }
+
+    zone "<name>" {
+      record "<name>" {
+        type = <string>  # required
+        value = <string>  # required
+        ttl = <number>  # optional
+        priority = <number>  # optional
+      }
+
+    }
+
+  }
+
+  inspect "<zone>" {
+    mode = <string>  # optional
+    exclude_router = <bool>  # optional
+  }
+
+}
+
+dns_server { # DEPRECATED
+  enabled = <bool>  # optional
+  listen_on = <list(string)>  # optional
+  listen_port = <number>  # optional
+  local_domain = <lan|home.arpa>  # optional
+  expand_hosts = <bool>  # optional
+  dhcp_integration = <bool>  # optional
+  authoritative_for = <string>  # optional
+  mode = <string>  # optional
+  forwarders = <list(string)>  # optional
+  upstream_timeout = <number>  # optional
+  dnssec = <bool>  # optional
+  rebind_protection = <bool>  # optional
+  query_logging = <bool>  # optional
+  rate_limit_per_sec = <number>  # optional
+  allowlist = <list(string)>  # optional
+  blocked_ttl = <number>  # optional
+  blocked_address = <string>  # optional
+  cache_enabled = <bool>  # optional
+  cache_size = <number>  # optional
+  cache_min_ttl = <number>  # optional
+  cache_max_ttl = <number>  # optional
+  negative_cache_ttl = <number>  # optional
+  conditional_forward "<domain>" {
+    servers = <list(string)>  # required
+  }
+
+  upstream_doh "<name>" {
+    url = <string>  # required
+    bootstrap = <string>  # optional
+    server_name = <string>  # optional
+    enabled = <bool>  # optional
+    priority = <number>  # optional
+  }
+
+  upstream_dot "<name>" {
+    server = <string>  # required
+    server_name = <string>  # optional
+    enabled = <bool>  # optional
+    priority = <number>  # optional
+  }
+
+  upstream_dnscrypt "<name>" {
+    stamp = <string>  # optional
+    provider_name = <string>  # optional
+    server_addr = <string>  # optional
+    public_key = <string>  # optional
+    enabled = <bool>  # optional
+    priority = <number>  # optional
+  }
+
+  doh_server {
+    enabled = <bool>  # optional
+    listen_addr = <string>  # optional
+    path = <string>  # optional
+    cert_file = <string>  # optional
+    key_file = <string>  # optional
+    use_letsencrypt = <bool>  # optional
+    domain = <string>  # optional
+  }
+
+  dot_server {
+    enabled = <bool>  # optional
+    listen_addr = <string>  # optional
+    cert_file = <string>  # optional
+    key_file = <string>  # optional
+  }
+
+  dnscrypt_server {
+    enabled = <bool>  # optional
+    listen_addr = <string>  # optional
+    provider_name = <string>  # optional
+    public_key_file = <string>  # optional
+    secret_key_file = <string>  # optional
+    cert_file = <string>  # optional
+    cert_ttl = <number>  # optional
+    es_version = <number>  # optional
+  }
+
+  recursive {
+    root_hints_file = <string>  # optional
+    auto_update_root_hints = <bool>  # optional
+    max_depth = <number>  # optional
+    query_timeout = <number>  # optional
+    max_concurrent = <number>  # optional
+    harden_glue = <bool>  # optional
+    harden_dnssec_stripped = <bool>  # optional
+    harden_below_nxdomain = <bool>  # optional
+    harden_referral_path = <bool>  # optional
+    qname_minimisation = <bool>  # optional
+    aggressive_nsec = <bool>  # optional
+    prefetch = <bool>  # optional
+    prefetch_key = <bool>  # optional
+  }
+
+  blocklist "<name>" {
+    url = <string>  # optional
+    file = <string>  # optional
+    format = <string>  # optional
+    enabled = <bool>  # optional
+    refresh_hours = <number>  # optional
+  }
+
+  host "<ip>" {
+    hostnames = <list(string)>  # required
+  }
+
+  zone "<name>" {
+    record "<name>" {
+      type = <string>  # required
+      value = <string>  # required
+      ttl = <number>  # optional
+      priority = <number>  # optional
+    }
+
+  }
+
+}
+
+features {
+  threat_intel = <bool>  # optional
+  network_learning = <bool>  # optional
+  qos = <bool>  # optional
+  integrity_monitoring = <bool>  # optional
+}
+
+frr {
+  enabled = <bool>  # optional
+  ospf {
+    router_id = <string>  # optional
+    networks = <list(string)>  # optional
+    area "<id>" {
+      networks = <list(string)>  # optional
+    }
+
+  }
+
+  bgp {
+    asn = <number>  # optional
+    router_id = <string>  # optional
+    networks = <list(string)>  # optional
+    neighbor "<ip>" {
+      remote_asn = <number>  # optional
+    }
+
+  }
+
+}
+
+geoip {
+  enabled = <bool>  # optional
+  database_path = <string>  # optional
+  auto_update = <bool>  # optional
+  license_key = <string>  # optional
+}
+
+interface "<name>" {
+  description = <string>  # optional
+  disabled = <bool>  # default=false
+  zone = <string>  # optional
+  ipv4 = <list(string)>  # optional
+  ipv6 = <list(string)>  # optional
+  dhcp = <bool>  # default=false
+  dhcp_v6 = <bool>  # default=false
+  ra = <bool>  # default=false
+  dhcp_client = <string>  # optional
+  table = <number>  # optional
+  gateway = <string>  # optional
+  gateway_v6 = <string>  # optional
+  mtu = <number>  # default=1500
+  disable_anti_lockout = <bool>  # optional
+  access_web_ui = <bool>  # optional DEPRECATED
+  web_ui_port = <number>  # optional DEPRECATED
+  new_zone "<name>" {
+    color = <string>  # optional
+    description = <string>  # optional
+    interface = <string>  # optional
+    src = <string>  # optional
+    dst = <string>  # optional
+    vlan = <number>  # optional
+    interfaces = <list(string)>  # optional DEPRECATED
+    ipsets = <list(string)>  # optional
+    networks = <list(string)>  # optional
+    action = <accept|reject>  # optional
+    external = <bool>  # optional
+    ipv4 = <list(string)>  # optional
+    ipv6 = <list(string)>  # optional
+    dhcp = <bool>  # optional
+    match {
+      interface = <string>  # optional
+      src = <string>  # optional
+      dst = <string>  # optional
+      vlan = <number>  # optional
+    }
+
+    services {
+      dhcp = <bool>  # optional
+      dns = <bool>  # optional
+      ntp = <bool>  # optional
+      captive_portal = <bool>  # optional
+      port "<name>" {
+        protocol = <string>  # required
+        port = <number>  # required
+        port_end = <number>  # optional
+      }
+
+    }
+
+    management {
+      web_ui = <bool>  # optional
+      web = <bool>  # optional
+      ssh = <bool>  # optional
+      api = <bool>  # optional
+      icmp = <bool>  # optional
+      snmp = <bool>  # optional
+      syslog = <bool>  # optional
+    }
+
+  }
+
+  bond {
+    mode = <string>  # optional
+    interfaces = <list(string)>  # optional
+  }
+
+  vlan "<id>" {
+    description = <string>  # optional
+    zone = <string>  # optional
+    ipv4 = <list(string)>  # optional
+    ipv6 = <list(string)>  # optional
+    new_zone "<name>" {
+      color = <string>  # optional
+      description = <string>  # optional
+      interface = <string>  # optional
+      src = <string>  # optional
+      dst = <string>  # optional
+      vlan = <number>  # optional
+      interfaces = <list(string)>  # optional DEPRECATED
+      ipsets = <list(string)>  # optional
+      networks = <list(string)>  # optional
+      action = <accept|reject>  # optional
+      external = <bool>  # optional
+      ipv4 = <list(string)>  # optional
+      ipv6 = <list(string)>  # optional
+      dhcp = <bool>  # optional
+      match {
+        interface = <string>  # optional
+        src = <string>  # optional
+        dst = <string>  # optional
+        vlan = <number>  # optional
+      }
+
+      services {
+        dhcp = <bool>  # optional
+        dns = <bool>  # optional
+        ntp = <bool>  # optional
+        captive_portal = <bool>  # optional
+        port "<name>" {
+          protocol = <string>  # required
+          port = <number>  # required
+          port_end = <number>  # optional
+        }
+
+      }
+
+      management {
+        web_ui = <bool>  # optional
+        web = <bool>  # optional
+        ssh = <bool>  # optional
+        api = <bool>  # optional
+        icmp = <bool>  # optional
+        snmp = <bool>  # optional
+        syslog = <bool>  # optional
+      }
+
+    }
+
+  }
+
+  management {
+    web_ui = <bool>  # optional
+    web = <bool>  # optional
+    ssh = <bool>  # optional
+    api = <bool>  # optional
+    icmp = <bool>  # optional
+    snmp = <bool>  # optional
+    syslog = <bool>  # optional
+  }
+
+  tls {
+    mode = <self-signed|manual>  # optional
+    hostname = <string>  # optional
+    email = <string>  # optional
+    domains = <list(string)>  # optional
+    cert_file = <string>  # optional
+    key_file = <string>  # optional
+  }
+
+}
+
+ipset "<name>" {
+  description = <string>  # optional
+  type = <string>  # optional
+  entries = <list(string)>  # optional
+  domains = <list(string)>  # optional
+  refresh_interval = <5m|1h>  # optional
+  size = <number>  # optional
+  firehol_list = <firehol_level1|spamhaus_drop>  # optional
+  url = <string>  # optional
+  refresh_hours = <number>  # optional
+  auto_update = <bool>  # optional
+  action = <string>  # optional
+  apply_to = <string>  # optional
+  match_on_source = <bool>  # optional
+  match_on_dest = <bool>  # optional
+}
+
+mark_rule "<name>" {
+  mark = <string>  # required
+  mask = <string>  # optional
+  proto = <string>  # optional
+  src_ip = <string>  # optional
+  dst_ip = <string>  # optional
+  src_port = <number>  # optional
+  dst_port = <number>  # optional
+  dst_ports = <list(number)>  # optional
+  in_interface = <string>  # optional
+  out_interface = <string>  # optional
+  src_zone = <string>  # optional
+  dst_zone = <string>  # optional
+  ipset = <string>  # optional
+  conn_state = <list(string)>  # optional
+  save_mark = <bool>  # optional
+  restore_mark = <bool>  # optional
+  enabled = <bool>  # optional
+  comment = <string>  # optional
+}
+
+mdns {
+  enabled = <bool>  # optional
+  interfaces = <list(string)>  # optional
+}
+
+multi_wan {
+  enabled = <bool>  # optional
+  mode = <failover|both>  # optional
+  wan "<name>" {
+    interface = <string>  # required
+    gateway = <string>  # required
+    weight = <number>  # optional
+    priority = <number>  # optional
+    enabled = <bool>  # optional
+  }
+
+  health_check {
+    interval = <number>  # optional
+    timeout = <number>  # optional
+    threshold = <number>  # optional
+    targets = <list(string)>  # optional
+    http_check = <string>  # optional
+  }
+
+}
+
+nat "<name>" {
+  description = <string>  # optional
+  type = <string>  # required
+  proto = <string>  # optional
+  out_interface = <string>  # optional
+  in_interface = <string>  # optional
+  src_ip = <string>  # optional
+  dest_ip = <string>  # optional
+  mark = <number>  # optional
+  dest_port = <string>  # optional
+  to_ip = <string>  # optional
+  to_port = <string>  # optional
+  snat_ip = <string>  # optional
+  hairpin = <bool>  # optional
+}
+
+notifications {
+  enabled = <bool>  # optional
+  channel "<name>" {
+    type = <string>  # required
+    level = <string>  # optional
+    enabled = <bool>  # optional
+    smtp_host = <string>  # optional
+    smtp_port = <number>  # optional
+    smtp_user = <string>  # optional
+    smtp_password = <string>  # optional
+    from = <string>  # optional
+    to = <list(string)>  # optional
+    webhook_url = <string>  # optional
+    channel = <string>  # optional
+    username = <string>  # optional
+    api_token = <string>  # optional
+    user_key = <string>  # optional
+    priority = <number>  # optional
+    sound = <string>  # optional
+    server = <string>  # optional
+    topic = <string>  # optional
+    password = <string>  # optional
+    headers = <map>  # optional
+  }
+
+  rule "<name>" {
+    enabled = <bool>  # optional
+    condition = <string>  # required
+    severity = <string>  # optional
+    channels = <list(string)>  # optional
+    cooldown = <string>  # optional
+  }
+
+}
+
+ntp {
+  enabled = <bool>  # optional
+  servers = <list(string)>  # optional
+  interval = <string>  # optional
+}
+
+policy "<from>" "<to>" {
+  name = <string>  # optional
+  description = <string>  # optional
+  priority = <number>  # optional
+  disabled = <bool>  # optional
+  action = <accept|reject>  # optional
+  masquerade = <bool>  # optional
+  log = <bool>  # optional
+  log_prefix = <string>  # optional
+  inherits = <string>  # optional
+  rule "<name>" {
+    id = <string>  # optional
+    description = <string>  # optional
+    disabled = <bool>  # optional
+    order = <number>  # optional
+    insert_after = <string>  # optional
+    proto = <string>  # optional
+    dest_port = <number>  # optional
+    dest_ports = <list(number)>  # optional
+    src_port = <number>  # optional
+    src_ports = <list(number)>  # optional
+    services = <http|ssh>  # optional
+    src_ip = <string>  # optional
+    src_ipset = <string>  # optional
+    dest_ip = <string>  # optional
+    dest_ipset = <string>  # optional
+    src_zone = <string>  # optional
+    dest_zone = <string>  # optional
+    in_interface = <string>  # optional
+    out_interface = <string>  # optional
+    conn_state = <new|invalid>  # optional
+    source_country = <US|CN>  # optional
+    dest_country = <string>  # optional
+    invert_src = <bool>  # optional
+    invert_dest = <bool>  # optional
+    tcp_flags = <syn|urg>  # optional
+    max_connections = <number>  # optional
+    time_start = <string>  # optional
+    time_end = <string>  # optional
+    days = <Monday|Tuesday>  # optional
+    action = <string>  # required
+    jump_target = <string>  # optional
+    log = <bool>  # optional
+    log_prefix = <string>  # optional
+    log_level = <debug|error>  # optional
+    limit = <string>  # optional
+    counter = <string>  # optional
+    comment = <string>  # optional
+    tags = <list(string)>  # optional
+    group = <User Access|IoT Isolation>  # optional
+  }
+
+}
+
+policy_route "<name>" {
+  priority = <number>  # optional
+  mark = <string>  # optional
+  mark_mask = <string>  # optional
+  from = <string>  # optional
+  to = <string>  # optional
+  iif = <string>  # optional
+  oif = <string>  # optional
+  fwmark = <string>  # optional
+  table = <number>  # optional
+  blackhole = <bool>  # optional
+  prohibit = <bool>  # optional
+  enabled = <bool>  # optional
+  comment = <string>  # optional
+}
+
+protection "<name>" {
+  interface = <string>  # required
+  enabled = <bool>  # optional
+  anti_spoofing = <bool>  # optional
+  bogon_filtering = <bool>  # optional
+  private_filtering = <bool>  # optional
+  invalid_packets = <bool>  # optional
+  syn_flood_protection = <bool>  # optional
+  syn_flood_rate = <number>  # optional
+  syn_flood_burst = <number>  # optional
+  icmp_rate_limit = <bool>  # optional
+  icmp_rate = <number>  # optional
+  icmp_burst = <number>  # optional
+  new_conn_rate_limit = <bool>  # optional
+  new_conn_rate = <number>  # optional
+  new_conn_burst = <number>  # optional
+  port_scan_protection = <bool>  # optional
+  port_scan_threshold = <number>  # optional
+  geo_blocking = <bool>  # optional
+  blocked_countries = <list(string)>  # optional
+  allowed_countries = <list(string)>  # optional
+}
+
+qos_policy "<name>" {
+  interface = <string>  # required
+  enabled = <bool>  # optional
+  direction = <ingress|both>  # optional
+  download_mbps = <number>  # optional
+  upload_mbps = <number>  # optional
+  class "<name>" {
+    priority = <number>  # optional
+    rate = <string>  # optional
+    ceil = <string>  # optional
+    burst = <string>  # optional
+    queue_type = <fq_codel|pfifo>  # optional
+  }
+
+  rule "<name>" {
+    class = <string>  # required
+    proto = <string>  # optional
+    src_ip = <string>  # optional
+    dest_ip = <string>  # optional
+    src_port = <number>  # optional
+    dest_port = <number>  # optional
+    services = <list(string)>  # optional
+    dscp = <string>  # optional
+    set_dscp = <string>  # optional
+    threat_intel {
+      enabled = <bool>  # optional
+      interval = <string>  # optional
+      source "<name>" {
+        url = <string>  # required
+        format = <taxii|json>  # optional
+        collection_id = <string>  # optional
+        username = <string>  # optional
+        password = <string>  # optional
+      }
+
+    }
+
+  }
+
+}
+
+replication {
+  mode = <primary|replica>  # required
+  listen_addr = <string>  # optional
+  primary_addr = <string>  # optional
+  peer_addr = <string>  # optional
+  secret_key = <string>  # optional
+  tls_cert = <string>  # optional
+  tls_key = <string>  # optional
+  tls_ca = <string>  # optional
+  tls_mutual = <bool>  # optional
+  ha {
+    enabled = <bool>  # optional
+    priority = <number>  # optional
+    heartbeat_interval = <number>  # optional
+    failure_threshold = <number>  # optional
+    failback_mode = <string>  # optional
+    failback_delay = <number>  # optional
+    heartbeat_port = <number>  # optional
+    virtual_ip {
+      address = <string>  # required
+      interface = <string>  # required
+      label = <string>  # optional
+    }
+
+    virtual_mac {
+      address = <string>  # optional
+      interface = <string>  # required
+      dhcp = <bool>  # optional
+    }
+
+    conntrack_sync {
+      enabled = <bool>  # optional
+      interface = <string>  # optional
+      multicast_group = <string>  # optional
+      port = <number>  # optional
+      expect_sync = <bool>  # optional
+    }
+
+  }
+
+}
+
+route "<name>" {
+  destination = <string>  # required
+  gateway = <string>  # optional
+  interface = <string>  # optional
+  monitor_ip = <string>  # optional
+  table = <number>  # optional
+  metric = <number>  # optional
+}
+
+routing_table "<name>" {
+  id = <number>  # required
+  route "<name>" {
+    destination = <string>  # required
+    gateway = <string>  # optional
+    interface = <string>  # optional
+    monitor_ip = <string>  # optional
+    table = <number>  # optional
+    metric = <number>  # optional
+  }
+
+}
+
+rule_learning {
+  enabled = <bool>  # optional
+  log_group = <number>  # optional
+  rate_limit = <string>  # optional
+  auto_approve = <bool>  # optional
+  ignore_networks = <list(string)>  # optional
+  retention_days = <number>  # optional
+  cache_size = <number>  # optional
+  learning_mode = <bool>  # optional
+  inline_mode = <bool>  # optional
+}
+
+scheduled_rule "<name>" {
+  description = <string>  # optional
+  policy = <string>  # required
+  schedule = <string>  # required
+  end_schedule = <string>  # optional
+  enabled = <bool>  # optional
+  rule "<name>" {
+    id = <string>  # optional
+    description = <string>  # optional
+    disabled = <bool>  # optional
+    order = <number>  # optional
+    insert_after = <string>  # optional
+    proto = <string>  # optional
+    dest_port = <number>  # optional
+    dest_ports = <list(number)>  # optional
+    src_port = <number>  # optional
+    src_ports = <list(number)>  # optional
+    services = <http|ssh>  # optional
+    src_ip = <string>  # optional
+    src_ipset = <string>  # optional
+    dest_ip = <string>  # optional
+    dest_ipset = <string>  # optional
+    src_zone = <string>  # optional
+    dest_zone = <string>  # optional
+    in_interface = <string>  # optional
+    out_interface = <string>  # optional
+    conn_state = <new|invalid>  # optional
+    source_country = <US|CN>  # optional
+    dest_country = <string>  # optional
+    invert_src = <bool>  # optional
+    invert_dest = <bool>  # optional
+    tcp_flags = <syn|urg>  # optional
+    max_connections = <number>  # optional
+    time_start = <string>  # optional
+    time_end = <string>  # optional
+    days = <Monday|Tuesday>  # optional
+    action = <string>  # required
+    jump_target = <string>  # optional
+    log = <bool>  # optional
+    log_prefix = <string>  # optional
+    log_level = <debug|error>  # optional
+    limit = <string>  # optional
+    counter = <string>  # optional
+    comment = <string>  # optional
+    tags = <list(string)>  # optional
+    group = <User Access|IoT Isolation>  # optional
+  }
+
+}
+
+scheduler {
+  enabled = <bool>  # optional
+  ipset_refresh_hours = <number>  # optional
+  dns_refresh_hours = <number>  # optional
+  backup_enabled = <bool>  # optional
+  backup_schedule = <string>  # optional
+  backup_retention_days = <number>  # optional
+  backup_dir = <string>  # optional
+}
+
+syslog {
+  enabled = <bool>  # optional
+  host = <string>  # required
+  port = <number>  # optional
+  protocol = <string>  # optional
+  tag = <string>  # optional
+  facility = <number>  # optional
+}
+
+system {
+  sysctl_profile = <default|security>  # optional
+  sysctl = <map>  # optional
+  timezone = <string>  # optional
+}
+
+threat_intel {
+  enabled = <bool>  # optional
+  interval = <string>  # optional
+  source "<name>" {
+    url = <string>  # required
+    format = <taxii|json>  # optional
+    collection_id = <string>  # optional
+    username = <string>  # optional
+    password = <string>  # optional
+  }
+
+}
+
+uid_routing "<name>" {
+  uid = <number>  # optional
+  username = <string>  # optional
+  uplink = <string>  # optional
+  vpn_link = <string>  # optional
+  interface = <string>  # optional
+  snat_ip = <string>  # optional
+  enabled = <bool>  # optional
+  comment = <string>  # optional
+}
+
+uplink_group "<name>" {
+  source_networks = <list(string)>  # required
+  source_interfaces = <list(string)>  # optional
+  source_zones = <list(string)>  # optional
+  failover_mode = <immediate|programmatic>  # optional
+  failback_mode = <immediate|never>  # optional
+  failover_delay = <number>  # optional
+  failback_delay = <number>  # optional
+  load_balance_mode = <none|latency>  # optional
+  sticky_connections = <bool>  # optional
+  enabled = <bool>  # optional
+  uplink "<name>" {
+    type = <wan|custom>  # optional
+    interface = <string>  # required
+    gateway = <string>  # optional
+    local_ip = <string>  # optional
+    tier = <number>  # optional
+    weight = <number>  # optional
+    enabled = <bool>  # optional
+    comment = <string>  # optional
+    health_check_cmd = <string>  # optional
+  }
+
+  health_check {
+    interval = <number>  # optional
+    timeout = <number>  # optional
+    threshold = <number>  # optional
+    targets = <list(string)>  # optional
+    http_check = <string>  # optional
+  }
+
+}
+
+upnp {
+  enabled = <bool>  # optional
+  external_interface = <string>  # optional
+  internal_interfaces = <list(string)>  # optional
+  secure_mode = <bool>  # optional
+}
+
+vpn {
+  interface_prefix_zones = <vpn|tailscale>  # optional
+  tailscale "<name>" {
+    enabled = <bool>  # optional
+    interface = <string>  # optional
+    auth_key = <string>  # optional
+    auth_key_env = <string>  # optional
+    control_url = <string>  # optional
+    management_access = <bool>  # optional
+    zone = <string>  # optional
+    advertise_routes = <list(string)>  # optional
+    accept_routes = <bool>  # optional
+    advertise_exit_node = <bool>  # optional
+    exit_node = <string>  # optional
+  }
+
+  wireguard "<name>" {
+    enabled = <bool>  # optional
+    interface = <string>  # optional
+    management_access = <bool>  # optional
+    zone = <string>  # optional
+    private_key = <string>  # optional
+    private_key_file = <string>  # optional
+    listen_port = <number>  # optional
+    address = <list(string)>  # optional
+    dns = <list(string)>  # optional
+    mtu = <number>  # optional
+    fwmark = <number>  # optional
+    table = <string>  # optional
+    post_up = <list(string)>  # optional
+    post_down = <list(string)>  # optional
+    peer "<name>" {
+      public_key = <string>  # required
+      preshared_key = <string>  # optional
+      endpoint = <string>  # optional
+      allowed_ips = <list(string)>  # required
+      persistent_keepalive = <number>  # optional
+    }
+
+  }
+
+  six_to_four "<name>" {
+    interface = <string>  # required
+    enabled = <bool>  # optional
+    zone = <string>  # optional
+    mtu = <number>  # optional
+  }
+
+}
+
+web {
+  listen = <string>  # optional
+  tls_listen = <string>  # optional
+  tls_cert = <string>  # optional
+  tls_key = <string>  # optional
+  disable_redirect = <bool>  # optional
+  serve_ui = <bool>  # optional
+  serve_api = <bool>  # optional
+  allow {
+    interface = <string>  # optional
+    source = <string>  # optional
+    interfaces = <list(string)>  # optional
+    sources = <list(string)>  # optional
+  }
+
+  deny {
+    interface = <string>  # optional
+    source = <string>  # optional
+    interfaces = <list(string)>  # optional
+    sources = <list(string)>  # optional
+  }
+
+}
+
+zone "<name>" {
+  color = <string>  # optional
+  description = <string>  # optional
+  interface = <string>  # optional
+  src = <string>  # optional
+  dst = <string>  # optional
+  vlan = <number>  # optional
+  interfaces = <list(string)>  # optional DEPRECATED
+  ipsets = <list(string)>  # optional
+  networks = <list(string)>  # optional
+  action = <accept|reject>  # optional
+  external = <bool>  # optional
+  ipv4 = <list(string)>  # optional
+  ipv6 = <list(string)>  # optional
+  dhcp = <bool>  # optional
+  match {
+    interface = <string>  # optional
+    src = <string>  # optional
+    dst = <string>  # optional
+    vlan = <number>  # optional
+  }
+
+  services {
+    dhcp = <bool>  # optional
+    dns = <bool>  # optional
+    ntp = <bool>  # optional
+    captive_portal = <bool>  # optional
+    port "<name>" {
+      protocol = <string>  # required
+      port = <number>  # required
+      port_end = <number>  # optional
+    }
+
+  }
+
+  management {
+    web_ui = <bool>  # optional
+    web = <bool>  # optional
+    ssh = <bool>  # optional
+    api = <bool>  # optional
+    icmp = <bool>  # optional
+    snmp = <bool>  # optional
+    syslog = <bool>  # optional
+  }
+
+}

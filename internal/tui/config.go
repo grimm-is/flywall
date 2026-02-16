@@ -1,10 +1,9 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package tui
 
 import (
-	"fmt"
-	"os"
 	"reflect"
-	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -41,8 +40,9 @@ func (i sectionItem) FilterValue() string { return i.title }
 func NewConfigModel(backend Backend) ConfigModel {
 	items := []list.Item{
 		sectionItem{title: "API Settings", desc: "Manage HTTP/HTTPS API configuration", field: "API"},
+		sectionItem{title: "Web Server", desc: "Web UI and Proxy settings", field: "Web"},
 		sectionItem{title: "Features", desc: "Enable/Disable core features", field: "Features"},
-		sectionItem{title: "System", desc: "System identity and behavior", field: "System"}, // Assuming System exists or similar
+		sectionItem{title: "System Tuning", desc: "System identity and sysctl profiles", field: "System"},
 	}
 
 	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
@@ -70,17 +70,24 @@ func (m ConfigModel) Init() tea.Cmd {
 	}
 }
 
+type ConfigSaveSuccess struct{}
+
 func (m ConfigModel) Update(msg tea.Msg) (ConfigModel, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
+	case BackendError:
+		m.LastError = msg.Err
+		return m, nil
+
+	case ConfigSaveSuccess:
+		m.LastError = nil
+		// Maybe show a toast?
+		return m, nil
+
 	case *config.Config:
 		m.Config = msg
 		m.LastError = nil
-		return m, nil
-
-	case ConfigLoadError:
-		m.LastError = msg.Err
 		return m, nil
 
 	case tea.WindowSizeMsg:
@@ -107,8 +114,14 @@ func (m ConfigModel) Update(msg tea.Msg) (ConfigModel, tea.Cmd) {
 			if m.Form.State == huh.StateCompleted {
 				m.Editing = false
 				m.Form = nil
-				// TODO: Save config back to backend
-				// m.Backend.SaveConfig(m.Config)
+				// Save config back to backend
+				return m, func() tea.Msg {
+					err := m.Backend.ApplyConfig(m.Config)
+					if err != nil {
+						return BackendError{Err: err}
+					}
+					return ConfigSaveSuccess{}
+				}
 			}
 
 			return m, formCmd
@@ -116,21 +129,15 @@ func (m ConfigModel) Update(msg tea.Msg) (ConfigModel, tea.Cmd) {
 
 		switch msg.String() {
 		case "enter":
-			f, _ := os.OpenFile("tui_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			fmt.Fprintf(f, "%s: Enter pressed. Config exists: %v. Editing: %v\n", time.Now(), m.Config != nil, m.Editing)
-
 			if m.Config == nil {
-				f.Close()
 				return m, nil
 			}
 
 			// Enter critical editing mode
 			item := m.List.SelectedItem()
-			fmt.Fprintf(f, "Selected item type: %T, Value: %+v\n", item, item)
 
 			selected, ok := item.(sectionItem)
 			if ok {
-				fmt.Fprintf(f, "Selected section: %s\n", selected.field)
 				m.ActiveSection = selected.field
 				m.Editing = true
 
@@ -139,22 +146,16 @@ func (m ConfigModel) Update(msg tea.Msg) (ConfigModel, tea.Cmd) {
 				fieldVal := val.FieldByName(selected.field)
 
 				if !fieldVal.IsValid() || fieldVal.IsNil() {
-					fmt.Fprintf(f, "Field %s is invalid or nil\n", selected.field)
 					// Initialize if nil? Or show error?
 					m.Editing = false
-					f.Close()
 					return m, nil
 				}
 
-				fmt.Fprintf(f, "Creating AutoForm for field %s\n", selected.field)
 				// AutoForm expects a pointer to a struct
 				// fieldVal is likely a pointer (e.g. *APIConfig)
 				m.Form = AutoForm(fieldVal.Interface())
 				m.Form.Init()
-			} else {
-				fmt.Fprintf(f, "Failed to cast item to sectionItem\n")
 			}
-			f.Close()
 			return m, nil
 		}
 	}

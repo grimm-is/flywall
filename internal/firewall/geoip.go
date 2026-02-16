@@ -1,9 +1,13 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package firewall
 
 import (
+	"grimm.is/flywall/internal/install"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/oschwald/geoip2-golang"
@@ -20,7 +24,7 @@ type GeoIPManager struct {
 // If path is empty, uses the default location.
 func NewGeoIPManager(dbPath string) (*GeoIPManager, error) {
 	if dbPath == "" {
-		dbPath = "/var/lib/flywall/geoip/GeoLite2-Country.mmdb"
+		dbPath = filepath.Join(install.GetShareDir(), "geoip", "GeoLite2-Country.mmdb")
 	}
 
 	// Check if database exists

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
@@ -98,5 +100,5 @@ func RunFactoryReset(configDir string, confirm bool) {
 	}
 
 	Printer.Println("Factory reset complete.")
-	Printer.Println("Run 'firewall setup' to reconfigure.")
+	Printer.Printf("Run '%s setup' to reconfigure.\n", brand.LowerName)
 }

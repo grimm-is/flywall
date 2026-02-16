@@ -20,6 +20,10 @@ html {
 body {
   min-height: 100vh;
   background-color: var(--color-background);
+  /* slight gradient to show off glass effect */
+  background-image: radial-gradient(circle at 15% 50%, rgba(59, 130, 246, 0.08), transparent 25%),
+    radial-gradient(circle at 85% 30%, rgba(236, 72, 153, 0.08), transparent 25%);
+  background-attachment: fixed;
   color: var(--color-foreground);
 }
 
@@ -560,4 +564,62 @@ body.anonymized::before {
 body.anonymized {
   /* Subtle visual indicator that content is modified */
   --anonymize-border: 2px dashed var(--color-warning);
+}
+
+/* =============================================================================
+   Glass Chassis Design System
+   High-tech, transparent, and interactive UI elements
+   ============================================================================= */
+
+/* Glass Panel - The core building block */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+  border-radius: var(--radius-xl);
+}
+
+.dark .glass-panel {
+  background: rgba(30, 41, 59, 0.7);
+  /* Slate-800 with opacity */
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2), 0 2px 4px -2px rgba(0, 0, 0, 0.2);
+}
+
+/* Glass Panel Hover - For clickable elements */
+.glass-panel-hover {
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.glass-panel-hover:hover {
+  background: rgba(255, 255, 255, 0.85);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.05);
+}
+
+.dark .glass-panel-hover:hover {
+  background: rgba(51, 65, 85, 0.8);
+  /* Slate-700 with opacity */
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -4px rgba(0, 0, 0, 0.2);
+}
+
+/* Text Glow - For "Heads Up Display" data */
+.text-glow {
+  text-shadow: 0 0 10px rgba(59, 130, 246, 0.1);
+}
+
+.dark .text-glow {
+  text-shadow: 0 0 10px rgba(96, 165, 250, 0.3);
+}
+
+/* Metric Value - Large, monospaced numbers */
+.metric-value {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: -0.05em;
+  font-variant-numeric: tabular-nums;
 }

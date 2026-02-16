@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package upgrade implements seamless zero-downtime upgrades with socket handoff.
 //
 // The upgrade process:
@@ -11,10 +13,10 @@
 package upgrade
 
 import (
+	"grimm.is/flywall/internal/install"
 	"context"
 	"encoding/gob"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -27,6 +29,8 @@ import (
 	"syscall"
 	"time"
 
+	"grimm.is/flywall/internal/errors"
+
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/clock"
 
@@ -35,14 +39,12 @@ import (
 	"grimm.is/flywall/internal/scheduler"
 )
 
-const (
-	// UpgradeSocketPath is the Unix socket for upgrade coordination
-	UpgradeSocketPath = "/run/firewall/upgrade.sock"
-)
-
 var (
+	// UpgradeSocketPath is the Unix socket for upgrade coordination
+	UpgradeSocketPath = filepath.Join(install.GetStateDir(), "upgrade.sock")
+
 	// StateFilePath is where state is serialized during upgrade
-	StateFilePath = "/run/firewall/upgrade-state.gob"
+	StateFilePath = filepath.Join(install.GetStateDir(), "upgrade-state.gob")
 )
 
 const (
@@ -393,19 +395,19 @@ func (m *Manager) SaveState(state *State) error {
 	// Ensure directory exists
 	dir := filepath.Dir(StateFilePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create state directory: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to create state directory")
 	}
 
 	// Write state file
 	f, err := os.Create(StateFilePath)
 	if err != nil {
-		return fmt.Errorf("failed to create state file: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to create state file")
 	}
 	defer f.Close()
 
 	encoder := gob.NewEncoder(f)
 	if err := encoder.Encode(state); err != nil {
-		return fmt.Errorf("failed to encode state: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to encode state")
 	}
 
 	m.logger.Info("Saved upgrade state", "path", StateFilePath)
@@ -416,14 +418,14 @@ func (m *Manager) SaveState(state *State) error {
 func (m *Manager) LoadState() (*State, error) {
 	f, err := os.Open(StateFilePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open state file: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to open state file")
 	}
 	defer f.Close()
 
 	var state State
 	decoder := gob.NewDecoder(f)
 	if err := decoder.Decode(&state); err != nil {
-		return nil, fmt.Errorf("failed to decode state: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to decode state")
 	}
 
 	m.state = &state
@@ -510,20 +512,20 @@ func (m *Manager) InitiateUpgrade(ctx context.Context, newBinaryPath string, cfg
 	state.CheckpointID = m.checkpointID
 	if err := m.SaveState(state); err != nil {
 		m.stopDeltaCollection()
-		return fmt.Errorf("failed to save state: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to save state")
 	}
 
 	// 3. Create upgrade coordination socket
 	if err := os.MkdirAll(filepath.Dir(UpgradeSocketPath), 0755); err != nil {
 		m.stopDeltaCollection()
-		return fmt.Errorf("failed to create socket directory: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to create socket directory")
 	}
 	os.Remove(UpgradeSocketPath) // Remove stale socket
 
 	listener, err := net.Listen("unix", UpgradeSocketPath)
 	if err != nil {
 		m.stopDeltaCollection()
-		return fmt.Errorf("failed to create upgrade socket: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to create upgrade socket")
 	}
 	defer listener.Close()
 
@@ -553,7 +555,7 @@ func (m *Manager) InitiateUpgrade(ctx context.Context, newBinaryPath string, cfg
 
 	if err := cmd.Start(); err != nil {
 		m.stopDeltaCollection()
-		return fmt.Errorf("failed to start new process: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to start new process")
 	}
 
 	newPID := cmd.Process.Pid
@@ -612,18 +614,18 @@ func (m *Manager) InitiateUpgrade(ctx context.Context, newBinaryPath string, cfg
 
 		// 6. Wait for ready message
 		if err := m.waitForReadyMessage(upgradeConn, cmd.Process.Pid); err != nil {
-			return fmt.Errorf("new process failed to become ready: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "new process failed to become ready")
 		}
 
 		// 7. Send accumulated deltas
 		if err := m.sendDeltas(upgradeConn); err != nil {
-			return fmt.Errorf("failed to send deltas: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "failed to send deltas")
 		}
 
 		// 8. Stop delta collection and send final delta
 		m.stopDeltaCollection()
 		if err := m.sendFinalDelta(upgradeConn); err != nil {
-			return fmt.Errorf("failed to send final delta: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "failed to send final delta")
 		}
 		return nil
 	}()
@@ -648,14 +650,14 @@ func (m *Manager) InitiateUpgrade(ctx context.Context, newBinaryPath string, cfg
 		return ctx.Err()
 	case <-time.After(HandoffTimeout):
 		killNewProcess()
-		return fmt.Errorf("timeout waiting for listener connection")
+		return errors.New(errors.KindInternal, "timeout waiting for listener connection")
 	}
 	defer listenerConn.Close()
 
 	// 9. Hand off listeners
 	if err := m.handoffListeners(ctx, listenerConn); err != nil {
 		killNewProcess()
-		return fmt.Errorf("failed to hand off listeners: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to hand off listeners")
 	}
 
 	// 10. Hand off complete
@@ -737,15 +739,15 @@ func (m *Manager) waitForReadyMessage(conn net.Conn, newPID int) error {
 	var msg upgradeMessage
 	decoder := json.NewDecoder(conn)
 	if err := decoder.Decode(&msg); err != nil {
-		return fmt.Errorf("failed to read ready message: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to read ready message")
 	}
 
 	if msg.Type != "ready" {
-		return fmt.Errorf("unexpected message type: %s (error: %s)", msg.Type, msg.Error)
+		return errors.Errorf(errors.KindInternal, "unexpected message type: %s (error: %s)", msg.Type, msg.Error)
 	}
 
 	if msg.PID != newPID {
-		return fmt.Errorf("PID mismatch: expected %d, got %d", newPID, msg.PID)
+		return errors.Errorf(errors.KindInternal, "PID mismatch: expected %d, got %d", newPID, msg.PID)
 	}
 
 	m.logger.Info("New process is ready", "pid", newPID)
@@ -757,7 +759,7 @@ func (m *Manager) waitForReady(ctx context.Context, listener net.Listener, newPI
 	// Accept connection from new process
 	conn, err := listener.Accept()
 	if err != nil {
-		return fmt.Errorf("failed to accept upgrade connection: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to accept upgrade connection")
 	}
 	defer conn.Close()
 
@@ -836,7 +838,7 @@ func getListenerFile(l interface{}) (*os.File, error) {
 	case *net.UnixConn:
 		return v.File()
 	default:
-		return nil, fmt.Errorf("unsupported listener type: %T", l)
+		return nil, errors.Errorf(errors.KindInternal, "unsupported listener type: %T", l)
 	}
 }
 
@@ -847,20 +849,20 @@ func (m *Manager) RunStandby(ctx context.Context, configPath string) error {
 	// 1. Load state from old process
 	state, err := m.LoadState()
 	if err != nil {
-		return fmt.Errorf("failed to load state: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to load state")
 	}
 
 	// 2. Load and validate configuration
 	cfg, err := config.LoadFile(configPath)
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to load config")
 	}
 
 	// 3. Validate configuration
 	if errs := cfg.Validate(); len(errs) > 0 {
 		errMsg := fmt.Sprintf("config validation failed: %v", errs)
 		m.sendError(errMsg)
-		return fmt.Errorf("config validation failed: %v", errs)
+		return errors.Errorf(errors.KindValidation, "config validation failed: %v", errs)
 	}
 
 	m.logger.Info("Configuration validated successfully")
@@ -873,7 +875,7 @@ func (m *Manager) RunStandby(ctx context.Context, configPath string) error {
 	// 5. Connect to old process and signal ready
 	conn, err := net.Dial("unix", UpgradeSocketPath)
 	if err != nil {
-		return fmt.Errorf("failed to connect to upgrade socket: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to connect to upgrade socket")
 	}
 	defer conn.Close()
 
@@ -883,24 +885,24 @@ func (m *Manager) RunStandby(ctx context.Context, configPath string) error {
 		Type: "ready",
 		PID:  os.Getpid(),
 	}); err != nil {
-		return fmt.Errorf("failed to send ready message: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to send ready message")
 	}
 
 	// 6. Receive and apply deltas (changes since initial state)
 	if err := m.receiveDeltas(conn); err != nil {
-		return fmt.Errorf("failed to receive deltas: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to receive deltas")
 	}
 
 	// 7. Receive listener file descriptors (Phase 2)
 	// Reconnect for raw listener handoff
 	conn2, err := net.Dial("unix", UpgradeSocketPath)
 	if err != nil {
-		return fmt.Errorf("failed to connect for listener handoff: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to connect for listener handoff")
 	}
 	defer conn2.Close()
 
 	if err := m.receiveListeners(ctx, conn2); err != nil {
-		return fmt.Errorf("failed to receive listeners: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to receive listeners")
 	}
 
 	// 7. Cleanup state file
@@ -927,7 +929,7 @@ func (m *Manager) receiveListeners(ctx context.Context, conn net.Conn) error {
 				m.logger.Info("Listener handoff complete (EOF)")
 				return nil
 			}
-			return fmt.Errorf("failed to read message: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "failed to read message")
 		}
 
 		if n == 0 {
@@ -1051,7 +1053,7 @@ func (m *Manager) receiveDeltas(conn net.Conn) error {
 	for {
 		var msg upgradeMessage
 		if err := decoder.Decode(&msg); err != nil {
-			return fmt.Errorf("failed to decode delta message: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "failed to decode delta message")
 		}
 
 		switch msg.Type {

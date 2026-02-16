@@ -48,7 +48,9 @@ zone "wan" {
 }
 
 zone "lan" {
-  interfaces = ["lo"]
+  match {
+    interface = "lo"
+  }
 }
 
 # IPSet with static entries (simulating FireHOL downloaded data)

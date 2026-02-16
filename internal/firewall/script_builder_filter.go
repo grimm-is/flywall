@@ -1,15 +1,49 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package firewall
 
 import (
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
+	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
 )
 
+// canonicalZoneName normalizes zone name aliases to their canonical form.
+// "firewall", "router", and "self" all refer to the router itself.
+func canonicalZoneName(name string) string {
+	lower := strings.ToLower(name)
+	switch lower {
+	case "firewall", "router", "self", brand.LowerName:
+		return brand.LowerName
+	default:
+		return lower
+	}
+}
+
 // BuildFilterTableScript builds the main filter table script from config.
-func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string, configHash string) (*ScriptBuilder, error) {
+// This is the core logic for firewall rule generation. It constructs the "inet"
+// table which handles IPv4 and IPv6 filtering.
+//
+// Key components generated:
+//  1. Base Chains: input, forward, output with default drop policies.
+//  2. Stats Chain: A dedicated chain for counting packet types (SYN, UDP, etc.).
+//  3. Service Rules: Allow rules for local services (SSH, DNS, DHCP) based on zone config.
+//  4. Policy Chains: Per-policy chains (e.g. "policy_lan_wan") containing user rules.
+//  5. Verdict Maps: O(1) dispatch using vmaps to jump to the correct policy chain
+//     based on input/output interfaces.
+//  6. Protection: Anti-spoofing and invalid packet drops.
+//  7. NAT/Masquerade: Handled in separate NAT table, but referenced here for context.
+func BuildFilterTableScript(
+	cfg *Config,
+	vpn *config.VPNConfig,
+	tableName string,
+	configHash string,
+	resolvedIPSets map[string][]string,
+) (*ScriptBuilder, error) {
 	timezone := "UTC"
 	if cfg.System != nil && cfg.System.Timezone != "" {
 		timezone = cfg.System.Timezone
@@ -101,14 +135,26 @@ func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string
 		}
 		sb.AddSet(ipset.Name, setType, fmt.Sprintf("[ipset:%s]", ipset.Name), size, flags...)
 
-		// Smart Flush: Flush static sets to match config, but preserve dynamic sets (persistence).
+		// Smart Flush: Flush sets to ensure they match config.
+		// For resolved sets, we always flush because we rebuild the content.
+		// For purely dynamic sets (without resolved content), we might
+		// preserve them if needed, but atomic apply usually rebuilds.
+		// Given we have resolutions, we can flush safely.
 		if !isDynamic {
 			sb.AddLine(fmt.Sprintf("flush set %s %s %s", sb.family, sb.tableName, quote(ipset.Name)))
 		}
 
-		// Add elements if specified inline
-		if len(ipset.Entries) > 0 {
-			sb.AddSetElements(ipset.Name, ipset.Entries)
+		// Add elements: Prefer resolved download results, fallback to static if not in map
+		// (though resolved map includes static if call was successful)
+		var elements []string
+		if resolved, ok := resolvedIPSets[ipset.Name]; ok {
+			elements = resolved
+		} else {
+			elements = ipset.Entries
+		}
+
+		if len(elements) > 0 {
+			sb.AddSetElements(ipset.Name, elements)
 		}
 	}
 
@@ -121,6 +167,10 @@ func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string
 		sb.AddSet("dns_allowed_v6", "ipv6_addr", "[dns-wall] Allowed IPv6", 65535, "timeout")
 		// Do NOT flush these sets. They are persistent.
 	}
+
+	// Define blocked_ips set for fail2ban-style IP blocking
+	// This set is managed dynamically via RPC from the API server
+	sb.AddSet("blocked_ips", "ipv4_addr", "[ipset:blocked_ips]", 0)
 
 	// Create base chains with default drop policy
 	sb.AddChain("input", "filter", "input", 0, "drop", "[base] Incoming traffic")
@@ -166,6 +216,11 @@ func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string
 	sb.AddRule("input", "jump flywall_stats", "[stats] Collect metrics")
 	sb.AddRule("forward", "jump flywall_stats", "[stats] Collect metrics")
 
+	// Drop traffic from blocked IPs (fail2ban-style blocking)
+	// This runs early to block malicious IPs before any accept rules
+	sb.AddRule("input", "ip saddr @blocked_ips drop", "[security] Blocked IPs")
+	sb.AddRule("forward", "ip saddr @blocked_ips drop", "[security] Blocked IPs")
+
 	sb.AddRule("input", "ct state established,related accept", "[base] Stateful")
 	sb.AddRule("forward", "ct state established,related accept", "[base] Stateful")
 	sb.AddRule("output", "ct state established,related accept", "[base] Stateful")
@@ -176,15 +231,20 @@ func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string
 	sb.AddRule("forward", `ct state invalid limit rate 10/minute log group 0 prefix "DROP_INVALID: " counter drop`, "[base] Invalid drop")
 	sb.AddRule("output", "ct state invalid drop", "[base] Invalid drop")
 
-	// Device Discovery Logging (nflog group 100)
+	// Device Discovery Logging (using configured log group)
+	logGroup := 100 // Default
+	if cfg.RuleLearning != nil {
+		logGroup = cfg.RuleLearning.LogGroup
+	}
+
 	// Log NEW connections early in the chain for device tracking.
 	// Rate limited to prevent flooding the collector on busy networks.
 	// This happens BEFORE accept/drop decisions so we see all devices.
-	sb.AddRule("input", "ct state new limit rate 100/second burst 50 packets log group 100 prefix \"DISCOVER: \"", "[feature] Device discovery")
-	sb.AddRule("forward", "ct state new limit rate 100/second burst 50 packets log group 100 prefix \"DISCOVER: \"", "[feature] Device discovery")
+	sb.AddRule("input", fmt.Sprintf("ct state new limit rate 100/second burst 50 packets log group %d prefix \"DISCOVER: \"", logGroup), "[feature] Device discovery")
+	sb.AddRule("forward", fmt.Sprintf("ct state new limit rate 100/second burst 50 packets log group %d prefix \"DISCOVER: \"", logGroup), "[feature] Device discovery")
 
 	// Explicitly log mDNS for device discovery (multicast often bypasses state checking)
-	sb.AddRule("input", "udp dport 5353 limit rate 100/second burst 50 packets log group 100 prefix \"DISCOVER_MDNS: \"", "[feature] mDNS discovery")
+	sb.AddRule("input", fmt.Sprintf("udp dport 5353 limit rate 100/second burst 50 packets log group %d prefix \"DISCOVER_MDNS: \"", logGroup), "[feature] mDNS discovery")
 
 	// HA and Replication Rules
 	if cfg.Replication != nil {
@@ -335,7 +395,7 @@ func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string
 
 	// Network Learning Rules
 	// Log TLS traffic for SNI inspection.
-	sb.AddRule("forward", `tcp dport 443 ct state established limit rate 50/second burst 20 packets log group 100 prefix "TLS_SNI: "`, "[feature] TLS SNI learning")
+	sb.AddRule("forward", fmt.Sprintf(`tcp dport 443 ct state established limit rate 50/second burst 20 packets log group %d prefix "TLS_SNI: "`, logGroup), "[feature] TLS SNI learning")
 
 	// VPN Transport Rules (WireGuard)
 	if vpn != nil {
@@ -473,12 +533,13 @@ func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string
 			addService(qIface, "https")
 
 			if allowAPI || allowWeb {
-				// Explicitly allow default API port 8443 (WebUI/API)
+				// Explicitly allow default API ports 8443 and 8080 (WebUI/API)
 				tcpElements = append(tcpElements, fmt.Sprintf("%s . %d", qIface, 8443))
+				tcpElements = append(tcpElements, fmt.Sprintf("%s . %d", qIface, 8080))
 			}
 
 			// Custom port if legacy field used
-			if iface.WebUIPort > 0 && iface.WebUIPort != 80 && iface.WebUIPort != 443 {
+			if iface.WebUIPort > 0 && iface.WebUIPort != 80 && iface.WebUIPort != 443 && iface.WebUIPort != 8080 && iface.WebUIPort != 8443 {
 				tcpElements = append(tcpElements, fmt.Sprintf("%s . %d", qIface, iface.WebUIPort))
 			}
 		}
@@ -493,7 +554,8 @@ func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string
 		}
 
 		// Get interfaces for this zone
-		zoneIfaces, ok := zoneMap[zone.Name]
+		cName := canonicalZoneName(zone.Name)
+		zoneIfaces, ok := zoneMap[cName]
 		if !ok || len(zoneIfaces) == 0 {
 			continue
 		}
@@ -530,6 +592,7 @@ func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string
 
 					if zone.Management.API || zone.Management.Web || zone.Management.WebUI {
 						tcpElements = append(tcpElements, fmt.Sprintf("%s . %d", qIface, 8443))
+						tcpElements = append(tcpElements, fmt.Sprintf("%s . %d", qIface, 8080))
 					}
 
 				}
@@ -612,22 +675,108 @@ func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string
 	// Build zone map for policy rules
 	zoneMap = buildZoneMapForScript(cfg)
 
-	// Add policy chains and rules
-	// Initialize maps for O(1) dispatch
-	inputMap := make(map[string]string)   // iifname -> verdict
-	forwardMap := make(map[string]string) // iifname . oifname -> verdict
+	// =========================================================================
+	// Policy Processing & Merging
+	// =========================================================================
+	// We aggregate policies by their canonical From->To pair to handle aliases
+	// (e.g. "firewall" == "local") and multiple policy blocks.
 
+	type AggregatedPolicy struct {
+		From    string
+		To      string
+		Rules   []config.PolicyRule
+		Action  string   // "accept", "drop", or "reject"
+		Sources []string // Names of source policies for comments
+	}
+
+	// Use map for aggregation: key = "canonical(From)->canonical(To)"
+	policyMap := make(map[string]*AggregatedPolicy)
+
+	// 1. Process Explicit Policies
 	for _, pol := range cfg.Policies {
 		if pol.Disabled {
 			continue
 		}
+		cFrom := canonicalZoneName(pol.From)
+		cTo := canonicalZoneName(pol.To)
+		key := fmt.Sprintf("%s->%s", cFrom, cTo)
+
+		agg, exists := policyMap[key]
+		if !exists {
+			agg = &AggregatedPolicy{
+				From:   cFrom,
+				To:     cTo,
+				Action: "drop", // Default safe fallback if not specified
+			}
+			policyMap[key] = agg
+		}
+
+		// Append rules
+		agg.Rules = append(agg.Rules, pol.Rules...)
+
+		// Update Action (Last one matches standard imperative config behavior)
+		if pol.Action != "" {
+			agg.Action = strings.ToLower(pol.Action)
+		}
+
+		// Track source
+		if pol.Name != "" {
+			agg.Sources = append(agg.Sources, pol.Name)
+		} else {
+			agg.Sources = append(agg.Sources, "unnamed")
+		}
+	}
+
+	// 2. Inject Implicit Policies (if missing)
+	for _, zone := range cfg.Zones {
+		// key for flywall -> zone
+		key := fmt.Sprintf("%s->%s", brand.LowerName, canonicalZoneName(zone.Name))
+
+		if _, exists := policyMap[key]; !exists {
+			// Create implicit policy
+			policyMap[key] = &AggregatedPolicy{
+				From:    brand.LowerName,
+				To:      canonicalZoneName(zone.Name),
+				Action:  "accept",
+				Rules:   []config.PolicyRule{}, // No explicit rules, just default action
+				Sources: []string{"implicit_default"},
+			}
+		}
+	}
+
+	// Add policy chains and rules
+	// Initialize maps for O(1) dispatch
+
+	// Initialize maps for O(1) dispatch
+	inputMap := make(map[string]string)   // iifname -> verdict
+	outputMap := make(map[string]string)  // oifname -> verdict
+	forwardMap := make(map[string]string) // iifname . oifname -> verdict
+
+	// 3. Generate Chain Definitions (Sorted for determinism)
+	// We need keys
+	var keys []string
+	for k := range policyMap {
+		keys = append(keys, k)
+	}
+	// Sort by key
+	for i := 0; i < len(keys); i++ {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[i] > keys[j] {
+				keys[i], keys[j] = keys[j], keys[i]
+			}
+		}
+	}
+
+	for _, key := range keys {
+		pol := policyMap[key]
 
 		chainName := fmt.Sprintf("policy_%s_%s", pol.From, pol.To)
 		if !isValidIdentifier(chainName) {
-			// This shouldn't happen if zones are valid, but check
 			return nil, fmt.Errorf("invalid policy chain name derived from zones: %s", chainName)
 		}
-		chainComment := fmt.Sprintf("[policy:%s->%s]", pol.From, pol.To)
+
+		sourcesStr := strings.Join(pol.Sources, ", ")
+		chainComment := fmt.Sprintf("[policy:%s->%s] sources: %s", pol.From, pol.To, sourcesStr)
 		sb.AddChain(chainName, "", "", 0, "", chainComment)
 
 		// Add rules to policy chain
@@ -671,20 +820,27 @@ func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string
 		fromIfaces := zoneMap[pol.From]
 		toIfaces := zoneMap[pol.To]
 
-		if strings.EqualFold(pol.To, "firewall") || strings.EqualFold(pol.To, "self") {
+		isInput := pol.To == brand.LowerName
+		isOutput := pol.From == brand.LowerName
+
+		if isInput {
 			// Input Chain Dispatch
 			for _, iface := range fromIfaces {
-				// Map key: iifname
-				// Check for duplicates? First match wins (linear behavior simulation)
 				if _, exists := inputMap[iface]; !exists {
 					inputMap[iface] = fmt.Sprintf("jump %s", chainName)
+				}
+			}
+		} else if isOutput {
+			// Output Chain Dispatch
+			for _, iface := range toIfaces {
+				if _, exists := outputMap[iface]; !exists {
+					outputMap[iface] = fmt.Sprintf("jump %s", chainName)
 				}
 			}
 		} else {
 			// Forward Chain Dispatch
 			for _, src := range fromIfaces {
 				for _, dst := range toIfaces {
-					// Map key: iifname . oifname
 					key := fmt.Sprintf("%s . %s", quote(src), quote(dst))
 					if _, exists := forwardMap[key]; !exists {
 						forwardMap[key] = fmt.Sprintf("jump %s", chainName)
@@ -705,6 +861,16 @@ func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string
 		sb.AddRule("input", "iifname vmap @input_vmap", "[base] Policy dispatch")
 	}
 
+	// Output Map
+	if len(outputMap) > 0 {
+		var elements []string
+		for iface, verdict := range outputMap {
+			elements = append(elements, fmt.Sprintf("%s : %s", quote(iface), verdict))
+		}
+		sb.AddMap("output_vmap", "ifname", "verdict", "[base] Output dispatch map", nil, elements)
+		sb.AddRule("output", "oifname vmap @output_vmap", "[base] Policy dispatch")
+	}
+
 	// Forward Map
 	if len(forwardMap) > 0 {
 		var elements []string
@@ -722,17 +888,39 @@ func BuildFilterTableScript(cfg *Config, vpn *config.VPNConfig, tableName string
 	// This holds packets until the learning engine returns a verdict, fixing the
 	// "first packet" problem where the first packet of a new flow would be dropped
 	// before the allow rule could be added.
+
+	// DEBUG: Log the inline mode check
+	if cfg.RuleLearning != nil {
+		log.Printf("[FIREWALL] DEBUG: RuleLearning exists - Enabled=%v, InlineMode=%v", cfg.RuleLearning.Enabled, cfg.RuleLearning.InlineMode)
+	} else {
+		log.Printf("[FIREWALL] DEBUG: RuleLearning is NIL")
+	}
+
 	if cfg.RuleLearning != nil && cfg.RuleLearning.Enabled && cfg.RuleLearning.InlineMode {
-		// Use nfqueue for inline mode
-		// 'bypass' flag = accept if queue full (fail-open)
-		queueGroup := cfg.RuleLearning.LogGroup
-		if queueGroup == 0 {
-			queueGroup = 100
+		// Get offload mark from config (default 0x200000)
+		offloadMarkStr := cfg.RuleLearning.OffloadMark
+		offloadMark, err := config.ParseOffloadMark(offloadMarkStr)
+		if err != nil {
+			log.Printf("[FIREWALL] Invalid offload mark '%s': %v, using default", offloadMarkStr, err)
+			offloadMark = 0x200000
 		}
-		sb.AddRule("input", fmt.Sprintf("queue num %d bypass", queueGroup), "[feature] Inline learning queue")
-		sb.AddRule("forward", fmt.Sprintf("queue num %d bypass", queueGroup), "[feature] Inline learning queue")
+
+		// Rule 1: Bypass rule for offloaded flows (high priority)
+		// Flows with the offload mark are accepted before reaching nfqueue
+		log.Printf("[FIREWALL] DEBUG: Adding bypass rules for offload mark 0x%x", offloadMark)
+		sb.AddRule("input", fmt.Sprintf("ct mark 0x%x accept", offloadMark), "[feature] Inline IPS bypass (offloaded flows)")
+		sb.AddRule("forward", fmt.Sprintf("ct mark 0x%x accept", offloadMark), "[feature] Inline IPS bypass (offloaded flows)")
+
+		// Rule 2: Queue new/unmarked packets for inspection
+		// 'bypass' flag = accept if queue full (fail-open safety)
+		queueGroup := cfg.RuleLearning.LogGroup
+		log.Printf("[FIREWALL] DEBUG: Adding queue rules for group %d", queueGroup)
+		sb.AddRule("input", fmt.Sprintf("queue num %d bypass", queueGroup), "[feature] Inline IPS queue")
+		sb.AddRule("forward", fmt.Sprintf("queue num %d bypass", queueGroup), "[feature] Inline IPS queue")
+		log.Printf("[FIREWALL] DEBUG: Queue rules added successfully")
 	} else {
 		// Standard async mode with nflog
+		log.Printf("[FIREWALL] DEBUG: Using standard async mode (not inline)")
 		sb.AddRule("input", `limit rate 10/minute burst 5 packets log group 0 prefix "DROP_INPUT: " counter drop`, "[base] Final drop")
 		sb.AddRule("forward", `limit rate 10/minute burst 5 packets log group 0 prefix "DROP_FWD: " counter drop`, "[base] Final drop")
 	}

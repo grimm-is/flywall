@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package ctlplane provides the RPC interface between the privileged control plane
 // and the unprivileged API server.
 //
@@ -57,11 +59,11 @@
 package ctlplane
 
 import (
+	"grimm.is/flywall/internal/install"
 	"time"
 
 	"grimm.is/flywall/internal/alerting"
 	"grimm.is/flywall/internal/analytics"
-	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/firewall"
 	"grimm.is/flywall/internal/identity"
@@ -73,14 +75,14 @@ import (
 )
 
 // GetSocketPath returns the path to the control plane socket.
-// This uses brand.GetSocketPath() which supports environment overrides.
+// This uses install.GetSocketPath() which supports environment overrides.
 func GetSocketPath() string {
-	return brand.GetSocketPath()
+	return install.GetSocketPath()
 }
 
 // SocketPath is the default Unix socket used for control plane communication.
 // Deprecated: Use GetSocketPath() for environment-aware path resolution.
-var SocketPath = brand.GetSocketPath()
+var SocketPath = install.GetSocketPath()
 
 // Status represents the current system status
 type Status struct {
@@ -90,6 +92,7 @@ type Status struct {
 	FirewallActive  bool   `json:"firewall_active"`            // Whether firewall rules are applied
 	FirewallApplied string `json:"firewall_applied,omitempty"` // Timestamp of last rule application
 	SafeMode        bool   `json:"safe_mode"`                  // True if system is in safe mode
+	Version         string `json:"version"`                    // Application version
 }
 
 // InterfaceState represents the operational state of a network interface
@@ -254,7 +257,11 @@ type DHCPLease struct {
 //   func (t *T) MethodName(args *Args, reply *Reply) error
 
 // Empty is used for RPC methods that take no arguments
-type Empty struct{}
+// Empty is used for methods with no arguments.
+type Empty struct {
+	// Dummy field to ensure gob transmits something
+	Dummy bool `json:"-"`
+}
 
 // UpgradeArgs is the request for Upgrade
 type UpgradeArgs struct {
@@ -292,7 +299,14 @@ type GetStatusReply struct {
 
 // GetConfigReply is the response for GetConfig
 type GetConfigReply struct {
-	Config config.Config
+	// ConfigJSON is the JSON-encoded configuration (used to bypass gob issues with complex structs)
+	ConfigJSON []byte `json:"config_json"`
+}
+
+// GetForgivingResultReply is the response for GetForgivingResult
+type GetForgivingResultReply struct {
+	Result    *config.ForgivingLoadResult `json:"result,omitempty"`
+	HadErrors bool                        `json:"had_errors"`
 }
 
 // GetInterfacesReply is the response for GetInterfaces
@@ -334,14 +348,21 @@ const (
 
 // UpdateInterfaceArgs is the request for UpdateInterface
 type UpdateInterfaceArgs struct {
-	Name        string          `json:"name"`        // Interface name (required)
-	Action      InterfaceAction `json:"action"`      // enable, disable, update, delete
-	Zone        *string         `json:"zone"`        // Zone assignment (nil = no change)
-	Description *string         `json:"description"` // Description (nil = no change)
-	IPv4        []string        `json:"ipv4"`        // IPv4 addresses (nil = no change)
-	DHCP        *bool           `json:"dhcp"`        // Use DHCP (nil = no change)
-	MTU         *int            `json:"mtu"`         // MTU (nil = no change)
-	Disabled    *bool           `json:"disabled"`    // Disabled state (nil = no change)
+	Name        string                   `json:"name"`        // Interface name (required)
+	Action      InterfaceAction          `json:"action"`      // enable, disable, update, delete
+	Zone        *string                  `json:"zone"`        // Zone assignment (nil = no change)
+	Description *string                  `json:"description"` // Description (nil = no change)
+	IPv4        []string                 `json:"ipv4"`        // IPv4 addresses (nil = no change)
+	DHCP        *bool                    `json:"dhcp"`        // Use DHCP (nil = no change)
+	MTU         *int                     `json:"mtu"`         // MTU (nil = no change)
+	Disabled    *bool                    `json:"disabled"`    // Disabled state (nil = no change)
+	Bond        *UpdateInterfaceBondArgs `json:"bond"`        // Bond config (nil = no change)
+}
+
+// UpdateInterfaceBondArgs contains arguments for updating a bond
+type UpdateInterfaceBondArgs struct {
+	Mode       string   `json:"mode,omitempty"`
+	Interfaces []string `json:"interfaces,omitempty"`
 }
 
 // SafeApplyInterfaceArgs is the request for SafeApplyInterface
@@ -860,6 +881,22 @@ type SystemStats struct {
 type GetSystemStatsReply struct {
 	Stats SystemStats `json:"stats"`
 	Error string      `json:"error,omitempty"`
+}
+
+// MonitorResult represents the latest result from a connectivity monitor
+type MonitorResult struct {
+	Target    string `json:"target"`
+	RouteName string `json:"route_name"`
+	IsUp      bool   `json:"is_up"`
+	LatencyMs int64  `json:"latency_ms"`
+	LastCheck string `json:"last_check"` // RFC3339
+	Error     string `json:"error,omitempty"`
+}
+
+// GetMonitorsReply is the response for GetMonitors
+type GetMonitorsReply struct {
+	Monitors []MonitorResult `json:"monitors"`
+	Error    string          `json:"error,omitempty"`
 }
 
 // GetNotificationsArgs is the request for GetNotifications

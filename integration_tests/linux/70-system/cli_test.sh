@@ -7,7 +7,7 @@ TEST_TIMEOUT=30
 plan 6
 
 # 1. Create valid configuration
-CONFIG_VALID="/tmp/valid.hcl"
+CONFIG_VALID="/tmp/valid_$$.hcl"
 cat > "$CONFIG_VALID" <<EOF
 interface "eth0" {
     ipv4 = ["192.168.1.1/24"]
@@ -18,7 +18,7 @@ zone "LAN" {}
 EOF
 
 # 2. Create invalid configuration
-CONFIG_INVALID="/tmp/invalid.hcl"
+CONFIG_INVALID="/tmp/invalid_$$.hcl"
 cat > "$CONFIG_INVALID" <<EOF
 interface "eth0" {
     # Syntax error: missing closing brace
@@ -89,4 +89,3 @@ else
     echo "# Diff Output:"
     echo "$DIFF_OUTPUT" | head -n 10
 fi
-

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 import (
@@ -6,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"grimm.is/flywall/internal/brand"
+	"grimm.is/flywall/internal/install"
 )
 
 // SafeModeHints contains cached metadata for safe mode boot.
@@ -41,7 +43,7 @@ type SafeModeInterface struct {
 
 // safeModeHintsFile returns the path to the hints file.
 func safeModeHintsFile() string {
-	return filepath.Join(brand.GetStateDir(), "safe_mode_hints.json")
+	return filepath.Join(install.GetStateDir(), "safe_mode_hints.json")
 }
 
 // SaveSafeModeHints extracts and persists safe mode hints from a config.
@@ -52,10 +54,12 @@ func SaveSafeModeHints(cfg *Config) error {
 		Zones:     make(map[string]string),
 	}
 
-	// Extract zone mappings
+	// Extract zone mappings from Matches
 	for _, zone := range cfg.Zones {
-		for _, iface := range zone.Interfaces {
-			hints.Zones[iface] = zone.Name
+		for _, m := range zone.Matches {
+			if m.Interface != "" {
+				hints.Zones[m.Interface] = zone.Name
+			}
 		}
 		if zone.Interface != "" {
 			hints.Zones[zone.Interface] = zone.Name
@@ -85,11 +89,18 @@ func SaveSafeModeHints(cfg *Config) error {
 
 		// Also check zone-level management
 		for _, zone := range cfg.Zones {
-			if zone.Interface == iface.Name || containsString(zone.Interfaces, iface.Name) {
-				if zone.Management != nil {
-					if zone.Management.Web || zone.Management.API || zone.Management.SSH {
-						hint.Management = true
+			matched := zone.Interface == iface.Name
+			if !matched {
+				for _, m := range zone.Matches {
+					if m.Interface == iface.Name {
+						matched = true
+						break
 					}
+				}
+			}
+			if matched && zone.Management != nil {
+				if zone.Management.Web || zone.Management.API || zone.Management.SSH {
+					hint.Management = true
 				}
 			}
 		}
@@ -119,7 +130,7 @@ func SaveSafeModeHints(cfg *Config) error {
 		return err
 	}
 
-	return os.WriteFile(safeModeHintsFile(), data, 0644)
+	return SecureWriteFile(safeModeHintsFile(), data)
 }
 
 // LoadSafeModeHints reads cached safe mode hints from disk.

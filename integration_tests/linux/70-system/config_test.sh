@@ -202,7 +202,7 @@ ok $? "Validate from stdin works"
 # Test 22: Test config set with complex HCL
 diag "Testing config set with complex HCL structure"
 COMPLEX_HCL=$(mktemp_compatible "complex.hcl")
-cat > "$COMPLEX_HCL" << 'EOF'
+cat > "$COMPLEX_HCL" << EOF
 ip_forwarding = true
 
 policy "lan" "wan" {
@@ -211,7 +211,7 @@ policy "lan" "wan" {
 
   rule "multiple_ports" {
     description = "Multiple destination ports"
-    dest_ports = [80, 443, 8080]
+    dest_ports = [80, 443, $TEST_API_PORT]
     action = "accept"
   }
 
@@ -227,12 +227,12 @@ ipset "whitelist" {
   entries = ["192.168.1.1", "10.0.0.1"]
 }
 EOF
-$APP_BIN config set --file "$COMPLEX_HCL" --confirm=false > /tmp/config_set_debug.log 2>&1
+$APP_BIN config set --file "$COMPLEX_HCL" --confirm=false > /tmp/config_set_debug_$$.log 2>&1
 if [ $? -eq 0 ]; then
     ok 0 "Complex HCL structure sets successfully"
 else
     ok 1 "Complex HCL structure sets successfully"
-    cat /tmp/config_set_debug.log
+    cat /tmp/config_set_debug_$$.log
 fi
 
 # Test 23: Verify complex config was applied

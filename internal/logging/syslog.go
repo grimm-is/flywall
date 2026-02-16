@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package logging
 
 import (
@@ -53,7 +55,7 @@ func NewSyslogWriter(cfg SyslogConfig) (*SyslogWriter, error) {
 		cfg.Tag = "flywall"
 	}
 
-	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
 	conn, err := net.DialTimeout(cfg.Protocol, addr, 5*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to syslog server %s: %w", addr, err)
@@ -101,7 +103,7 @@ func (w *SyslogWriter) reconnect() {
 		w.conn.Close()
 	}
 
-	addr := fmt.Sprintf("%s:%d", w.config.Host, w.config.Port)
+	addr := net.JoinHostPort(w.config.Host, fmt.Sprintf("%d", w.config.Port))
 	conn, err := net.DialTimeout(w.config.Protocol, addr, 5*time.Second)
 	if err != nil {
 		log.Printf("[syslog] Failed to reconnect: %v", err)

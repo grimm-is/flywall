@@ -241,7 +241,18 @@ function createAlertStore() {
         success: (message: string, title = 'Success') => {
             set({ message, type: 'success', title });
         },
-        dismiss: () => set(null)
+        dismiss: () => set(null),
+        notify: (message: string, type: AlertState['type'] = 'info', title?: string) => {
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('ws-notification', {
+                    detail: {
+                        message,
+                        type,
+                        title: title || (type === 'error' ? 'Error' : 'Notification')
+                    }
+                }));
+            }
+        }
     };
 }
 
@@ -261,6 +272,22 @@ export const setupRequired = derived(authStatus, $auth => $auth?.setup_required 
 
 const API_BASE = '/api';
 
+
+
+// Connection State
+export const isConnected = writable(true);
+export const connectionError = writable<string | null>(null);
+
+// Helper to update connection state
+function setConnectionState(connected: boolean, error: string | null = null) {
+    if (get(isConnected) !== connected) {
+        isConnected.set(connected);
+    }
+    if (get(connectionError) !== error) {
+        connectionError.set(error);
+    }
+}
+
 async function apiRequest(endpoint: string, options: RequestInit = {}): Promise<any> {
     const url = `${API_BASE}${endpoint}`;
     // Get current auth state for CSRF token
@@ -274,19 +301,75 @@ async function apiRequest(endpoint: string, options: RequestInit = {}): Promise<
         credentials: 'include',
     };
 
-    const response = await fetch(url, { ...defaultOptions, ...options });
+    // Add timeout to prevent hanging indefinitely
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+    const fetchOptions = { ...defaultOptions, ...options, signal: controller.signal };
+
+    let response;
+    try {
+        response = await fetch(url, fetchOptions);
+        clearTimeout(timeoutId);
+        setConnectionState(true);
+    } catch (e: any) {
+        clearTimeout(timeoutId);
+        // Network error (fetch failed) or Timeout
+        console.warn(`API Connection Failed: ${endpoint}`, e);
+
+        const isTimeout = e.name === 'AbortError';
+        const msg = isTimeout
+            ? "Connection timed out (backend slow/unreachable)."
+            : "Connection lost. Reconnecting...";
+
+        setConnectionState(false, msg);
+        throw new Error(isTimeout ? "Timeout" : "Network Error");
+    }
 
     if (response.status === 401) {
+        alertStore.error('Session expired. Please log in again.', 'Unauthorized');
         currentView.set('login');
         throw new Error('Unauthorized');
     }
 
     if (!response.ok) {
+        // Handle server errors that indicate downtime
+        if (response.status >= 502 || response.status === 500) {
+            console.warn(`Server Error ${response.status}: ${endpoint}`);
+            // Don't mark as disconnected for one 500, but maybe for 502/503/504
+            if (response.status !== 500) {
+                setConnectionState(false, `Server unreachable (${response.status})`);
+            }
+        }
+
         const text = await response.text();
+        let json;
+        try {
+            json = JSON.parse(text);
+        } catch (e) {
+            // Text is not JSON
+        }
+
+        if (json && (json.error || json.message)) {
+            throw new Error(json.error || json.message);
+        }
+
+        // If text is HTML (common in 404/500 from proxies), don't show it all
+        if (text && text.trim().startsWith('<')) {
+            throw new Error(`Server Error (${response.status})`);
+        }
         throw new Error(text || `HTTP ${response.status}`);
     }
 
-    return response.json();
+    if (response.status === 204) {
+        return null;
+    }
+
+    const contentType = response.headers.get("content-type");
+    if (contentType && contentType.includes("application/json")) {
+        return response.json();
+    }
+
+    return response.text();
 }
 
 export const api = {
@@ -294,6 +377,32 @@ export const api = {
     _ws: null as WebSocket | null,
     _pollInterval: null as ReturnType<typeof setInterval> | null,
     _lastTopologyJson: '' as string,
+
+    // Generic Helpers
+    async get(endpoint: string) {
+        return apiRequest(endpoint);
+    },
+
+    async post(endpoint: string, data: any) {
+        return apiRequest(endpoint, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    },
+
+    async put(endpoint: string, data: any) {
+        return apiRequest(endpoint, {
+            method: 'PUT',
+            body: JSON.stringify(data),
+        });
+    },
+
+    async delete(endpoint: string) {
+        return apiRequest(endpoint, {
+            method: 'DELETE',
+        });
+    },
+
 
     // ========================================
     // Brand
@@ -486,7 +595,10 @@ export const api = {
             identities.set(identitiesData || []);
             groups.set(groupsData || []);
         } catch (e) {
-            console.error('Failed to load dashboard', e);
+            // Only log if we think we are connected or if it's a new error
+            if (get(isConnected)) {
+                console.error('Failed to load dashboard', e);
+            }
         } finally {
             loading.set(false);
         }
@@ -549,6 +661,10 @@ export const api = {
 
     async getInterfaces() {
         return apiRequest('/interfaces');
+    },
+
+    async getAvailableInterfaces() {
+        return apiRequest('/interfaces/available');
     },
 
     async updateInterface(data: any) {
@@ -1110,6 +1226,36 @@ export const api = {
     },
 
     // ========================================
+    // Scanner
+    // ========================================
+
+    async startScanNetwork(cidr: string, timeoutSeconds?: number) {
+        return apiRequest('/scanner/network', {
+            method: 'POST',
+            body: JSON.stringify({ cidr, timeout_seconds: timeoutSeconds }),
+        });
+    },
+
+    async scanHost(ip: string) {
+        return apiRequest('/scanner/host', {
+            method: 'POST',
+            body: JSON.stringify({ ip }),
+        });
+    },
+
+    async getScannerStatus() {
+        return apiRequest('/scanner/status');
+    },
+
+    async getScannerResult() {
+        return apiRequest('/scanner/result');
+    },
+
+    async getScannerPorts() {
+        return apiRequest('/scanner/ports');
+    },
+
+    // ========================================
     // DNS
     // ========================================
 
@@ -1173,8 +1319,9 @@ export const consoleModules = [
     // System
     { id: 'logs', label: 'Logs', category: 'System', icon: 'ScrollText' },
     { id: 'alerts', label: 'Alerts', category: 'System', icon: 'Bell' },
+    { id: 'groups', label: 'Device Groups', category: 'System', icon: 'Users' },
     { id: 'scanner', label: 'Scanner', category: 'System', icon: 'Search' },
-    { id: 'users', label: 'Users', category: 'System', icon: 'Users' },
+    { id: 'users', label: 'Users', category: 'System', icon: 'UserCog' },
     { id: 'settings', label: 'Settings', category: 'System', icon: 'Slider' },
     { id: 'backups', label: 'Backups', category: 'System', icon: 'Save' },
 ];

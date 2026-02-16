@@ -1,239 +1,243 @@
-/**
- * Flows Store - Connection/Flow tracking for Observatory
- *
- * Fetches from /api/flows and supports WebSocket updates via 'flows' topic
- */
-
-import { writable, get } from "svelte/store";
-import { subscribe as wsSubscribe, unsubscribe as wsUnsubscribe } from "./websocket";
-
-// ============================================================================
-// Types
-// ============================================================================
+import { writable, derived, get } from 'svelte/store';
+import { containerIPMap } from './runtime';
 
 export interface Flow {
     id: string;
-    protocol: string;
     src_ip: string;
     src_port: number;
-    dst_ip: string;
-    dst_port: number;
-    src_zone?: string;
-    dst_zone?: string;
-    src_hostname?: string;
-    dst_hostname?: string;
-    bytes_sent?: number;
-    bytes_recv?: number;
-    packets_sent?: number;
-    packets_recv?: number;
-    state?: string;
-    age_seconds?: number;
-    mark?: number;
+    dest_ip: string;
+    dest_port: number;
+    protocol: string;
+    bytes: number;
+    packets: number;
+    // Calculated fields
+    bps: number;
+    pps: number;
+    timestamp: number;
+    // Smoothing state (internal)
+    _ewma_bps?: number;
+    _ewma_pps?: number;
+    // Identity context
+    container_id?: string;
+    process_name?: string;
 }
 
-export interface FlowsState {
-    flows: Flow[];
-    loading: boolean;
-    error: string | null;
-    lastUpdate: Date | null;
+export interface Snapshot {
+    timestamp: number;
+    flows: Map<string, Flow>;
+    total_bps: number;
+    total_pps: number;
 }
 
-// ============================================================================
-// Store
-// ============================================================================
+// Configuration
+const HISTORY_SECONDS = 300; // 5 minutes
+const SNAPSHOT_INTERVAL = 1000; // 1 second (approx match to update rate)
 
-const initialState: FlowsState = {
-    flows: [],
-    loading: false,
-    error: null,
-    lastUpdate: null,
-};
+// Internal Live Store
+const _liveFlows = writable<Map<string, Flow>>(new Map());
 
-function createFlowsStore() {
-    const { subscribe, set, update } = writable<FlowsState>(initialState);
-
-    let pollInterval: ReturnType<typeof setInterval> | null = null;
+// DVR Store
+function createDVRStore() {
+    const { subscribe, set, update } = writable({
+        isLive: true,
+        seekTime: 0, // Timestamp
+        history: [] as Snapshot[], // Ring buffer
+    });
 
     return {
         subscribe,
 
-        /**
-         * Fetch flows from API
-         */
-        async fetch() {
-            update((s) => ({ ...s, loading: true, error: null }));
+        // Add a new snapshot from the live feed
+        pushSnapshot: (flowsMap: Map<string, Flow>) => {
+            const now = Date.now();
+            let total_bps = 0;
+            let total_pps = 0;
 
-            try {
-                const response = await fetch("/api/flows", {
-                    credentials: "include",
-                });
+            // Calculate aggregates
+            for (const f of flowsMap.values()) {
+                total_bps += f.bps;
+                total_pps += f.pps;
+            }
 
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
+            update(state => {
+                const newHistory = [...state.history, {
+                    timestamp: now,
+                    flows: new Map(flowsMap), // Clone map to freeze state
+                    total_bps,
+                    total_pps
+                }];
+
+                // Prune old history
+                const cutoff = now - (HISTORY_SECONDS * 1000);
+                while (newHistory.length > 0 && newHistory[0].timestamp < cutoff) {
+                    newHistory.shift();
                 }
 
-                const data = await response.json();
-                const flows = Array.isArray(data) ? data : data.flows || [];
-
-                update((s) => ({
-                    ...s,
-                    flows,
-                    loading: false,
-                    lastUpdate: new Date(),
-                }));
-
-                return flows;
-            } catch (e) {
-                const error = e instanceof Error ? e.message : "Failed to fetch flows";
-                update((s) => ({ ...s, loading: false, error }));
-                throw e;
-            }
+                return {
+                    ...state,
+                    history: newHistory,
+                    // Auto-advance seekTime if we were live?
+                    // No, seekTime is only relevant if !isLive.
+                };
+            });
         },
 
-        /**
-         * Kill a flow (temporary 5-minute block)
-         */
-        async kill(flowId: string) {
+        seek: (timestamp: number) => {
+            update(s => ({ ...s, isLive: false, seekTime: timestamp }));
+        },
+
+        goLive: () => {
+            update(s => ({ ...s, isLive: true }));
+        },
+
+        fetchHistory: async () => {
             try {
-                const response = await fetch(`/api/flows?id=${flowId}`, {
-                    method: "DELETE",
-                    credentials: "include",
-                });
+                const res = await fetch('/api/discovery/history');
+                const data = await res.json();
 
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-
-                // Remove from local state
-                update((s) => ({
-                    ...s,
-                    flows: s.flows.filter((f) => f.id !== flowId),
+                // Convert arrays back to Maps
+                const snapshots: Snapshot[] = data.map((d: any) => ({
+                    timestamp: d.timestamp,
+                    flows: new Map(d.flows.map((f: any) => [f.id, f])),
+                    total_bps: d.total_bps,
+                    total_pps: d.total_pps
                 }));
 
-                return true;
-            } catch (e) {
-                console.error("Failed to kill flow:", e);
-                throw e;
-            }
-        },
-
-        /**
-         * Block a flow permanently (adds to policy)
-         */
-        async block(flow: Flow) {
-            // TODO: Implement via /api/flows/deny or add policy rule
-            try {
-                const response = await fetch("/api/flows/deny", {
-                    method: "POST",
-                    credentials: "include",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        src_ip: flow.src_ip,
-                        dst_ip: flow.dst_ip,
-                        dst_port: flow.dst_port,
-                        protocol: flow.protocol,
-                    }),
+                update(s => {
+                    // Merge history (prepend fetched history to existing)
+                    // In a real implementation we'd handle overlaps more carefully
+                    const merged = [...snapshots, ...s.history].sort((a, b) => a.timestamp - b.timestamp);
+                    return { ...s, history: merged };
                 });
-
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-
-                // Remove from local state
-                update((s) => ({
-                    ...s,
-                    flows: s.flows.filter((f) => f.id !== flow.id),
-                }));
-
-                return true;
             } catch (e) {
-                console.error("Failed to block flow:", e);
-                throw e;
+                console.error("Failed to fetch DVR history", e);
             }
-        },
-
-        /**
-         * Start polling for flow updates
-         */
-        startPolling(intervalMs = 2000) {
-            this.stopPolling();
-            this.fetch(); // Initial fetch
-            pollInterval = setInterval(() => this.fetch(), intervalMs);
-
-            // Also subscribe to WebSocket flows topic
-            wsSubscribe(["flows"]);
-        },
-
-        /**
-         * Stop polling
-         */
-        stopPolling() {
-            if (pollInterval) {
-                clearInterval(pollInterval);
-                pollInterval = null;
-            }
-            wsUnsubscribe(["flows"]);
-        },
-
-        /**
-         * Update from WebSocket message
-         */
-        updateFromWS(data: Flow[]) {
-            update((s) => ({
-                ...s,
-                flows: data,
-                lastUpdate: new Date(),
-            }));
-        },
-
-        /**
-         * Reset store
-         */
-        reset() {
-            this.stopPolling();
-            set(initialState);
-        },
+        }
     };
 }
 
-export const flowsStore = createFlowsStore();
+export const dvr = createDVRStore();
 
-// Listen for WebSocket flow updates
-if (typeof window !== "undefined") {
-    window.addEventListener("ws-flows", ((e: CustomEvent) => {
-        flowsStore.updateFromWS(e.detail);
-    }) as EventListener);
-}
+// The Main Exported Store (polymorphic: Live or DVR)
+export const flows = derived(
+    [_liveFlows, dvr],
+    ([$live, $dvr]) => {
+        if ($dvr.isLive) {
+            return $live;
+        } else {
+            // Find closest snapshot
+            const snap = $dvr.history.find(s => Math.abs(s.timestamp - $dvr.seekTime) < 1500)
+                || $dvr.history[$dvr.history.length - 1]; // fallback to latest
+            return snap ? snap.flows : new Map<string, Flow>();
+        }
+    }
+);
 
-// ============================================================================
-// Helpers
-// ============================================================================
+// Actions Controller
+export const flowActions = {
+    handleUpdate: (rawFlows: any[]) => {
+        // Access current container map synchronously
+        const ipMap = get(containerIPMap);
 
-/**
- * Format bytes to human readable
- */
-export function formatBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
+        _liveFlows.update(current => {
+            const next = new Map<string, Flow>();
+            const now = Date.now();
 
-/**
- * Format seconds to human readable age
- */
-export function formatAge(seconds: number): string {
-    if (seconds < 60) return `${seconds}s`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-    return `${Math.floor(seconds / 86400)}d`;
-}
+            rawFlows.forEach((f: any) => {
+                const prev = current.get(f.id);
+                let bps = 0;
+                let pps = 0;
+                let ewmaBps = 0;
+                let ewmaPps = 0;
 
-/**
- * Calculate rate from bytes over time
- */
-export function formatRate(bytes: number, seconds: number): string {
-    if (seconds <= 0) return "0 B/s";
-    const rate = bytes / seconds;
-    return formatBytes(rate) + "/s";
+                if (prev) {
+                    const timeDelta = Math.max((now - prev.timestamp) / 1000, 0.001);
+                    const deltaBytes = f.bytes - prev.bytes;
+                    const deltaPkts = f.packets - prev.packets;
+
+                    if (deltaBytes >= 0) {
+                        const instantBps = deltaBytes / timeDelta;
+                        const instantPps = deltaPkts / timeDelta;
+
+                        const alpha = 0.3;
+                        ewmaBps = (instantBps * alpha) + ((prev._ewma_bps || instantBps) * (1 - alpha));
+                        ewmaPps = (instantPps * alpha) + ((prev._ewma_pps || instantPps) * (1 - alpha));
+
+                        bps = Math.round(ewmaBps);
+                        pps = Math.round(ewmaPps);
+                    } else {
+                        ewmaBps = 0;
+                        ewmaPps = 0;
+                    }
+                }
+
+                // Identity Context Resolution
+                const containerName = ipMap[f.src_ip];
+
+                next.set(f.id, {
+                    ...f,
+                    timestamp: now,
+                    bps,
+                    pps,
+                    _ewma_bps: ewmaBps,
+                    _ewma_pps: ewmaPps,
+                    process_name: containerName, // Enriched Identity
+                    container_id: containerName ? 'container' : undefined // Sentinel flag
+                });
+            });
+
+            // Push to DVR
+            dvr.pushSnapshot(next);
+
+            return next;
+        });
+    },
+
+    kill: async (id: string) => {
+        // Optimistic update (only affects live view really)
+        _liveFlows.update(s => {
+            const next = new Map(s);
+            next.delete(id);
+            return next;
+        });
+
+        try {
+            await fetch(`/api/conntrack/${id}`, { method: 'DELETE' });
+        } catch (e) {
+            console.error("Failed to kill flow", e);
+        }
+    },
+
+    block: async (ip: string) => {
+        try {
+            await fetch('/api/policy/block-temporary', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ip, duration: '5m' })
+            });
+            // Optional: Notification or toast here
+        } catch (e) {
+            console.error("Failed to block IP", e);
+        }
+    }
+};
+
+// Derived store for Top Talkers
+export const topTalkers = derived(flows, ($flows) => {
+    return Array.from($flows.values())
+        .sort((a, b) => b.bps - a.bps)
+        .slice(0, 50);
+});
+
+// Helper for formatting bytes
+export function formatBytes(bytes: number, decimals = 2) {
+    if (!+bytes) return '0 B';
+
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }

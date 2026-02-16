@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 import (
@@ -48,7 +50,7 @@ func TestZoneResolver_MatchBlocks(t *testing.T) {
 	zones := []Zone{
 		{
 			Name: "dmz",
-			Matches: []ZoneMatch{
+			Matches: []RuleMatch{
 				{Interface: "eth2"},
 				{Interface: "eth3"},
 			},
@@ -74,7 +76,7 @@ func TestZoneResolver_AdditiveInheritance(t *testing.T) {
 		{
 			Name: "guest",
 			Src:  "192.168.10.0/24", // Global src
-			Matches: []ZoneMatch{
+			Matches: []RuleMatch{
 				{Interface: "eth1"},
 				{Interface: "wlan0"},
 			},
@@ -96,17 +98,20 @@ func TestZoneResolver_AdditiveInheritance(t *testing.T) {
 	}
 }
 
-func TestZoneResolver_DeprecatedInterfaces(t *testing.T) {
+func TestZoneResolver_MultipleMatches(t *testing.T) {
 	zones := []Zone{
 		{
-			Name:       "lan",
-			Interfaces: []string{"eth1", "eth2"}, // Deprecated format
+			Name: "lan",
+			Matches: []RuleMatch{
+				{Interface: "eth1"},
+				{Interface: "eth2"},
+			},
 		},
 	}
 
 	resolver := NewZoneResolver(zones)
 
-	// Should still resolve correctly
+	// Should resolve correctly
 	if zone := resolver.ResolveInterface("eth1"); zone != "lan" {
 		t.Errorf("ResolveInterface(eth1) = %q, want %q", zone, "lan")
 	}
@@ -170,7 +175,7 @@ func TestZoneResolver_NFTMatch_MultipleInterfaces(t *testing.T) {
 	zones := []Zone{
 		{
 			Name: "dmz",
-			Matches: []ZoneMatch{
+			Matches: []RuleMatch{
 				{Interface: "eth2"},
 				{Interface: "eth3"},
 			},
@@ -190,7 +195,7 @@ func TestZoneResolver_GetZoneInterfaces(t *testing.T) {
 	zones := []Zone{
 		{
 			Name: "dmz",
-			Matches: []ZoneMatch{
+			Matches: []RuleMatch{
 				{Interface: "eth2"},
 				{Interface: "eth3"},
 			},

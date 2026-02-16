@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package imports
 
 import (
@@ -94,10 +96,16 @@ func (r *ImportResult) ToConfig(mappings map[string]string) *config.Config {
 
 	// Create Zones
 	for zoneName, ifaces := range zoneInterfaces {
+		// Build Matches from interface list
+		var matches []config.RuleMatch
+		for _, ifaceName := range ifaces {
+			matches = append(matches, config.RuleMatch{Interface: ifaceName})
+		}
+
 		zone := config.Zone{
-			Name:       zoneName,
-			Interfaces: ifaces,
-			Action:     "drop", // Default safe
+			Name:    zoneName,
+			Matches: matches,
+			Action:  "drop", // Default safe
 			Services: &config.ZoneServices{
 				DHCP: true, // Default allow basic services
 				DNS:  true,

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 
 package cmd
@@ -9,7 +11,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"grimm.is/flywall/internal/brand"
+	"grimm.is/flywall/internal/install"
 )
 
 // setupChroot prepares a chroot jail
@@ -22,7 +24,7 @@ func setupChroot(jailPath string) error {
 	// 2. Setup Persistence: Bind mount state dir
 	// This ensures that when the app writes to state files (auth.json, certs) inside the jail,
 	// it goes to the real directory.
-	authDir := brand.GetStateDir()
+	authDir := install.GetStateDir()
 	jailAuthDir := filepath.Join(jailPath, authDir)
 
 	if err := os.MkdirAll(jailAuthDir, 0755); err != nil {
@@ -59,7 +61,7 @@ func setupChroot(jailPath string) error {
 	}
 
 	// 4. Setup Runtime Directory: Bind mount /var/run for control socket
-	runDir := "/var/run"
+	runDir := install.GetRunDir()
 	jailRunDir := filepath.Join(jailPath, runDir)
 	if err := os.MkdirAll(jailRunDir, 0755); err != nil {
 		return fmt.Errorf("failed to create jail run dir: %w", err)
@@ -69,6 +71,16 @@ func setupChroot(jailPath string) error {
 	// We bind mount /var/run so we can access flywall-ctl.sock
 	if err := syscall.Mount(runDir, jailRunDir, "", syscall.MS_BIND, ""); err != nil {
 		return fmt.Errorf("failed to bind mount run dir: %w", err)
+	}
+
+	// 5. Setup Temporary Directory: Create /tmp inside jail
+	jailTmpDir := filepath.Join(jailPath, "tmp")
+	if err := os.MkdirAll(jailTmpDir, 0755); err != nil {
+		return fmt.Errorf("failed to create jail tmp dir: %w", err)
+	}
+	// Ensure it's 1777 (world writable + sticky bit)
+	if err := os.Chmod(jailTmpDir, 01777); err != nil {
+		return fmt.Errorf("failed to chmod jail tmp dir: %w", err)
 	}
 
 	return nil

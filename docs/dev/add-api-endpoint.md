@@ -126,7 +126,7 @@ source "$(dirname "$0")/../common.sh"
         -H "Authorization: Bearer $API_KEY" \
         -H "Content-Type: application/json" \
         -d '{"name": "test", "config": "value"}'
-    
+
     assert_success
     assert_output --partial '"success":true'
 }
@@ -136,8 +136,8 @@ source "$(dirname "$0")/../common.sh"
 
 ```bash
 # Build
-make build-go
+fw build native
 
 # Run specific test
-make test-int FILTER=myfeature
+fw test int --filter myfeature
 ```

@@ -10,12 +10,12 @@ Integration tests run in a QEMU VM with a real Linux kernel.
 
 Run all integration tests in the VM:
 ```bash
-make test-int
+fw test int
 ```
 
 Run specific tests (e.g., firewall policy tests):
 ```bash
-make test-int FILTER=firewall
+fw test int --filter firewall
 ```
 
 ## Test Organization
@@ -114,14 +114,14 @@ api_post "/path" '{"json":true}'   # POST with auth
 ### 1. Run with Verbose Output
 
 ```bash
-VERBOSE=1 make test-int FILTER=api_auth
+fw test int --filter api_auth -v
 ```
 
 ### 2. Keep VM Running
 
 ```bash
 # Start VM manually
-make vm-start
+fw vm start
 
 # SSH into VM
 ssh -p 2222 root@localhost

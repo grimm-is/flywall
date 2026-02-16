@@ -1,6 +1,6 @@
-# Features
+# Flywall Features
 
-Feature maturity based on integration test coverage.
+Feature maturity levels based on integration test coverage.
 
 | Level | Meaning |
 |:-----:|---------|
@@ -13,95 +13,100 @@ Feature maturity based on integration test coverage.
 
 ---
 
-## Core
+## Core Networking
 
-| Feature | Level | Notes |
-|---------|:-----:|-------|
-| Zone-based Firewall | ✅ | Policies, stateful tracking |
-| nftables Generation | 🟩 | Atomic apply via script |
-| Interface Management | 🟩 | Static IP, DHCP client |
-| VLAN / Bonding | 🟩 | Tested |
-| Routing (static) | 🟩 | IPv4/IPv6 |
-| Policy Routing | 🟩 | fwmark-based |
-| NAT (masquerade, DNAT) | 🟩 | Hairpin NAT works |
-| HCL Config | ✅ | Validation, migration, hot reload |
+| Feature | Level | Notes | Docs |
+|---------|:-----:|-------|------|
+| Zone-based Firewall | ✅ | Policies, stateful tracking, nftables | [Guide](https://docs.flywall.dev/docs/guides/firewall-policies/) |
+| nftables Generation | 🟩 | Atomic apply with rollback | |
+| Interface Management | 🟩 | Static IP, DHCP client | |
+| VLAN / Bonding | 🟩 | Full support via netlink | |
+| Static Routing | 🟩 | IPv4/IPv6 routes | |
+| Policy Routing | 🟩 | fwmark-based routing tables | |
+| NAT & Port Forwarding | 🟩 | Masquerade, DNAT, hairpin NAT | [Guide](https://docs.flywall.dev/docs/guides/nat-port-forwarding/) |
+| HCL Configuration | ✅ | Validation, migration, hot reload | [Reference](https://docs.flywall.dev/docs/configuration/) |
 
-## Services
+## Network Services
 
-| Feature | Level | Notes |
-|---------|:-----:|-------|
-| DHCP Server | 🟩 | Leases, persistence, options |
-| DNS Forwarder | 🟩 | Caching, blocklists (file/URL) |
-| DNS Egress Control | 🟩 | "DNS Wall" - blocks non-resolved IPs |
-| Split-Horizon DNS | 🟩 | |
-| Wake-on-LAN | 🟩 | |
-| mDNS Reflector | 🟩 | Cross-VLAN Bonjour |
-| UPnP/NAT-PMP | 🟩 | Port forwarding |
-| Router Advertisements | 🟩 | IPv6 SLAAC |
-| LLDP Discovery | 🟩 | Switch detection |
-| Threat Intel | 🟩 | Blocklist fetching |
-| DNSSEC / DoH / DoT | 🔲 | Config only |
+| Feature | Level | Notes | Docs |
+|---------|:-----:|-------|------|
+| DHCP Server | 🟩 | Leases, persistence, static reservations | [Guide](https://docs.flywall.dev/docs/guides/dhcp-dns/) |
+| DNS Resolver | 🟩 | Caching, blocklists, split-horizon | [Guide](https://docs.flywall.dev/docs/guides/dhcp-dns/) |
+| DNS Egress Control | 🟩 | "DNS Wall" - blocks non-resolved IPs | |
+| DNS over HTTPS/TLS | 🟩 | DoH, DoT, DNSSEC validation | |
+| Wake-on-LAN | 🟩 | Magic packet sending | |
+| mDNS Reflector | 🟩 | Cross-VLAN Bonjour/Avahi | |
+| UPnP/NAT-PMP | 🟩 | Automatic port forwarding | |
+| Router Advertisements | 🟩 | IPv6 SLAAC | |
+| LLDP Discovery | 🟩 | Switch/device detection | |
+| Threat Intel Integration | 🟩 | FireHOL, URLhaus blocklists | |
 
 ## Security
 
-| Feature | Level | Notes |
-|---------|:-----:|-------|
-| Privilege Separation | ✅ | ctl(root) / api(nobody) |
-| Sandbox (netns) | 🟩 | API in isolated namespace |
-| Integrity Monitor | 🟩 | Auto-restore on tampering |
-| Smart Flush | 🟩 | Dynamic sets persist |
-| Fail2Ban-style Blocking | 🟩 | |
-| IPSet Blocklists | 🟩 | FireHOL integration |
-| SYN Flood Protection | 🟩 | |
-| Time-of-Day Rules | 🟩 | Kernel 5.4+ |
-| GeoIP Filtering | 🔲 | Config only |
+| Feature | Level | Notes | Docs |
+|---------|:-----:|-------|------|
+| Privilege Separation | ✅ | ctl(root) / api(unprivileged) | [Architecture](https://docs.flywall.dev/docs/reference/architecture/) |
+| Network Namespace Sandbox | 🟩 | API runs in isolated netns | |
+| Integrity Monitor | 🟩 | Auto-restore on nftables tampering | |
+| Smart Flush | 🟩 | Dynamic sets persist across reloads | |
+| Fail2Ban-style Blocking | 🟩 | Automatic brute-force protection | |
+| IPSet Blocklists | 🟩 | URL-fetched threat lists | |
+| SYN Flood Protection | 🟩 | Rate limiting, SYN cookies | |
+| Time-of-Day Rules | 🟩 | Schedule-based policies (kernel 5.4+) | |
+| GeoIP Filtering | 🔲 | Config only, runtime planned | |
 
 ## VPN
 
-| Feature | Level | Notes |
-|---------|:-----:|-------|
-| WireGuard | 🟩 | Native via netlink/wgctrl |
-| Tailscale | 🟩 | Status/control via socket |
-| VPN Lockout Protection | 🟩 | |
+| Feature | Level | Notes | Docs |
+|---------|:-----:|-------|------|
+| WireGuard | 🟩 | Native via netlink/wgctrl | [Guide](https://docs.flywall.dev/docs/guides/wireguard/) |
+| Tailscale Integration | 🟩 | Status/control via socket | |
+| VPN Lockout Protection | 🟩 | Prevents config-breaking changes | |
 
-## API & UI
+## API & User Interface
 
-| Feature | Level | Notes |
-|---------|:-----:|-------|
-| REST API | 🟩 | Full CRUD |
-| WebSocket Events | 🟩 | Real-time updates |
-| OpenAPI Docs | 🟩 | |
-| Web Dashboard | 🟨 | Most pages functional |
-| TLS / Auth | 🟩 | API keys, sessions |
+| Feature | Level | Notes | Docs |
+|---------|:-----:|-------|------|
+| REST API | 🟩 | Full CRUD for all resources | [Reference](https://docs.flywall.dev/docs/reference/api/) |
+| WebSocket Events | 🟩 | Real-time updates | |
+| OpenAPI / Swagger | 🟩 | Interactive API docs | |
+| Web Dashboard | 🟨 | Most pages functional | [Guide](https://docs.flywall.dev/docs/guides/web-ui/) |
+| TLS / Authentication | 🟩 | API keys, session cookies | |
 
 ## Operations
 
-| Feature | Level | Notes |
-|---------|:-----:|-------|
-| Hot Reload | 🟩 | SIGHUP or API |
-| Atomic Apply | 🟩 | Rollback on failure |
-| Seamless Upgrade | 🟩 | Socket handoff |
-| Prometheus Metrics | 🟩 | |
-| Syslog Forwarding | 🟩 | |
-| HA Replication | 🟧 | DB sync only, no VIP/VRRP |
+| Feature | Level | Notes | Docs |
+|---------|:-----:|-------|------|
+| Hot Reload | 🟩 | SIGHUP or API call | |
+| Atomic Apply | 🟩 | Rollback on failure | |
+| Seamless Upgrade | 🟩 | Socket handoff, zero downtime | [Guide](https://docs.flywall.dev/docs/getting-started/upgrading/) |
+| Prometheus Metrics | 🟩 | /metrics endpoint | |
+| Syslog Forwarding | 🟩 | Remote logging | |
+| Multi-WAN Failover | 🟨 | Health checks, failover | [Guide](https://docs.flywall.dev/docs/guides/multi-wan-failover/) |
+| HA Replication | 🟨 | DB sync + custom failover | |
 
 ## Learning Engine
 
 | Feature | Level | Notes |
 |---------|:-----:|-------|
-| Flow Tracking | 🟩 | nflog-based |
-| SNI Snooping | 🟩 | |
-| Pending Rule Approval | 🟩 | |
-| Device Discovery | 🟩 | DHCP + ARP |
+| Flow Tracking | 🟩 | nflog-based connection logging |
+| SNI Snooping | 🟩 | HTTPS destination identification |
+| Pending Rule Approval | 🟩 | Review before allowing new flows |
+| Device Discovery | 🟩 | DHCP + ARP fingerprinting |
 
 ---
 
 ## Summary
 
-| Level | Count |
-|:-----:|:-----:|
-| ✅ L5 | 3 |
-| 🟩 L4 | 45 |
-| 🟨 L3 | 5 |
-| 🟧 L2 | 1 |
-| 🔲 L1 | 3 |
+| Level | Count | Description |
+|:-----:|:-----:|-------------|
+| ✅ L5 | 3 | Production-ready |
+| 🟩 L4 | 38 | Integration tested |
+| 🟨 L3 | 4 | Functional, limited tests |
+| 🔲 L1 | 1 | Config only |
+
+**Total Features**: 46
+
+---
+
+📖 **Full Documentation**: [docs.flywall.dev](https://docs.flywall.dev)

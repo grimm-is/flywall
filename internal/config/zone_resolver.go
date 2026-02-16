@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 import (
@@ -24,6 +26,16 @@ type EffectiveMatch struct {
 	Src       string
 	Dst       string
 	VLAN      int
+
+	// Advanced fields
+	Protocol     string
+	Mac          string
+	DSCP         string
+	Mark         string
+	TOS          int
+	InterfaceOut string
+	PhysIn       string
+	PhysOut      string
 }
 
 // IsInterfaceWildcard checks if an interface name has a wildcard suffix (+ or *)
@@ -51,7 +63,6 @@ func InterfaceToNFT(iface string) string {
 // GetEffectiveMatches returns all effective matches for a zone.
 // This merges global zone criteria with per-match overrides.
 // If no explicit matches are defined, uses top-level zone criteria as a single match.
-// If deprecated 'interfaces' is used, converts to interface matches.
 func (r *ZoneResolver) GetEffectiveMatches(zoneName string) []EffectiveMatch {
 	zone := r.findZone(zoneName)
 	if zone == nil {
@@ -64,11 +75,19 @@ func (r *ZoneResolver) GetEffectiveMatches(zoneName string) []EffectiveMatch {
 		for _, m := range zone.Matches {
 			iface := orDefault(m.Interface, zone.Interface)
 			matches = append(matches, EffectiveMatch{
-				Interface: InterfaceToNFT(iface),
-				IsPrefix:  IsInterfaceWildcard(iface),
-				Src:       orDefault(m.Src, zone.Src),
-				Dst:       orDefault(m.Dst, zone.Dst),
-				VLAN:      orDefaultInt(m.VLAN, zone.VLAN),
+				Interface:    InterfaceToNFT(iface),
+				IsPrefix:     IsInterfaceWildcard(iface),
+				Src:          orDefault(m.Src, zone.Src),
+				Dst:          orDefault(m.Dst, zone.Dst),
+				VLAN:         orDefaultInt(m.VLAN, zone.VLAN),
+				Protocol:     m.Protocol,
+				Mac:          m.Mac,
+				DSCP:         m.DSCP,
+				Mark:         m.Mark,
+				TOS:          m.TOS,
+				InterfaceOut: m.InterfaceOut,
+				PhysIn:       m.PhysIn,
+				PhysOut:      m.PhysOut,
 			})
 		}
 		return matches
@@ -85,22 +104,7 @@ func (r *ZoneResolver) GetEffectiveMatches(zoneName string) []EffectiveMatch {
 		}}
 	}
 
-	// Case 3: Deprecated 'interfaces' field - convert to matches
-	if len(zone.Interfaces) > 0 {
-		var matches []EffectiveMatch
-		for _, iface := range zone.Interfaces {
-			matches = append(matches, EffectiveMatch{
-				Interface: InterfaceToNFT(iface),
-				IsPrefix:  IsInterfaceWildcard(iface),
-				Src:       zone.Src,
-				Dst:       zone.Dst,
-				VLAN:      zone.VLAN,
-			})
-		}
-		return matches
-	}
-
-	// Case 4: Networks/IPSets only (legacy)
+	// Case 3: Networks/IPSets only (legacy)
 	if len(zone.Networks) > 0 {
 		return []EffectiveMatch{{Src: strings.Join(zone.Networks, ",")}}
 	}
@@ -146,6 +150,8 @@ func (r *ZoneResolver) GetZoneInterfaces(zoneName string) []string {
 
 // ToNFTMatch converts an EffectiveMatch to nftables match expressions.
 // Returns a slice of match clauses that should be ANDed together.
+
+// ToNFTRuleMatch converts an EffectiveMatch to nftables match expressions for a rule (more comprehensive than zone).
 func (r *ZoneResolver) ToNFTMatch(m EffectiveMatch, direction string) []string {
 	var clauses []string
 
@@ -156,6 +162,16 @@ func (r *ZoneResolver) ToNFTMatch(m EffectiveMatch, direction string) []string {
 		} else {
 			clauses = append(clauses, fmt.Sprintf(`oifname "%s"`, m.Interface))
 		}
+	}
+
+	if m.InterfaceOut != "" {
+		clauses = append(clauses, fmt.Sprintf(`oifname "%s"`, m.InterfaceOut))
+	}
+	if m.PhysIn != "" {
+		clauses = append(clauses, fmt.Sprintf(`meta iifname "%s"`, m.PhysIn))
+	}
+	if m.PhysOut != "" {
+		clauses = append(clauses, fmt.Sprintf(`meta oifname "%s"`, m.PhysOut))
 	}
 
 	// Source IP/network match
@@ -171,6 +187,23 @@ func (r *ZoneResolver) ToNFTMatch(m EffectiveMatch, direction string) []string {
 	// VLAN match
 	if m.VLAN > 0 {
 		clauses = append(clauses, fmt.Sprintf(`vlan id %d`, m.VLAN))
+	}
+
+	// Advanced Matches
+	if m.Protocol != "" {
+		clauses = append(clauses, fmt.Sprintf(`ip protocol %s`, m.Protocol))
+	}
+	if m.Mac != "" {
+		clauses = append(clauses, fmt.Sprintf(`ether saddr %s`, m.Mac))
+	}
+	if m.DSCP != "" {
+		clauses = append(clauses, fmt.Sprintf(`ip dscp %s`, m.DSCP))
+	}
+	if m.Mark != "" {
+		clauses = append(clauses, fmt.Sprintf(`meta mark %s`, m.Mark))
+	}
+	if m.TOS > 0 {
+		clauses = append(clauses, fmt.Sprintf(`ip tos %d`, m.TOS))
 	}
 
 	return clauses

@@ -1,56 +1,96 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package firewall
 
 import (
 	"fmt"
-	"grimm.is/flywall/internal/clock"
 	"os"
 	"os/exec"
 	"strings"
 )
 
-// AtomicIPSetUpdate performs an atomic update of an nftables set.
-// It creates a new set, populates it, then atomically swaps it with the old one.
+// AtomicIPSetUpdate performs an atomic update of an nftables set using differential update.
+// It calculates the difference between current and desired state, then applies
+// additions and deletions in a single atomic transaction.
+// This avoids the race condition of 'flush set' which can leave the set empty briefly.
 func (m *IPSetManager) AtomicIPSetUpdate(setName string, setType SetType, elements []string) error {
-	tempSetName := fmt.Sprintf("%s_new_%d", setName, clock.Now().UnixNano())
+	// 1. Get current elements
+	current, err := m.GetSetElements(setName)
+	if err != nil {
+		// If set doesn't exist, create it first
+		if strings.Contains(err.Error(), "No such file") || strings.Contains(err.Error(), "does not exist") {
+			if err := m.CreateSet(setName, setType, "interval"); err != nil {
+				return fmt.Errorf("failed to create set %s: %w", setName, err)
+			}
+			current = []string{}
+		} else {
+			return fmt.Errorf("failed to get current elements for %s: %w", setName, err)
+		}
+	}
 
-	// Build atomic script
+	// 2. Compute Diff
+	// Map for O(1) lookup
+	desiredMap := make(map[string]bool)
+	for _, e := range elements {
+		desiredMap[e] = true
+	}
+
+	currentMap := make(map[string]bool)
+	for _, e := range current {
+		currentMap[e] = true
+	}
+
+	var toAdd []string
+	var toDelete []string
+
+	for _, e := range elements {
+		if !currentMap[e] {
+			toAdd = append(toAdd, e)
+		}
+	}
+
+	for _, e := range current {
+		if !desiredMap[e] {
+			toDelete = append(toDelete, e)
+		}
+	}
+
+	// If no changes, return early
+	if len(toAdd) == 0 && len(toDelete) == 0 {
+		return nil
+	}
+
+	// 3. Build Script
 	var script strings.Builder
 
-	// Create temporary set with same type
-	script.WriteString(fmt.Sprintf("add set inet %s %s { type %s; flags interval; }\n",
-		m.tableName, tempSetName, setType))
-
-	// Add elements to temp set in batches
+	// Deletions first (to free up space if limits exist)
 	batchSize := 500
-	for i := 0; i < len(elements); i += batchSize {
-		end := i + batchSize
-		if end > len(elements) {
-			end = len(elements)
+	if len(toDelete) > 0 {
+		for i := 0; i < len(toDelete); i += batchSize {
+			end := i + batchSize
+			if end > len(toDelete) {
+				end = len(toDelete)
+			}
+			batch := toDelete[i:end]
+			script.WriteString(fmt.Sprintf("delete element inet %s %s { %s }\n",
+				m.tableName, setName, strings.Join(batch, ", ")))
 		}
-		batch := elements[i:end]
-		script.WriteString(fmt.Sprintf("add element inet %s %s { %s }\n",
-			m.tableName, tempSetName, strings.Join(batch, ", ")))
 	}
 
-	// Flush old set
-	script.WriteString(fmt.Sprintf("flush set inet %s %s\n", m.tableName, setName))
-
-	// Copy elements from temp to real set
-	// Note: nftables doesn't have a direct swap, so we flush and re-add
-	for i := 0; i < len(elements); i += batchSize {
-		end := i + batchSize
-		if end > len(elements) {
-			end = len(elements)
+	// Additions
+	if len(toAdd) > 0 {
+		for i := 0; i < len(toAdd); i += batchSize {
+			end := i + batchSize
+			if end > len(toAdd) {
+				end = len(toAdd)
+			}
+			batch := toAdd[i:end]
+			script.WriteString(fmt.Sprintf("add element inet %s %s { %s }\n",
+				m.tableName, setName, strings.Join(batch, ", ")))
 		}
-		batch := elements[i:end]
-		script.WriteString(fmt.Sprintf("add element inet %s %s { %s }\n",
-			m.tableName, setName, strings.Join(batch, ", ")))
 	}
 
-	// Delete temp set
-	script.WriteString(fmt.Sprintf("delete set inet %s %s\n", m.tableName, tempSetName))
-
-	// Execute atomically
+	// 4. Execute Atomically
 	return m.runNftScript([]string{script.String()})
 }
 

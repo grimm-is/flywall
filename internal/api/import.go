@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -14,8 +16,6 @@ import (
 	"grimm.is/flywall/internal/clock"
 
 	imports "grimm.is/flywall/internal/import"
-
-	"grimm.is/flywall/internal/brand"
 
 	"github.com/google/uuid"
 )
@@ -49,15 +49,60 @@ func (s *Server) handleImportUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Save to temp file in state dir (to ensure permissions)
-	tempDir := filepath.Join(brand.GetStateDir(), "imports")
-	if err := os.MkdirAll(tempDir, 0700); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create temp dir: %v", err), http.StatusInternalServerError)
+	// Validate file extension
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	allowedExtensions := map[string]bool{".xml": true, ".rsc": true}
+	if !allowedExtensions[ext] {
+		http.Error(w, "Unsupported file type. Only .xml and .rsc files are allowed.", http.StatusBadRequest)
 		return
 	}
 
-	// Save to temp file securely
-	// Use os.CreateTemp to generate a random filename
+	// Validate file size again to ensure it's within limits
+	if header.Size > 10<<20 { // 10MB
+		http.Error(w, "File too large. Maximum size is 10MB.", http.StatusBadRequest)
+		return
+	}
+
+	// Read first few bytes for basic content validation
+	buffer := make([]byte, 512)
+	_, err = file.Read(buffer)
+	if err != nil && err != io.EOF {
+		http.Error(w, "Failed to read file", http.StatusInternalServerError)
+		return
+	}
+
+	// Reset file pointer
+	file.Seek(0, 0)
+
+	// Basic content validation based on file type
+	contentStr := strings.ToLower(string(buffer))
+	switch ext {
+	case ".xml":
+		// Check if it looks like XML
+		if !strings.Contains(contentStr, "<?xml") && !strings.Contains(contentStr, "<pfsense") {
+			http.Error(w, "File does not appear to be a valid pfSense XML configuration", http.StatusBadRequest)
+			return
+		}
+	case ".rsc":
+		// MikroTik scripts should start with comments or commands
+		// Check for common MikroTik command patterns
+		commonPatterns := []string{"#", "/ip", "/interface", "/firewall", "/routing", "/queue", "/tool"}
+		hasValidPattern := false
+		for _, pattern := range commonPatterns {
+			if strings.Contains(contentStr, pattern) {
+				hasValidPattern = true
+				break
+			}
+		}
+		if !hasValidPattern {
+			http.Error(w, "File does not appear to be a valid MikroTik script", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Save to temp file in /tmp (guaranteed writable inside chroot jail)
+	tempDir := "/tmp"
+
 	// Pattern: "import_<timestamp>_<filename>" but made safe
 	// We use just the base filename to avoid directory traversal issues in the pattern
 	dst, err := os.CreateTemp(tempDir, fmt.Sprintf("import_%d_*_%s", clock.Now().Unix(), filepath.Base(header.Filename)))
@@ -78,7 +123,7 @@ func (s *Server) handleImportUpload(w http.ResponseWriter, r *http.Request) {
 	var result *imports.ImportResult
 	var fileType string
 
-	ext := strings.ToLower(filepath.Ext(header.Filename))
+	ext = strings.ToLower(filepath.Ext(header.Filename))
 	switch ext {
 	case ".xml":
 		fileType = "pfsense"

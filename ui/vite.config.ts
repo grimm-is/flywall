@@ -9,7 +9,7 @@ export default defineConfig(({ mode }) => {
 		server: {
 			proxy: {
 				'/api': {
-					target: env.API_URL || 'http://localhost:8080',
+					target: env.API_URL || 'http://localhost:8081',
 					changeOrigin: true,
 					secure: false,
 					ws: true,
@@ -19,13 +19,13 @@ export default defineConfig(({ mode }) => {
 						});
 						proxy.on('proxyReq', (proxyReq, req, _res) => {
 							// Rewrite Origin header to match target for backend checks
-							const target = env.API_URL || 'http://localhost:8080';
+							const target = env.API_URL || 'http://localhost:8081';
 							const origin = new URL(target).origin;
 							proxyReq.setHeader('Origin', origin);
 						});
 						proxy.on('proxyReqWs', (proxyReq, req, socket, options, head) => {
 							// Rewrite Origin header for WebSockets too
-							const target = env.API_URL || 'http://localhost:8080';
+							const target = env.API_URL || 'http://localhost:8081';
 							const origin = new URL(target).origin;
 							proxyReq.setHeader('Origin', origin);
 						});
@@ -35,4 +35,3 @@ export default defineConfig(({ mode }) => {
 		}
 	};
 });
-

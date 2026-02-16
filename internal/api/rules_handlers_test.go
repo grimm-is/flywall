@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -369,5 +371,106 @@ func TestHandleGetRules_WithDeviceLookup(t *testing.T) {
 	}
 	if rule.ResolvedSrc.Type != "device_named" {
 		t.Errorf("Expected type 'device_named', got '%s'", rule.ResolvedSrc.Type)
+	}
+}
+
+func TestHandleGetRules_ImplicitRules(t *testing.T) {
+	server := &Server{
+		Config: &config.Config{
+			Zones: []config.Zone{
+				{
+					Name: "lan",
+					Management: &config.ZoneManagement{
+						SSH: true,
+						Web: true,
+					},
+					Services: &config.ZoneServices{
+						DHCP: true,
+						DNS:  true,
+					},
+				},
+			},
+			Policies: []config.Policy{},
+		},
+	}
+	handler := NewRulesHandler(server, nil, nil)
+
+	req := httptest.NewRequest("GET", "/api/rules", nil)
+	w := httptest.NewRecorder()
+
+	handler.HandleGetRules(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d", w.Code)
+	}
+
+	var response []PolicyWithStats
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	// Should have 2 virtual policies: "Implicit Rules (lan)" and "Flywall Output to lan"
+	if len(response) != 2 {
+		t.Fatalf("Expected 2 virtual policies, got %d", len(response))
+	}
+
+	var pol PolicyWithStats
+	found := false
+	for _, p := range response {
+		if p.From == "lan" && p.To == "Firewall (Self)" {
+			pol = p
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Fatal("Expected policy lan->Firewall (Self) not found")
+	}
+
+	if pol.Origin != "implicit_zone_config" {
+		t.Errorf("Expected origin 'implicit_zone_config', got '%s'", pol.Origin)
+	}
+
+	// Should have 4 rules: SSH, Web, DHCP, DNS
+	if len(pol.Rules) != 4 {
+		t.Errorf("Expected 4 implicit rules, got %d", len(pol.Rules))
+	}
+
+	// Verify rule content
+	hasSSH := false
+	hasWeb := false
+	hasDHCP := false
+	hasDNS := false
+
+	for _, r := range pol.Rules {
+		if r.Service == "ssh" {
+			hasSSH = true
+		}
+		if r.Name == "Allow Web UI" { // Name logic from synthesizeImplicitRules
+			hasWeb = true
+		}
+		if r.Service == "dhcp" {
+			hasDHCP = true
+		}
+		if r.Service == "dns" {
+			hasDNS = true
+		}
+		if r.Origin != "implicit_zone_config" {
+			t.Errorf("Rule %s missing correct origin", r.Name)
+		}
+	}
+
+	if !hasSSH {
+		t.Error("Missing implicit SSH rule")
+	}
+	if !hasWeb {
+		t.Error("Missing implicit Web rule")
+	}
+	if !hasDHCP {
+		t.Error("Missing implicit DHCP rule")
+	}
+	if !hasDNS {
+		t.Error("Missing implicit DNS rule")
 	}
 }

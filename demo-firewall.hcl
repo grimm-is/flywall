@@ -2,12 +2,18 @@
 # Basic setup for demonstration purposes
 
 ip_forwarding = true
+state_dir = "/var/lib/flywall-demo"
+
 
 # API Configuration (Disable Sandbox for Demo)
 api {
   enabled = true
   disable_sandbox = true
   listen = "0.0.0.0:8080"
+  tsnet {
+    enabled = true
+    hostname = "flywall-demo"
+  }
 }
 
 # Interface configuration

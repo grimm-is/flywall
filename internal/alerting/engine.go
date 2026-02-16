@@ -1,9 +1,16 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package alerting
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"net/smtp"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +26,7 @@ type Engine struct {
 	maxHistory int
 	eventChan  chan AlertEvent
 	stopChan   chan struct{}
+	httpClient *http.Client
 }
 
 // NewEngine creates a new Alerting Engine.
@@ -30,6 +38,9 @@ func NewEngine() *Engine {
 		maxHistory: 1000,
 		eventChan:  make(chan AlertEvent, 100),
 		stopChan:   make(chan struct{}),
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
 	}
 }
 
@@ -132,9 +143,88 @@ func (e *Engine) notify(rule *AlertRule, event AlertEvent) {
 }
 
 func (e *Engine) sendToChannel(ch config.NotificationChannel, event AlertEvent) {
-	// TODO: Implement actual notification sending (webhook, email, etc.)
-	fmt.Printf("[NOTIFY] Sending alert to %s (%s): %s\n", ch.Name, ch.Type, event.Message)
+	switch ch.Type {
+	case "webhook", "slack", "discord", "ntfy":
+		e.sendWebhook(ch, event)
+	case "email":
+		e.sendEmail(ch, event)
+	default:
+		log.Printf("[ALERT] Unsupported channel type: %s", ch.Type)
+	}
 }
+
+func (e *Engine) sendWebhook(ch config.NotificationChannel, event AlertEvent) {
+	url := ch.WebhookURL
+	if ch.Type == "ntfy" && ch.Server != "" && ch.Topic != "" {
+		url = fmt.Sprintf("%s/%s", ch.Server, ch.Topic)
+	}
+
+	if url == "" {
+		log.Printf("[ALERT] Webhook URL missing for channel %s", ch.Name)
+		return
+	}
+
+	var payload interface{}
+	switch ch.Type {
+	case "slack":
+		payload = map[string]string{"text": fmt.Sprintf("*%s*: %s", event.Severity, event.Message)}
+	case "discord":
+		payload = map[string]string{"content": fmt.Sprintf("**%s**: %s", event.Severity, event.Message)}
+	default: // generic webhook or ntfy
+		payload = event
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[ALERT] Failed to marshal webhook payload: %v", err)
+		return
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	if err != nil {
+		log.Printf("[ALERT] Failed to create webhook request: %v", err)
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range ch.Headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		log.Printf("[ALERT] Webhook delivery failed for %s: %v", ch.Name, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Printf("[ALERT] Webhook returned non-success status for %s: %d", ch.Name, resp.StatusCode)
+	}
+}
+
+func (e *Engine) sendEmail(ch config.NotificationChannel, event AlertEvent) {
+	if ch.SMTPHost == "" || len(ch.To) == 0 {
+		log.Printf("[ALERT] SMTP configuration missing for channel %s", ch.Name)
+		return
+	}
+
+	auth := smtp.PlainAuth("", ch.SMTPUser, string(ch.SMTPPassword), ch.SMTPHost)
+	addr := fmt.Sprintf("%s:%d", ch.SMTPHost, ch.SMTPPort)
+
+	subject := fmt.Sprintf("Flywall Alert: %s", event.RuleName)
+	body := fmt.Sprintf("Severity: %s\nMessage: %s\nTime: %s\n",
+		event.Severity, event.Message, event.Timestamp.Format(time.RFC3339))
+
+	msg := []byte(fmt.Sprintf("To: %s\r\nSubject: %s\r\n\r\n%s",
+		strings.Join(ch.To, ","), subject, body))
+
+	err := smtp.SendMail(addr, auth, ch.From, ch.To, msg)
+	if err != nil {
+		log.Printf("[ALERT] Email delivery failed for %s: %v", ch.Name, err)
+	}
+}
+
 
 // Trigger triggers a manual alert event.
 func (e *Engine) Trigger(event AlertEvent) {

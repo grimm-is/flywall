@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
@@ -15,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"grimm.is/flywall/internal/install"
 
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/ctlplane"
@@ -46,48 +50,16 @@ func RunUpgrade(newBinaryPath, configPath string) {
 	}
 	defer client.Close()
 
-	// Security: Copy binary to hardcoded secure path
-	// This ensures we only execute binaries we intended to place there
-	securePath := filepath.Join("/usr/sbin", brand.BinaryName+"_new")
-	logger.Info("Staging new binary...", "path", securePath)
+	// Initialize upgrade strategy
+	strategy := upgrade.NewInPlaceStrategy()
 
-	srcFile, err := os.Open(newBinaryPath)
+	// Stage the binary (copy to secure location)
+	securePath, err := strategy.Stage(context.Background(), newBinaryPath)
 	if err != nil {
-		logger.Error("Failed to open source binary", "error", err)
+		logger.Error("Failed to stage binary", "error", err)
 		os.Exit(1)
 	}
-	defer srcFile.Close()
-
-	// Open destination with executable permissions
-	// Check if source and destination are the same
-	srcAbs, _ := filepath.Abs(newBinaryPath)
-	dstAbs, _ := filepath.Abs(securePath)
-	if srcAbs == dstAbs {
-		logger.Info("Source binary is already in staging location, skipping copy")
-
-		// Just ensure permissions are correct
-		if err := os.Chmod(securePath, 0755); err != nil {
-			logger.Error("Failed to set executable permissions", "path", securePath, "error", err)
-			os.Exit(1)
-		}
-	} else {
-		dstFile, err := os.OpenFile(securePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
-		if err != nil {
-			logger.Error("Failed to open staging path (do you have root permissions?)", "path", securePath, "error", err)
-			os.Exit(1)
-		}
-
-		if _, err := io.Copy(dstFile, srcFile); err != nil {
-			dstFile.Close() // Close on error
-			logger.Error("Failed to copy binary", "error", err)
-			os.Exit(1)
-		}
-		// Explicitly close after copy to flush write buffers
-		if err := dstFile.Close(); err != nil {
-			logger.Error("Failed to close staged binary", "error", err)
-			os.Exit(1)
-		}
-	}
+	logger.Info("Binary staged successfully", "path", securePath)
 
 	// Calculate checksum of the binary we just copied
 	// We re-open the file at securePath to ensure we hash exactly what the server will see
@@ -131,7 +103,7 @@ func RunUpgradeStandby(configPath string, uiAssets embed.FS) {
 
 	// Manage PID file with Watchdog (Self-Healing)
 	// Key component for upgrade stability: ensures identity is preserved
-	runDir := brand.GetRunDir()
+	runDir := install.GetRunDir()
 	pidFile := filepath.Join(runDir, brand.LowerName+".pid")
 
 	writePID := func() error {
@@ -228,34 +200,13 @@ func RunUpgradeStandby(configPath string, uiAssets embed.FS) {
 	}
 
 	// Finalization: Rename binary BEFORE calling RunCtl
-	// spawnAPI uses os.Executable() to find the binary to run
-	// We want it to find /usr/sbin/flywall, not /usr/sbin/flywall_new
-	executable, err := os.Executable()
-	if err != nil {
-		logger.Error("Failed to get executable path", "error", err)
-		os.Exit(1)
-	}
-
-	// Calculate target path using brand name
-	targetPath := filepath.Join(filepath.Dir(executable), brand.BinaryName)
-
-	if targetPath != executable {
-		logger.Info("Finalizing upgrade: renaming binary", "source", executable, "target", targetPath)
-
-		// Remove old binary first (handles ETXTBSY if old process still has it mapped)
-		if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
-			logger.Warn("Failed to remove old binary (may still be in use)", "error", err)
-		}
-
-		// Rename new binary to target
-		if err := os.Rename(executable, targetPath); err != nil {
-			logger.Error("Failed to rename binary", "error", err)
-			// Continue anyway - API will work but with wrong path in logs
-		} else {
-			logger.Info("Binary renamed successfully")
-		}
+	// This ensures restart/crash loops use the correct (new) binary.
+	strategy := upgrade.NewInPlaceStrategy()
+	if err := strategy.Finalize(context.Background()); err != nil {
+		logger.Error("Failed to finalize upgrade (rename failed)", "error", err)
+		// We continue anyway; running as flywall_new is acceptable but not ideal.
 	} else {
-		logger.Info("Binary rename skipped (already correct path)", "path", targetPath)
+		logger.Info("Upgrade finalized: binary renamed to standard name")
 	}
 
 	// Debug: Log listener count
@@ -263,7 +214,7 @@ func RunUpgradeStandby(configPath string, uiAssets embed.FS) {
 
 	// Call RunCtl with injected listeners
 	// This unifies the code path, ensuring full functionality (Network Manager, Watchdog, etc.)
-	if err := RunCtl(configPath, false, "", false, listeners); err != nil {
+	if err := RunCtl(configPath, false, "", "", "", "", false, listeners); err != nil {
 		logger.Error("Control plane failed", "error", err)
 		os.Exit(1)
 	}

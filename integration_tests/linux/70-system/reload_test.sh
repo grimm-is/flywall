@@ -2,7 +2,7 @@
 # Scripts/test/reload_test.sh
 # Verifies 'flywall reload' functionality
 
-TEST_TIMEOUT=30
+TEST_TIMEOUT=60
 set -e
 set -x
 
@@ -10,8 +10,9 @@ set -x
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/../common.sh"
 FLYWALL="$APP_BIN"
-PID_FILE="/var/run/flywall.pid"
-LOG_FILE="/var/log/flywall/flywall.log"
+PID_FILE="$RUN_DIR/flywall.pid"
+# Log file will be set by start_ctl
+LOG_FILE=""
 
 echo "TAP version 13"
 echo "1..4"
@@ -20,7 +21,7 @@ echo "1..4"
 rm -f $PID_FILE $LOG_FILE
 
 # 1. Start daemon
-CONFIG_FILE="/tmp/reload_config.hcl"
+CONFIG_FILE=$(mktemp_compatible "reload_config.hcl")
 cat > "$CONFIG_FILE" <<EOF
 schema_version = "1.0"
 ip_forwarding = false
@@ -32,10 +33,12 @@ interface "lo" {
 EOF
 
 echo "# Starting daemon..."
-$FLYWALL start --config "$CONFIG_FILE"
-dilated_sleep 2
+export FLYWALL_LOG_FILE="$LOG_FILE"
+export FLYWALL_LOG_LEVEL="debug"
+export FLYWALL_SKIP_API=1
+start_ctl "$CONFIG_FILE"
 
-if [ -f "$PID_FILE" ]; then
+if [ -n "$CTL_PID" ]; then
     echo "ok 1 - Daemon started"
 else
     echo "not ok 1 - Daemon failed to start"
@@ -59,7 +62,9 @@ EOF
 
 # 3. Reload
 echo "# Running reload command..."
-# Must specify config file because reload defaults to /etc/flywall/flywall.hcl
+# Wait a moment to ensure daemon is fully ready
+sleep 2
+# Must specify config file because reload defaults to /opt/flywall/etc/flywall.hcl
 # but we started daemon with a custom config
 if $FLYWALL reload "$CONFIG_FILE"; then
     echo "ok 2 - Reload command succeeded"
@@ -68,14 +73,30 @@ else
     exit 1
 fi
 
-dilated_sleep 2
+# 4. Check logs with retry (use CTL_LOG set by start_ctl)
+ACTUAL_LOG="$CTL_LOG"
 
-# 4. Check logs
-if grep -q "Received SIGHUP, reloading configuration" "$LOG_FILE"; then
+diag "checking logs at $ACTUAL_LOG"
+reload_logged=""
+for retry in 1 2 3 4 5 6 7 8 9 10; do
+    if [ -f "$ACTUAL_LOG" ] && grep -q "Received SIGHUP, reloading configuration" "$ACTUAL_LOG"; then
+        reload_logged="yes"
+        diag "Found reload message on attempt $retry"
+        break
+    fi
+    diag "Retry $retry: waiting for reload message..."
+    sleep 1
+done
+
+if [ "$reload_logged" = "yes" ]; then
     echo "ok 3 - Daemon received SIGHUP and reloaded"
 else
-    echo "not ok 3 - Daemon did not log reload"
-    tail -n 20 "$LOG_FILE" | sed 's/^/# /'
+    echo "not ok 3 - Daemon did not log reload in $ACTUAL_LOG"
+    if [ -f "$ACTUAL_LOG" ]; then
+        tail -n 20 "$ACTUAL_LOG" | sed 's/^/# /'
+    else
+        echo "# Log file not found"
+    fi
 fi
 
 # 5. Stop

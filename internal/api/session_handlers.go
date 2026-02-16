@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -68,7 +70,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set session cookie
-		auth.SetSessionCookie(w, r, sess)
+	auth.SetSessionCookie(w, r, sess)
 
 	// Get user for response
 	user, _ := s.authStore.GetUser(creds.Username)

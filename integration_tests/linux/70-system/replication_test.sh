@@ -37,7 +37,7 @@ cleanup() {
     ip netns del ns_repl 2>/dev/null
     ip netns del ns_cli 2>/dev/null
     rm -rf $PRIM_DIR $REPL_DIR
-    rm -f /tmp/primary.hcl /tmp/replica.hcl
+    rm -f /tmp/primary_$$.hcl /tmp/replica_$$.hcl
 }
 trap cleanup EXIT
 
@@ -77,7 +77,7 @@ ip netns exec ns_cli ip link set v-cli up
 
 # Configs
 # Primary: Serves DHCP on v-sys (LAN). Replicates on v-prim (Sync).
-cat > /tmp/primary.hcl <<EOF
+cat > /tmp/primary_$$.hcl <<EOF
 interface "lo" {
     ipv4 = ["127.0.0.1/8"]
 }
@@ -110,7 +110,7 @@ policy "sync" "Firewall" {
 }
 api {
     enabled = true
-    listen = "192.168.1.1:8080"
+    listen = "192.168.1.1:$TEST_API_PORT"
 }
 dhcp {
     enabled = true
@@ -129,7 +129,7 @@ state_dir = "/tmp/flywall_prim/state"
 EOF
 
 # Replica: Connects to Primary.
-cat > /tmp/replica.hcl <<EOF
+cat > /tmp/replica_$$.hcl <<EOF
 interface "lo" {
     ipv4 = ["127.0.0.1/8"]
 }
@@ -148,7 +148,7 @@ policy "sync" "Firewall" {
 }
 api {
     enabled = true
-    listen = "192.168.1.2:8080"
+    listen = "192.168.1.2:$TEST_API_PORT"
 }
 # Replica config matches Primary for logic, but normally wouldn't serve DHCP if active-passive?
 # For now, enabled=true but interface v-sys doesn't exist on Replica so it won't bind DHCP there.
@@ -174,7 +174,7 @@ EOF
 # Start Primary
 diag "Starting Primary..."
 export FLYWALL_CTL_SOCKET="$PRIM_DIR/ctl.sock"
-ip netns exec ns_prim $APP_BIN ctl --state-dir $PRIM_DIR/state /tmp/primary.hcl > $PRIM_DIR/log 2>&1 &
+ip netns exec ns_prim $APP_BIN ctl --state-dir $PRIM_DIR/state /tmp/primary_$$.hcl > $PRIM_DIR/log 2>&1 &
 PID_PRIM=$!
 echo $PID_PRIM > $PRIM_DIR/pid
 dilated_sleep 2
@@ -238,7 +238,7 @@ wait_for_log() {
 # Start Replica
 diag "Starting Replica..."
 export FLYWALL_CTL_SOCKET="$REPL_DIR/ctl.sock"
-ip netns exec ns_repl $APP_BIN ctl --state-dir $REPL_DIR/state /tmp/replica.hcl > $REPL_DIR/log 2>&1 &
+ip netns exec ns_repl $APP_BIN ctl --state-dir $REPL_DIR/state /tmp/replica_$$.hcl > $REPL_DIR/log 2>&1 &
 PID_REPL=$!
 echo $PID_REPL > $REPL_DIR/pid
 
@@ -253,16 +253,16 @@ ok 0 "Replica received sync data"
 kill $PID_REPL
 wait $PID_REPL 2>/dev/null
 diag "Restarting Replica..."
-ip netns exec ns_repl $APP_BIN ctl --state-dir $REPL_DIR/state /tmp/replica.hcl > $REPL_DIR/log2 2>&1 &
+ip netns exec ns_repl $APP_BIN ctl --state-dir $REPL_DIR/state /tmp/replica_$$.hcl > $REPL_DIR/log2 2>&1 &
 PID_REPL2=$!
 echo $PID_REPL2 > $REPL_DIR/pid
 
 # Check loaded leases (Poll)
-wait_for_log "Loaded .* leases from state store" "$REPL_DIR/log2"
+wait_for_log "Loaded leases from state store" "$REPL_DIR/log2"
 ok 0 "Replica loaded state from DB"
 
 # Verify count > 0.
-grep -E "Loaded [1-9][0-9]* leases" $REPL_DIR/log2 >/dev/null 2>&1
+grep -E "count=[1-9][0-9]*" $REPL_DIR/log2 >/dev/null 2>&1
 if [ $? -ne 0 ]; then
     fail "Replica loaded 0 leases (expected >= 1)"
 fi

@@ -17,7 +17,7 @@ require_root
 require_binary
 cleanup_on_exit
 
-plan 6
+plan 3
 
 cleanup() {
     diag "Cleanup..."
@@ -58,7 +58,9 @@ interface "dummy0" {
 }
 
 zone "lan" {
-  interfaces = ["dummy0"]
+  match {
+    interface = "dummy0"
+  }
 }
 EOF
 
@@ -76,15 +78,34 @@ AUTH_HEADER="X-API-Key: gfw_vlantest123"
 
 # 3. Create VLAN via API
 diag "Creating VLAN 100 on dummy0..."
-CREATE_RESPONSE=$(curl -s -X POST "$API_URL/vlans" \
-    -H "Content-Type: application/json" \
-    -H "$AUTH_HEADER" \
-    -d '{"parent_interface":"dummy0","vlan_id":100,"zone":"lan","description":"Test VLAN"}')
+# Retry up to 3 times for RPC initialization
+MAX_RETRIES=3
+for i in $(seq 1 $MAX_RETRIES); do
+    CREATE_RESPONSE=$(curl -s -X POST "$API_URL/vlans" \
+        -H "Content-Type: application/json" \
+        -H "$AUTH_HEADER" \
+        -d '{"parent_interface":"dummy0","vlan_id":100,"zone":"lan","description":"Test VLAN"}')
 
-if echo "$CREATE_RESPONSE" | grep -q '"success":true'; then
-    ok 0 "VLAN created via API"
+    if echo "$CREATE_RESPONSE" | grep -q '"success":true'; then
+        ok 0 "VLAN created via API (Staged)"
+        break
+    else
+        diag "VLAN creation failed (Attempt $i): $CREATE_RESPONSE"
+        if [ $i -eq $MAX_RETRIES ]; then
+             ok 1 "VLAN creation failed after $MAX_RETRIES attempts: $CREATE_RESPONSE"
+        fi
+        dilated_sleep 1
+    fi
+done
+
+# 3b. Apply Config
+diag "Applying configuration..."
+APPLY_RESPONSE=$(curl -s -X POST "$API_URL/config/apply" \
+    -H "$AUTH_HEADER")
+if echo "$APPLY_RESPONSE" | grep -q '"success":true'; then
+    ok 0 "Configuration applied"
 else
-    ok 1 "VLAN creation failed: $CREATE_RESPONSE"
+    ok 1 "Failed to apply configuration: $APPLY_RESPONSE"
 fi
 
 # 4. Verify interface exists
@@ -125,6 +146,16 @@ fi
 diag "Deleting VLAN dummy0.100..."
 DELETE_RESPONSE=$(curl -s -X DELETE "$API_URL/vlans?name=dummy0.100" \
     -H "$AUTH_HEADER")
+
+# 6b. Apply Config (Deletion)
+diag "Applying configuration (delete)..."
+APPLY_DELETE_RESPONSE=$(curl -s -X POST "$API_URL/config/apply" \
+    -H "$AUTH_HEADER")
+if echo "$APPLY_DELETE_RESPONSE" | grep -q '"success":true'; then
+    ok 0 "Configuration applied (delete)"
+else
+    ok 1 "Failed to apply configuration (delete): $APPLY_DELETE_RESPONSE"
+fi
 
 diag "Waiting for VLAN deletion..."
 _deleted=0

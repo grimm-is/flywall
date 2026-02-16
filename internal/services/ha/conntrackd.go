@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 // +build linux
 
@@ -13,7 +15,8 @@ import (
 	"text/template"
 	"time"
 
-	"grimm.is/flywall/internal/brand"
+	"grimm.is/flywall/internal/install"
+
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/logging"
 )
@@ -174,7 +177,7 @@ func (m *ConntrackdManager) GenerateConfig() (string, error) {
 	}
 
 	// Write to runtime directory
-	runDir := filepath.Join(brand.GetRunDir(), "ha")
+	runDir := filepath.Join(install.GetRunDir(), "ha")
 	if err := os.MkdirAll(runDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create run directory: %w", err)
 	}

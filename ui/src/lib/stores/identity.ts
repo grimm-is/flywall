@@ -1,6 +1,6 @@
 /**
  * Identity Derived Store
- * 
+ *
  * Enriches raw identity data with:
  * - Lease information (IP addresses, Hostnames)
  * - Group information (Name, Color)
@@ -64,7 +64,7 @@ export const enrichedIdentities = derived(
                     if (l.ip || l.address) ips.add(l.ip || l.address);
                     if (l.hostname) hostnames.add(l.hostname);
                     if (l.vendor) vendors.add(l.vendor);
-                    // Assume lease existence means recently active? 
+                    // Assume lease existence means recently active?
                     // Or check lease expiration? For simplicity, if in leases list, it's somewhat active.
                     online = true;
                 }

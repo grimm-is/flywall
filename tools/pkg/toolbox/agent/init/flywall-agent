@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+
+name="flywall-agent"
+description="Flywall VM Agent"
+
+command="/usr/sbin/flywall"
+command_args="agent"
+command_background="yes"
+pidfile="/run/flywall-agent.pid"
+error_log="/var/log/flywall-agent.log"
+output_log="/var/log/flywall-agent.log"
+
+depend() {
+	need localmount
+	after network
+}

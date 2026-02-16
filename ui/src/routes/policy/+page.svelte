@@ -6,6 +6,7 @@
     import NAT from "$lib/pages/NAT.svelte";
     import Routing from "$lib/pages/Routing.svelte";
     import QoS from "$lib/pages/QoS.svelte";
+    import IPSets from "$lib/pages/IPSets.svelte";
     import { t } from "svelte-i18n";
 
     // Active tab state
@@ -65,10 +66,7 @@
             </section>
         {:else if activeTab === "objects"}
             <section class="content-section">
-                <div class="empty-state">
-                    <Icon name="category" size={48} />
-                    <p>Objects management coming soon</p>
-                </div>
+                <IPSets />
             </section>
         {/if}
     </div>

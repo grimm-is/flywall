@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package ctlplane
 
 import (
@@ -43,12 +45,36 @@ func (m *MockControlPlaneClient) GetStatus() (*Status, error) {
 	return args.Get(0).(*Status), args.Error(1)
 }
 
+func (m *MockControlPlaneClient) GetMonitors() ([]MonitorResult, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]MonitorResult), args.Error(1)
+}
+
 func (m *MockControlPlaneClient) GetConfig() (*config.Config, error) {
 	args := m.Called()
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*config.Config), args.Error(1)
+}
+
+func (m *MockControlPlaneClient) GetRunningConfig() (*config.Config, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*config.Config), args.Error(1)
+}
+
+func (m *MockControlPlaneClient) GetForgivingResult() (*config.ForgivingLoadResult, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*config.ForgivingLoadResult), args.Error(1)
 }
 
 func (m *MockControlPlaneClient) GetInterfaces() ([]InterfaceStatus, error) {
@@ -68,7 +94,13 @@ func (m *MockControlPlaneClient) GetServices() ([]ServiceStatus, error) {
 }
 
 func (m *MockControlPlaneClient) ApplyConfig(cfg *config.Config) error {
-	return m.Called(cfg).Error(0)
+	args := m.Called(cfg)
+	return args.Error(0)
+}
+
+func (m *MockControlPlaneClient) DiscardConfig() error {
+	args := m.Called()
+	return args.Error(0)
 }
 
 func (m *MockControlPlaneClient) RestartService(serviceName string) error {

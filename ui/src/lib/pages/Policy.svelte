@@ -22,6 +22,8 @@
     Toggle,
   } from "$lib/components";
   import { PolicyEditor } from "$lib/components/policy";
+  import RuleCreateCard from "$lib/components/policy/RuleCreateCard.svelte";
+  import PolicyCreateCard from "$lib/components/policy/PolicyCreateCard.svelte";
   import { t } from "svelte-i18n";
   import {
     SERVICE_GROUPS,
@@ -31,16 +33,15 @@
   import { NetworkInput } from "$lib/components";
   import { getAddressType } from "$lib/utils/validation";
 
-  // View mode: 'classic' or 'clearpath'
-  let viewMode = $state<"classic" | "clearpath">("classic");
-
   let loading = $state(false);
-  let showRuleModal = $state(false);
+  // Renamed from showRuleModal to showEditRuleModal
+  let showEditRuleModal = $state(false);
+  let isAddingRule = $state(false);
   let selectedPolicy = $state<any>(null);
   let editingRuleIndex = $state<number | null>(null);
   let isEditMode = $derived(editingRuleIndex !== null);
 
-  // Rule form
+  // Rule form (used for editing)
   let ruleAction = $state("accept");
   let ruleName = $state("");
   // Protocol selection (array for PillInput)
@@ -50,7 +51,7 @@
   let ruleDest = $state("");
   let selectedService = $state("");
 
-  // Advanced options state
+  // Advanced options state (used for editing)
   let showAdvanced = $state(false);
   let invertSrc = $state(false);
   let invertDest = $state(false);
@@ -97,9 +98,7 @@
   });
 
   // Add Policy modal state
-  let showPolicyModal = $state(false);
-  let policyFrom = $state("");
-  let policyTo = $state("");
+  let isAddingPolicy = $state(false);
 
   const zones = $derived($config?.zones || []);
   const zoneNames = $derived(zones.map((z: any) => z.name));
@@ -174,25 +173,9 @@
     }
   }
 
-  function openAddRule(policy: any) {
+  function openAddRule(policy: any | null) {
+    isAddingRule = true;
     selectedPolicy = policy;
-    editingRuleIndex = null;
-    ruleAction = "accept";
-    ruleName = "";
-    // Reset protocols array (empty = any)
-    protocols = [];
-    ruleDestPort = "";
-    ruleDestPort = "";
-    ruleSrc = "";
-    ruleDest = "";
-    selectedService = "";
-    // Reset advanced options
-    showAdvanced = false;
-    invertSrc = false;
-    invertDest = false;
-    tcpFlagsArray = [];
-    maxConnections = "";
-    showRuleModal = true;
   }
 
   function openEditRule(policy: any, ruleIndex: number) {
@@ -260,7 +243,84 @@
       tcpFlagsArray.length > 0 ||
       maxConnections
     );
-    showRuleModal = true;
+    showEditRuleModal = true;
+  }
+
+  async function handleCreateRule(event: CustomEvent) {
+    const data = event.detail;
+    loading = true;
+    try {
+      const newRule: any = {
+        action: data.action,
+        name: data.name,
+        proto: data.protocols.length > 0 ? data.protocols.join(",") : undefined,
+      };
+
+      if (data.destPort && data.destPort.trim()) {
+        const parts = data.destPort.split(",").map((p: string) => p.trim());
+        const destPorts: number[] = [];
+        for (const part of parts) {
+          if (part.includes("-")) {
+            const [start, end] = part
+              .split("-")
+              .map((n: string) => parseInt(n.trim()));
+            if (!isNaN(start) && !isNaN(end)) {
+              for (let i = start; i <= end; i++) destPorts.push(i);
+            }
+          } else {
+            const port = parseInt(part);
+            if (!isNaN(port)) destPorts.push(port);
+          }
+        }
+        if (destPorts.length === 1) newRule.dest_port = destPorts[0];
+        else if (destPorts.length > 1) newRule.dest_ports = destPorts;
+      }
+
+      const srcType = getAddressType(data.src);
+      if (srcType === "name") newRule.src_ipset = data.src;
+      else if (data.src) newRule.src_ip = [data.src];
+
+      const destType = getAddressType(data.dest);
+      if (destType === "name") newRule.dest_ipset = data.dest;
+      else if (data.dest) newRule.dest_ip = [data.dest];
+
+      if (data.invertSrc) newRule.invert_src = true;
+      if (data.invertDest) newRule.invert_dest = true;
+      if (data.tcpFlags && data.tcpFlags.length > 0)
+        newRule.tcp_flags = data.tcpFlags.join(",");
+      if (data.maxConnections)
+        newRule.max_connections = parseInt(data.maxConnections);
+
+      const from = data.policyFrom;
+      const to = data.policyTo;
+
+      if (!from || !to) {
+        alert("Policy Zone (From/To) is required");
+        loading = false;
+        return;
+      }
+
+      let policyFound = false;
+      const updatedPolicies = policies.map((p: any) => {
+        if (p.from === from && p.to === to) {
+          policyFound = true;
+          return { ...p, rules: [...(p.rules || []), newRule] };
+        }
+        return p;
+      });
+
+      if (!policyFound) {
+        updatedPolicies.push({ from, to, rules: [newRule] });
+      }
+
+      await api.updatePolicies(updatedPolicies);
+      await loadRules();
+      isAddingRule = false;
+    } catch (e) {
+      console.error("Failed to create rule", e);
+    } finally {
+      loading = false;
+    }
   }
 
   async function saveRule() {
@@ -337,7 +397,8 @@
       });
 
       await api.updatePolicies(updatedPolicies);
-      showRuleModal = false;
+      await loadRules();
+      showEditRuleModal = false;
     } catch (e) {
       console.error("Failed to save rule:", e);
     } finally {
@@ -362,6 +423,7 @@
         (p: any) => !(p.from === policy.from && p.to === policy.to),
       );
       await api.updatePolicies(updatedPolicies);
+      await loadRules();
     } catch (e) {
       console.error("Failed to delete policy:", e);
     } finally {
@@ -392,6 +454,7 @@
         return p;
       });
       await api.updatePolicies(updatedPolicies);
+      await loadRules();
     } catch (e) {
       console.error("Failed to delete rule:", e);
     } finally {
@@ -399,35 +462,218 @@
     }
   }
 
-  function openAddPolicy() {
-    policyFrom = zoneNames[0] || "";
-    policyTo = zoneNames[1] || zoneNames[0] || "";
-    showPolicyModal = true;
+  // Load enriched rules from API and synthesize implicit rules
+  let effectiveRules = $state<any[]>([]);
+
+  async function loadRules() {
+    loading = true;
+    try {
+      const data = await api.get("/rules");
+      let apiRules: any[] = [];
+
+      // Flatten the nested PolicyWithStats structure
+      if (Array.isArray(data)) {
+        apiRules = data.flatMap((policy: any) => policy.rules || []);
+      }
+
+      effectiveRules = apiRules;
+    } catch (e) {
+      console.error("Failed to load rules", e);
+      effectiveRules = [];
+    } finally {
+      loading = false;
+    }
   }
 
-  async function savePolicy() {
-    if (!policyFrom || !policyTo) return;
+  // Reload rules when config changes
+  $effect(() => {
+    if ($config) {
+      loadRules();
+    }
+  });
 
-    // Check for duplicate
-    const exists = policies.some(
-      (p: any) => p.from === policyFrom && p.to === policyTo,
+  function handleEditorCreate() {
+    // Open add rule modal with no pre-selected policy (forcing selection)
+    selectedPolicy = null;
+    openAddRule(null);
+  }
+
+  function handleEditorEdit(event: CustomEvent) {
+    const { rule } = event.detail;
+    // Find the policy
+    const policy = policies.find(
+      (p: any) => p.from === rule.policy_from && p.to === rule.policy_to,
     );
-    if (exists) {
-      alert(`Policy ${policyFrom} → ${policyTo} already exists`);
+    if (policy) {
+      // Find rule index
+      const index = policy.rules.findIndex((r: any) => r.name === rule.name); // improved matching needed?
+      if (index !== -1) {
+        openEditRule(policy, index);
+      }
+    }
+  }
+
+  function handleEditorDelete(event: CustomEvent) {
+    const { id } = event.detail; // id is likely the name? In flatRules we set id = name.
+    // We need to find the rule by ID.
+    // But looking at flatRules, we set id = name.
+    // So we search for rule where name === id
+    for (const policy of policies) {
+      const idx = (policy.rules || []).findIndex((r: any) => r.name === id);
+      if (idx !== -1) {
+        deleteRule(policy, idx);
+        return;
+      }
+    }
+  }
+
+  function handleEditorToggle(event: CustomEvent) {
+    const { id, disabled } = event.detail;
+    for (const policy of policies) {
+      const idx = (policy.rules || []).findIndex((r: any) => r.name === id);
+      if (idx !== -1) {
+        // Toggle locally and save
+        // We reuse the update logic but formatted for toggle
+        const rule = policy.rules[idx];
+        const updatedRule = { ...rule, disabled };
+
+        const updatedPolicies = policies.map((p: any) => {
+          if (p === policy) {
+            const newRules = [...p.rules];
+            newRules[idx] = updatedRule;
+            return { ...p, rules: newRules };
+          }
+          return p;
+        });
+
+        api
+          .updatePolicies(updatedPolicies)
+          .then(() => loadRules())
+          .catch((e) => console.error("Toggle failed", e));
+        return;
+      }
+    }
+  }
+
+  function handleEditorDuplicate(event: CustomEvent) {
+    const { rule } = event.detail;
+    const policy = policies.find(
+      (p: any) => p.from === rule.policy_from && p.to === rule.policy_to,
+    );
+    if (policy) {
+      // We can just open the add modal pre-filled with this rule's data
+      selectedPolicy = policy;
+      ruleAction = rule.action;
+      ruleName = `${rule.name} (Copy)`;
+      protocols = rule.proto ? rule.proto.split(",") : [];
+      // ... need to fill all fields similar to openEditRule but treating as new
+      // For simplicity, let's reuse openEditRule then reset editingRuleIndex to null
+      const idx = policy.rules.findIndex((r: any) => r.name === rule.name);
+      if (idx !== -1) {
+        openEditRule(policy, idx);
+        editingRuleIndex = null; // Mark as new mode
+        ruleName = ruleName + " (Copy)"; // Override name
+      }
+    }
+  }
+
+  async function handleEditorPromote(event: CustomEvent) {
+    const { rule } = event.detail;
+    if (
+      !confirm(
+        $t("policy.promote_confirm", {
+          default:
+            "Promote this rule to an explicit policy rule? The Zone setting will be disabled.",
+        }),
+      )
+    ) {
       return;
     }
 
     loading = true;
     try {
-      const newPolicy = {
-        from: policyFrom,
-        to: policyTo,
-        rules: [],
-      };
-      await api.updatePolicies([...policies, newPolicy]);
-      showPolicyModal = false;
+      // 1. Disable the implicit setting in Zone
+      const zoneName = rule.policy_from;
+      const service = rule.service;
+      if (!zoneName || !service) {
+        throw new Error("Cannot promote rule: missing zone or service");
+      }
+
+      const updatedZones = zones.map((z: any) => {
+        if (z.name === zoneName) {
+          // Clone zone
+          const newZone = { ...z };
+
+          // Check Management
+          if (newZone.management && service in newZone.management) {
+            newZone.management = { ...newZone.management, [service]: false };
+          }
+          // Check Services
+          else if (newZone.services && service in newZone.services) {
+            newZone.services = { ...newZone.services, [service]: false };
+          }
+          return newZone;
+        }
+        return z;
+      });
+
+      // 2. Create the explicit rule
+      // We need to add it to the correct policy
+      const policyFrom = rule.policy_from;
+      const policyTo = rule.policy_to || "firewall"; // Implicit rules are usually to firewall?
+      // Wait, rule.policy_to should be set.
+
+      let policyFound = false;
+      let updatedPolicies = policies.map((p: any) => {
+        if (p.from === policyFrom && p.to === policyTo) {
+          policyFound = true;
+          return {
+            ...p,
+            rules: [
+              ...(p.rules || []),
+              {
+                action: rule.action,
+                name: rule.name || `Allow ${service}`,
+                service: service, // Key: Use the macro!
+                description: `Promoted from ${zoneName} zone config`,
+                // Protocol/Ports handled by macro
+                disabled: false,
+                // Clear origin so it's explicit
+              },
+            ],
+          };
+        }
+        return p;
+      });
+
+      if (!policyFound) {
+        // Create new policy
+        updatedPolicies.push({
+          from: policyFrom,
+          to: policyTo,
+          rules: [
+            {
+              action: rule.action,
+              name: rule.name || `Allow ${service}`,
+              service: service,
+              description: `Promoted from ${zoneName} zone config`,
+              disabled: false,
+            },
+          ],
+        });
+      }
+
+      // 3. Save both
+      await Promise.all([
+        api.updateZones(updatedZones),
+        api.updatePolicies(updatedPolicies),
+      ]);
+      await loadRules();
+
+      // Success notification?
     } catch (e) {
-      console.error("Failed to create policy:", e);
+      console.error("Promote failed", e);
+      alert("Failed to promote rule: " + e);
     } finally {
       loading = false;
     }
@@ -436,162 +682,67 @@
 
 <div class="policy-page">
   <div class="page-header">
-    <!-- View Mode Toggle -->
-    <div class="view-toggle">
-      <button
-        class="toggle-btn"
-        class:active={viewMode === "clearpath"}
-        onclick={() => (viewMode = "clearpath")}
-      >
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          class="icon"
-        >
-          <path d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-        ClearPath
-      </button>
-      <button
-        class="toggle-btn"
-        class:active={viewMode === "classic"}
-        onclick={() => (viewMode = "classic")}
-      >
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          class="icon"
-        >
-          <rect x="3" y="3" width="7" height="7" /><rect
-            x="14"
-            y="3"
-            width="7"
-            height="7"
-          />
-          <rect x="3" y="14" width="7" height="7" /><rect
-            x="14"
-            y="14"
-            width="7"
-            height="7"
-          />
-        </svg>
-        Classic
-      </button>
-    </div>
-
-    {#if viewMode === "classic"}
-      <Button onclick={openAddPolicy}
-        >+ {$t("common.add_item", {
-          values: { item: $t("item.policy") },
-        })}</Button
-      >
-    {/if}
+    <h1 class="page-title">{$t("nav.policy")}</h1>
+    <Button onclick={() => (isAddingPolicy = !isAddingPolicy)}
+      >{isAddingPolicy ? "Cancel" : "+ New Policy Group"}</Button
+    >
   </div>
 
-  <!-- ClearPath View: Unified Rule Table -->
-  {#if viewMode === "clearpath"}
-    <div class="clearpath-container">
-      <PolicyEditor title="" showGroupFilter={true} />
-    </div>
-
-    <!-- Classic View: Card-based policies -->
-  {:else if policies.length === 0}
-    <Card>
-      <p class="empty-message">
-        {$t("common.no_items", { values: { items: $t("item.policy") } })}
-      </p>
-    </Card>
-  {:else}
-    <div class="policies-grid">
-      {#each policies as policy (policy.from + "-" + policy.to)}
-        <Card>
-          <div class="policy-card-inner {getStatusClass(policy._status)}">
-            <div class="policy-header">
-              <div class="policy-zones">
-                <Badge variant="outline">{policy.from}</Badge>
-                <span class="policy-arrow">→</span>
-                <Badge variant="outline">{policy.to}</Badge>
-                {#if isPending(policy._status)}
-                  <span class="pending-badge {policy._status}"
-                    >{getStatusBadgeText(policy._status)}</span
-                  >
-                {/if}
-              </div>
-              <div class="policy-actions">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onclick={() => openAddRule(policy)}
-                  >+ {$t("common.add_item", {
-                    values: { item: $t("item.rule") },
-                  })}</Button
-                >
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onclick={() => deletePolicy(policy)}>🗑️</Button
-                >
-              </div>
-            </div>
-
-            <div class="rules-list">
-              {#if policy.rules?.length > 0}
-                {#each policy.rules as rule, ruleIndex (rule.name)}
-                  <div class="rule-item">
-                    <Badge variant={getActionBadge(rule.action)}
-                      >{rule.action}</Badge
-                    >
-                    <span class="rule-name">{rule.name}</span>
-                    {#if rule.protocol}
-                      <span class="rule-detail">{rule.protocol}</span>
-                    {/if}
-                    {#if rule.src_ipset}
-                      <Badge variant="outline"
-                        >src:{rule.src_ipset.replace("tag_", "@")}</Badge
-                      >
-                    {/if}
-                    {#if rule.dest_ipset}
-                      <Badge variant="outline"
-                        >dst:{rule.dest_ipset.replace("tag_", "@")}</Badge
-                      >
-                    {/if}
-                    {#if rule.dest_port}
-                      <span class="rule-detail">:{rule.dest_port}</span>
-                    {/if}
-                    <button
-                      class="rule-edit"
-                      onclick={() => openEditRule(policy, ruleIndex)}
-                      title="Edit rule">✎</button
-                    >
-                    <button
-                      class="rule-delete"
-                      onclick={() => deleteRule(policy, ruleIndex)}
-                      title="Delete rule">×</button
-                    >
-                  </div>
-                {/each}
-              {:else}
-                <p class="no-rules">
-                  {$t("common.no_items", {
-                    values: { items: $t("item.rule") },
-                  })}
-                </p>
-              {/if}
-            </div>
-          </div></Card
-        >
-      {/each}
+  {#if isAddingPolicy}
+    <div class="mb-4">
+      <PolicyCreateCard
+        {loading}
+        {zoneNames}
+        on:save={async (e) => {
+          const { from, to } = e.detail;
+          loading = true;
+          try {
+            const updated = [...policies, { from, to, rules: [] }];
+            await api.updatePolicies(updated);
+            isAddingPolicy = false;
+          } catch (e) {
+            console.error("Failed to create policy", e);
+            alert("Failed to create policy");
+          } finally {
+            loading = false;
+          }
+        }}
+        on:cancel={() => (isAddingPolicy = false)}
+      />
     </div>
   {/if}
+
+  {#if isAddingRule}
+    <div class="mb-4">
+      <RuleCreateCard
+        {loading}
+        {zones}
+        {availableIPSets}
+        on:save={handleCreateRule}
+        on:cancel={() => (isAddingRule = false)}
+      />
+    </div>
+  {/if}
+
+  <div class="clearpath-container">
+    <PolicyEditor
+      title="Consolidated Rules"
+      showGroupFilter={true}
+      rules={effectiveRules}
+      isLoading={loading}
+      on:create={handleEditorCreate}
+      on:edit={handleEditorEdit}
+      on:delete={handleEditorDelete}
+      on:toggle={handleEditorToggle}
+      on:duplicate={handleEditorDuplicate}
+      on:promote={handleEditorPromote}
+    />
+  </div>
 </div>
 
-<!-- Add/Edit Rule Modal -->
+<!-- Add/Edit Rule Modal (Now Edit Only) -->
 <Modal
-  bind:open={showRuleModal}
+  bind:open={showEditRuleModal}
   title={isEditMode
     ? $t("common.edit_item", { values: { item: $t("item.rule") } })
     : $t("common.add_item", { values: { item: $t("item.rule") } })}
@@ -692,51 +843,12 @@
     </details>
 
     <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showRuleModal = false)}
+      <Button variant="ghost" onclick={() => (showEditRuleModal = false)}
         >{$t("common.cancel")}</Button
       >
       <Button onclick={saveRule} disabled={loading || !ruleName}>
         {#if loading}<Spinner size="sm" />{/if}
         {$t("common.save_item", { values: { item: $t("item.rule") } })}
-      </Button>
-    </div>
-  </div>
-</Modal>
-
-<!-- Add Policy Modal -->
-<Modal bind:open={showPolicyModal} title="Add Policy">
-  <div class="form-stack" role="form" aria-label="Add new firewall policy">
-    <Select
-      id="policy-from"
-      label={$t("firewall.from_zone")}
-      bind:value={policyFrom}
-      options={zoneNames.map((n: string) => ({ value: n, label: n }))}
-      required
-    />
-
-    <Select
-      id="policy-to"
-      label={$t("firewall.to_zone")}
-      bind:value={policyTo}
-      options={zoneNames.map((n: string) => ({ value: n, label: n }))}
-      required
-    />
-
-    <p class="form-hint">
-      Traffic from <strong>{policyFrom || "?"}</strong> →
-      <strong>{policyTo || "?"}</strong>
-    </p>
-
-    <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showPolicyModal = false)}
-        >{$t("common.cancel")}</Button
-      >
-      <Button
-        onclick={savePolicy}
-        disabled={loading || !policyFrom || !policyTo}
-      >
-        {#if loading}<Spinner size="sm" />{/if}
-        {$t("common.create_item", { values: { item: $t("item.policy") } })}
       </Button>
     </div>
   </div>
@@ -756,119 +868,19 @@
     justify-content: space-between;
   }
 
-  .view-toggle {
-    display: flex;
-    gap: var(--space-1);
-    background: var(--color-backgroundSecondary);
-    border-radius: var(--radius-md);
-    padding: var(--space-1);
-  }
-
-  .toggle-btn {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-2) var(--space-3);
-    border: none;
-    background: transparent;
-    color: var(--color-muted);
-    font-size: var(--text-sm);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: all var(--transition-fast);
-  }
-
-  .toggle-btn:hover {
+  .page-title {
+    font-size: var(--text-2xl);
+    font-weight: 700;
     color: var(--color-foreground);
-  }
-
-  .toggle-btn.active {
-    background: var(--color-primary);
-    color: white;
-  }
-
-  .toggle-btn .icon {
-    width: 16px;
-    height: 16px;
+    margin: 0;
   }
 
   .clearpath-container {
     flex: 1;
     min-height: 0;
-    background: var(--color-backgroundSecondary);
+    /* background: var(--color-backgroundSecondary); removed to let Editor handle its own background */
     border-radius: var(--radius-lg);
     overflow: hidden;
-  }
-
-  .policies-grid {
-    display: grid;
-    gap: var(--space-4);
-  }
-
-  .policy-card-inner {
-    padding: var(--space-3);
-    border-radius: var(--radius-md);
-    transition:
-      background-color var(--transition-fast),
-      border-color var(--transition-fast);
-  }
-
-  .policy-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding-bottom: var(--space-3);
-    border-bottom: 1px solid var(--color-border);
-    margin-bottom: var(--space-3);
-  }
-
-  .policy-zones {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-  }
-
-  .policy-arrow {
-    color: var(--color-muted);
-    font-weight: 600;
-  }
-
-  .rules-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-
-  .rule-item {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-2);
-    background-color: var(--color-backgroundSecondary);
-    border-radius: var(--radius-md);
-  }
-
-  .rule-name {
-    font-weight: 500;
-    color: var(--color-foreground);
-  }
-
-  .rule-detail {
-    font-size: var(--text-sm);
-    color: var(--color-muted);
-    font-family: var(--font-mono);
-  }
-
-  .no-rules {
-    color: var(--color-muted);
-    font-size: var(--text-sm);
-    margin: 0;
-  }
-
-  .empty-message {
-    color: var(--color-muted);
-    text-align: center;
-    margin: 0;
   }
 
   .form-stack {
@@ -884,52 +896,6 @@
     margin-top: var(--space-4);
     padding-top: var(--space-4);
     border-top: 1px solid var(--color-border);
-  }
-
-  .policy-actions {
-    display: flex;
-    gap: var(--space-1);
-  }
-
-  .rule-delete {
-    margin-left: auto;
-    background: none;
-    border: none;
-    color: var(--color-muted);
-    cursor: pointer;
-    font-size: 1rem;
-    padding: var(--space-1);
-    border-radius: var(--radius-sm);
-    transition:
-      color var(--transition-fast),
-      background-color var(--transition-fast);
-  }
-
-  .rule-delete:hover {
-    color: var(--color-destructive);
-    background-color: var(
-      --color-destructive-foreground,
-      rgba(220, 38, 38, 0.1)
-    );
-  }
-
-  .rule-edit {
-    margin-left: auto;
-    background: none;
-    border: none;
-    color: var(--color-muted);
-    cursor: pointer;
-    font-size: 1rem;
-    padding: var(--space-1);
-    border-radius: var(--radius-sm);
-    transition:
-      color var(--transition-fast),
-      background-color var(--transition-fast);
-  }
-
-  .rule-edit:hover {
-    color: var(--color-primary);
-    background-color: rgba(59, 130, 246, 0.1);
   }
 
   .form-hint {

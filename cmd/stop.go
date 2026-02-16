@@ -1,6 +1,9 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
+	"grimm.is/flywall/internal/install"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +17,7 @@ import (
 
 // RunStop stops the control plane daemon
 func RunStop() error {
-	runDir := brand.GetRunDir()
+	runDir := install.GetRunDir()
 	pidFile := filepath.Join(runDir, brand.LowerName+".pid")
 
 	data, err := os.ReadFile(pidFile)
@@ -44,7 +47,7 @@ func RunStop() error {
 	for i := 0; i < 50; i++ {
 		if _, err := os.Stat(pidFile); os.IsNotExist(err) {
 			// Clear crash state on clean shutdown
-			stateDir := brand.GetStateDir()
+			stateDir := install.GetStateDir()
 			crashFile := filepath.Join(stateDir, health.StateFileName)
 			os.Remove(crashFile) // Ignore error - file may not exist
 

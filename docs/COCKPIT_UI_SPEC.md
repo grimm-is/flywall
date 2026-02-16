@@ -1,7 +1,7 @@
 # **Router Cockpit UI**
 
-Version: 1.10.0 (Host & Container Mode)  
-Target User: Power User / Backend Developer  
+Version: 1.10.0 (Host & Container Mode)
+Target User: Power User / Backend Developer
 Core Philosophy: High Signal, Low Noise. Function is Aesthetic.
 
 ## **0. Data Architecture**
@@ -26,25 +26,25 @@ Core Philosophy: High Signal, Low Noise. Function is Aesthetic.
 
 ### **Client Behavior**
 
-1. **On connect:** Subscribe to relevant topics for current view  
-2. **On navigate:** Unsubscribe from irrelevant topics, subscribe to new ones  
+1. **On connect:** Subscribe to relevant topics for current view
+2. **On navigate:** Unsubscribe from irrelevant topics, subscribe to new ones
 3. **On disconnect:** Reconnect with exponential backoff, fallback to REST polling if WS unavailable
 
 ## **1. Core Principles**
 
 "Don't design for the database schema; design for the mental model."
 
-1. **Entity-Centric:** Users configure a **Zone** which *has* an IP and *has* a DHCP scope—not separate config pages.  
-2. **Obvious Connections:** Relationships between objects (Zones, Rules, NAT) must be visually explicit.  
-3. **Locality of Behavior:** If two things interact (Rule + NAT redirect), they live on the same screen.  
-4. **The "Glass Chassis":** Observability is not a separate app. Live data is everywhere.  
+1. **Entity-Centric:** Users configure a **Zone** which *has* an IP and *has* a DHCP scope—not separate config pages.
+2. **Obvious Connections:** Relationships between objects (Zones, Rules, NAT) must be visually explicit.
+3. **Locality of Behavior:** If two things interact (Rule + NAT redirect), they live on the same screen.
+4. **The "Glass Chassis":** Observability is not a separate app. Live data is everywhere.
 5. **Context Agnostic:** Whether managing a physical router or a container host, the interface adapts to the underlying reality (MACs vs PIDs).
 
 ## **2. Visual Language**
 
 ### **The Vibe: "Modern Terminal"**
 
-* **Aesthetic:** Cyberpunk Dashboard / Fighter Jet HUD  
+* **Aesthetic:** Cyberpunk Dashboard / Fighter Jet HUD
 * **Density:** High. Whitespace is for grouping, not for "airiness."
 
 ### **Color Palette ("Slate & Semantic")**
@@ -81,8 +81,8 @@ Core Philosophy: High Signal, Low Noise. Function is Aesthetic.
 
 ### **Typography**
 
-* **UI/Labels:** Inter or Roboto (Clean Sans-Serif)  
-* **Data/Logs:** JetBrains Mono, Fira Code, or Berkeley Mono  
+* **UI/Labels:** Inter or Roboto (Clean Sans-Serif)
+* **Data/Logs:** JetBrains Mono, Fira Code, or Berkeley Mono
 * **Rule:** If it is dynamic data (IP, MAC, Throughput, ID), it is **always** Monospace.
 
 ## **3. Interaction Model**
@@ -100,18 +100,18 @@ Core Philosophy: High Signal, Low Noise. Function is Aesthetic.
 
 The UI adapts based on the detected runtime mode:
 
-1. **Router Mode (Default):**  
-   * Focus: Physical Ports, WAN/LAN, DHCP Leases.  
-   * Identity: MAC Addresses, Hostnames.  
-2. **Host/Appliance Mode:**  
-   * Focus: Virtual Bridges (br0, docker0), Containers, VMs.  
-   * Identity: Container Names, Process IDs (PIDs), VM Tags.  
+1. **Router Mode (Default):**
+   * Focus: Physical Ports, WAN/LAN, DHCP Leases.
+   * Identity: MAC Addresses, Hostnames.
+2. **Host/Appliance Mode:**
+   * Focus: Virtual Bridges (br0, docker0), Containers, VMs.
+   * Identity: Container Names, Process IDs (PIDs), VM Tags.
    * *Visual Cue:* "Virtual" entities use the **Purple** semantic color.
 
 ### **3.2 Safety Protocols (Commit-Confirm)**
 
 **Staged State Indicator:**
-* Amber dot in header when pending changes exist  
+* Amber dot in header when pending changes exist
 * "Changes pending" badge with count
 
 **Apply Flow:**
@@ -151,7 +151,7 @@ Goal: High-density control panel for non-traffic configuration.
 Goal: "Single Pane of Glass" for network topology (Physical + Virtual).
 
 **Hero Visualization (Host Mode):**
-* Shows **Host** → **Bridge** → **Container/VM**.  
+* Shows **Host** → **Bridge** → **Container/VM**.
 * Virtual entities use a **dashed border** and **purple accent**.
 
 ### **C. The Policy Engine (Unified Flow)**
@@ -159,17 +159,17 @@ Goal: "Single Pane of Glass" for network topology (Physical + Virtual).
 Goal: Unified intent definition.
 
 **Host Mode Selectors:**
-* Source/Dest can be: **IP Address**, **Zone**, **MAC**, or **Container Name**.  
+* Source/Dest can be: **IP Address**, **Zone**, **MAC**, or **Container Name**.
 * The UI auto-resolves "redis-db" to its current IP(s) via the Runtime Linkage.
 
 ### **D. The Pulse (Live Impact Visualization)**
 
 **Backend (Server-Side Collection):**
-* **Go Worker:** Queries nftables counters via github.com/google/nftables.  
+* **Go Worker:** Queries nftables counters via github.com/google/nftables.
 * **Push:** Broadcasts to frontend via WebSocket topic `stats:rules`.
 
 **Frontend (No Polling):**
-* **Heatmap Dimming:** Zero-traffic rules (5min) fade to 50% opacity.  
+* **Heatmap Dimming:** Zero-traffic rules (5min) fade to 50% opacity.
 * **Action Flashes:** Block/Accept counters trigger visual pulses.
 
 ### **E. Observatory (Glass Chassis)**
@@ -177,37 +177,37 @@ Goal: Unified intent definition.
 Goal: Live iftop + DVR Time Travel + Audit.
 
 **Host Mode Enhancement:**
-* Source/Destination columns display **Container Names** or **Process Names** instead of just IPs.  
+* Source/Destination columns display **Container Names** or **Process Names** instead of just IPs.
 * *Implementation:* Backend correlates conntrack entries with Docker/Procfs metadata.
 
 ## **6. Interaction Patterns**
 
 ### **The "Crowdsourced Correction" Loop**
 
-1. User sees device labeled "Generic Android" in Topology.  
-2. User clicks "Edit Identity" and selects "Nvidia Shield".  
-3. User toggles "Share this signature with Community?".  
-4. Backend strips IP/Hostname, bundles OUI, DHCP Options, TTL, Window Size.  
+1. User sees device labeled "Generic Android" in Topology.
+2. User clicks "Edit Identity" and selects "Nvidia Shield".
+3. User toggles "Share this signature with Community?".
+4. Backend strips IP/Hostname, bundles OUI, DHCP Options, TTL, Window Size.
 5. Uploads to `api.flywall.com/v1/fingerprint`.
 
 ### **The "Command Palette" (Cmd+K)**
 
 Must be wired to **everything**:
-* "Edit NTP" → Opens System > Time & NTP  
-* "Block 192.168.1.5" → Opens Policy with pre-filled block rule  
-* "Show Containers" → Opens Topology with Docker zone expanded  
+* "Edit NTP" → Opens System > Time & NTP
+* "Block 192.168.1.5" → Opens Policy with pre-filled block rule
+* "Show Containers" → Opens Topology with Docker zone expanded
 * "Capture WAN" → Starts tcpdump on WAN interface
 
 ## **7. Implementation Roadmap**
 
 ### **Phase 1: Visual Shell** ✅
-* 5-rail Svelte layout  
-* Zone cards with Bento grid  
+* 5-rail Svelte layout
+* Zone cards with Bento grid
 * SearchPalette for Cmd+K
 
 ### **Phase 2: Data Rewiring** ✅
-* Zone Aggregation: Merge config + runtime  
-* Policy Swimlanes: Group by source zone  
+* Zone Aggregation: Merge config + runtime
+* Policy Swimlanes: Group by source zone
 * Flows store with polling
 
 ### **Phase 3: New Backend Capabilities** ⚠️ (Current)
@@ -245,7 +245,7 @@ Must be wired to **everything**:
 
 ### **The Pulse Scalability**
 
-1. Backend pushes **Top 50 Active Rules** by traffic.  
+1. Backend pushes **Top 50 Active Rules** by traffic.
 2. Frontend can request specific rules via viewport context.
 
 ### **Mobile/Responsive Strategy**
@@ -325,4 +325,3 @@ Must be wired to **everything**:
 1. **Ship:** Models bundled with firmware (`/usr/share/flywall/models/`)
 2. **Update:** Optional OTA model updates (smaller than full firmware)
 3. **Feedback:** User corrections → anonymized → cloud training
-

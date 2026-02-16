@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
@@ -5,7 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
+
+	"grimm.is/flywall/internal/install"
 
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
@@ -23,7 +28,7 @@ func RunReload(configFile string) error {
 	Printer.Println("Configuration is valid.")
 
 	// 2. Find the PID of the running daemon
-	runDir := brand.GetRunDir()
+	runDir := install.GetRunDir()
 	pidFile := filepath.Join(runDir, brand.LowerName+".pid")
 
 	data, err := os.ReadFile(pidFile)
@@ -31,7 +36,7 @@ func RunReload(configFile string) error {
 		return fmt.Errorf("failed to read PID file %s: %w (is the daemon running?)", pidFile, err)
 	}
 
-	pidStr := string(data)
+	pidStr := strings.TrimSpace(string(data))
 	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
 		return fmt.Errorf("invalid PID in file: %s", pidStr)

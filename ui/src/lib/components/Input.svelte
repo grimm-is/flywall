@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
+
   /**
    * Input Component
    * Text input with label and error support
@@ -14,6 +16,7 @@
     disabled?: boolean;
     required?: boolean;
     class?: string;
+    suffix?: Snippet;
   }
 
   let {
@@ -26,6 +29,7 @@
     disabled = false,
     required = false,
     class: className = "",
+    suffix,
     ...rest
   }: Props = $props();
 </script>
@@ -38,17 +42,25 @@
     </label>
   {/if}
 
-  <input
-    {id}
-    {type}
-    bind:value
-    {placeholder}
-    {disabled}
-    {required}
-    class="input"
-    class:error={!!error}
-    {...rest}
-  />
+  <div class="input-container">
+    <input
+      {id}
+      {type}
+      bind:value
+      {placeholder}
+      {disabled}
+      {required}
+      class="input"
+      class:error={!!error}
+      class:has-suffix={!!suffix}
+      {...rest}
+    />
+    {#if suffix}
+      <div class="input-suffix">
+        {@render suffix()}
+      </div>
+    {/if}
+  </div>
 
   {#if error}
     <p class="input-error">{error}</p>
@@ -60,6 +72,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+    width: 100%;
   }
 
   .input-label {
@@ -74,7 +87,9 @@
   }
 
   .input {
+    display: block;
     width: 100%;
+    box-sizing: border-box;
     padding: var(--space-2) var(--space-3);
     font-size: var(--text-sm);
     font-family: inherit;
@@ -115,5 +130,29 @@
     font-size: var(--text-xs);
     color: var(--color-destructive);
     margin: 0;
+  }
+
+  .input-container {
+    position: relative;
+    width: 100%;
+  }
+
+  .input-suffix {
+    position: absolute;
+    right: 8px; /* Fallback for var(--space-2) */
+    right: var(--space-2, 8px);
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-muted);
+    z-index: 5;
+    height: 100%; /* Ensure clickability area if needed, but height might block input? No, flex center */
+    height: auto;
+  }
+
+  .input.has-suffix {
+    padding-right: var(--space-10); /* Make room for suffix */
   }
 </style>

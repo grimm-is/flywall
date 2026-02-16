@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build !linux
 
 package ctlplane
@@ -6,7 +8,7 @@ import "fmt"
 
 // NFQueueReader is a stub for non-Linux systems.
 type NFQueueReader struct {
-	VerdictFunc func(entry NFLogEntry) bool
+	VerdictFunc func(entry NFLogEntry) Verdict
 }
 
 // NewNFQueueReader creates a stub reader.
@@ -15,7 +17,7 @@ func NewNFQueueReader(queueNum uint16) *NFQueueReader {
 }
 
 // SetVerdictFunc is a no-op on non-Linux.
-func (r *NFQueueReader) SetVerdictFunc(fn func(entry NFLogEntry) bool) {
+func (r *NFQueueReader) SetVerdictFunc(fn func(entry NFLogEntry) Verdict) {
 	r.VerdictFunc = fn
 }
 

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -65,6 +67,7 @@ func WriteJSON(w http.ResponseWriter, status int, data interface{}) {
 		json.NewEncoder(w).Encode(data)
 	}
 }
+
 // WriteErrorCtx sends a localized JSON error response
 func WriteErrorCtx(w http.ResponseWriter, r *http.Request, code int, format string, args ...interface{}) {
 	p := i18n.GetPrinter(r.Context())

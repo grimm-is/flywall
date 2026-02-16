@@ -6,13 +6,13 @@ api {
 web {
     listen = ":9090"
     serve_ui = true
-    
-    # Allow from localhost explicitly
+
+    # Allow from localhost
     allow {
         interfaces = ["lo"]
         sources = ["127.0.0.1"]
     }
-    
+
     # Deny specific test IP
     deny {
         sources = ["1.2.3.4"]
@@ -26,5 +26,5 @@ interface "lo" {
 }
 
 interface "eth0" {
-    ipv4 = ["127.0.0.2/8"] # Alias for testing
+    # ipv4 = ["10.0.2.15/24"] # Normally managed by DHCP
 }

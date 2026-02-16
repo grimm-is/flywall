@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package logging provides system log access and management.
 package logging
 
@@ -7,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -408,18 +411,14 @@ func limitEntries(entries []LogEntry, limit int) []LogEntry {
 	if len(entries) <= limit {
 		return entries
 	}
-	return entries[len(entries)-limit:]
+	return entries[:limit]
 }
 
 // sortByTimestamp sorts entries by timestamp (newest first)
 func sortByTimestamp(entries []LogEntry) {
-	for i := 0; i < len(entries)-1; i++ {
-		for j := i + 1; j < len(entries); j++ {
-			if entries[i].Timestamp.Before(entries[j].Timestamp) {
-				entries[i], entries[j] = entries[j], entries[i]
-			}
-		}
-	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Timestamp.After(entries[j].Timestamp)
+	})
 }
 
 // GetAvailableSources returns list of available log sources

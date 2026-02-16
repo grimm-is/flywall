@@ -1,0 +1,76 @@
+# Build artifacts
+build/
+dist/
+bin/
+
+# Binaries in root (should be in build/)
+/flywall
+/flywall-linux
+/vmbuilder
+/initramfs.cpio
+/gen-config-docs
+
+# Test artifacts
+test_mount_*/
+*.log
+test_output.txt
+net_test_fail.txt
+coverage.out
+*.test
+*.bak
+*_dump.json
+cookies.txt
+
+# Demo artifacts
+/tmp/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.out
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# UI dependencies
+# Node
+ui/node_modules/
+node_modules/
+
+# Generated files
+internal/brand/brand.env
+
+# Runtime backups (created by appliance)
+/backups/
+
+# Note: ui/dist/ is NOT ignored - it's embedded in the Go binary
+# Run 'cd ui && npm install && npm run build' to generate it
+
+# Vendor (managed by go mod)
+vendor/
+/vendor/
+/local/
+ui/src/locales/keys_found.txt
+
+# Local binaries
+flywall-scanner
+*.db
+
+
+# Hugo Docs
+docs-site/public/
+docs-site/resources/
+main

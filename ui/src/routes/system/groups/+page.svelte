@@ -1,16 +1,16 @@
 <script lang="ts">
   import { groups, api } from "$lib/stores/app";
   import Card from "$lib/components/Card.svelte";
-  import Table from "$lib/components/Table.svelte";
   import Button from "$lib/components/Button.svelte";
-  import Modal from "$lib/components/Modal.svelte";
   import Input from "$lib/components/Input.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import Badge from "$lib/components/Badge.svelte";
+  import Select from "$lib/components/Select.svelte";
 
   // --- State ---
-  let showEditModal = false;
-  let editingGroup: any = null; // { id, name, description, tags, icon, color, schedule: { enabled, blocks: [] } }
+  let loading = false;
+  let editingId: string | null = null; // ID of group being edited, or null
+  let isAdding = false; // "Add New" mode
 
   // --- Form State ---
   let formName = "";
@@ -23,18 +23,15 @@
   const daysOfWeek = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
   // --- Actions ---
-  function openCreate() {
-    editingGroup = null;
-    formName = "";
-    formDescription = "";
-    formColor = "blue";
-    formScheduleEnabled = false;
-    formBlocks = [];
-    showEditModal = true;
+  function startAdd() {
+    isAdding = true;
+    editingId = null;
+    resetForm();
   }
 
-  function openEdit(group: any) {
-    editingGroup = group;
+  function startEdit(group: any) {
+    if (isAdding) isAdding = false; // Cancel add if starting edit
+    editingId = group.id;
     formName = group.name;
     formDescription = group.description;
     formColor = group.color || "blue";
@@ -45,12 +42,28 @@
       end_time: b.end_time,
       days: [...(b.days || [])],
     }));
-    showEditModal = true;
+  }
+
+  function cancelEdit() {
+    editingId = null;
+    isAdding = false;
+    resetForm();
+  }
+
+  function resetForm() {
+    formName = "";
+    formDescription = "";
+    formColor = "blue";
+    formScheduleEnabled = false;
+    formBlocks = [];
   }
 
   async function saveGroup() {
+    // Validate
+    if (!formName) return;
+
     const payload = {
-      id: editingGroup?.id, // undefined for create, handled by backend/store? Store expects empty for create?
+      id: editingId, // undefined for create
       name: formName,
       description: formDescription,
       color: formColor,
@@ -60,16 +73,19 @@
       },
     };
 
+    loading = true;
     try {
-      if (editingGroup) {
+      if (editingId) {
         await api.updateGroup(payload);
       } else {
         await api.createGroup(payload);
       }
-      showEditModal = false;
+      cancelEdit();
     } catch (e) {
       console.error(e);
       alert("Failed to save group");
+    } finally {
+      loading = false;
     }
   }
 
@@ -80,11 +96,15 @@
       )
     )
       return;
+
+    loading = true;
     try {
       await api.deleteGroup(id);
     } catch (e) {
       console.error(e);
       alert("Failed to delete group");
+    } finally {
+      loading = false;
     }
   }
 
@@ -119,182 +139,298 @@
 <div class="groups-page">
   <header class="page-header">
     <h1>Device Groups</h1>
-    <Button variant="default" onclick={openCreate}>
-      <Icon name="add" size={16} /> New Group
-    </Button>
+    {#if !isAdding}
+      <Button variant="default" onclick={startAdd} disabled={!!editingId}>
+        <Icon name="add" size={16} /> New Group
+      </Button>
+    {/if}
   </header>
 
-  <Card>
-    <Table
-      columns={[
-        { label: "Group", key: "name", width: "30%" },
-        { label: "Description", key: "description", width: "40%" },
-        { label: "Schedule", key: "schedule", width: "20%" },
-        { label: "", key: "actions", width: "10%" },
-      ]}
-      data={$groups}
-    >
-      {#snippet children(row: any, i: number)}
-        <td class="col-name">
-          <div class="flex items-center gap-2">
-            <div class="color-dot bg-{row.color || 'blue'}"></div>
-            <span class="font-medium">{row.name}</span>
-          </div>
-        </td>
+  <Card class="table-card">
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width: 30%">Group</th>
+            <th style="width: 40%">Description</th>
+            <th style="width: 20%">Schedule</th>
+            <th style="width: 10%"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- Add Form Row -->
+          {#if isAdding}
+            <tr class="editing-row">
+              <td colspan="4">
+                <div class="inline-form">
+                  <div class="form-header">
+                    <h3>New Group</h3>
+                  </div>
 
-        <td class="col-desc text-muted">
-          {row.description || "-"}
-        </td>
+                  <div class="form-grid">
+                    <!-- Basic Info Row -->
+                    <div class="form-row">
+                      <div class="field-group flex-1">
+                        <label for="new-name">Name</label>
+                        <Input
+                          id="new-name"
+                          bind:value={formName}
+                          placeholder="Name"
+                        />
+                      </div>
+                      <div class="field-group flex-1">
+                        <label for="new-desc">Description</label>
+                        <Input
+                          id="new-desc"
+                          bind:value={formDescription}
+                          placeholder="Description"
+                        />
+                      </div>
+                      <div class="field-group">
+                        <label>Color</label>
+                        <div class="color-picker">
+                          {#each colors as c}
+                            <button
+                              class="color-btn bg-{c}"
+                              class:selected={formColor === c}
+                              onclick={() => (formColor = c)}
+                              aria-label="Select {c}"
+                            ></button>
+                          {/each}
+                        </div>
+                      </div>
+                    </div>
 
-        <td class="col-schedule">
-          {#if row.schedule?.enabled}
-            <Badge variant="success">Active</Badge>
-            <span class="text-xs text-muted ml-2">
-              {row.schedule.blocks?.length || 0} blocks
-            </span>
-          {:else}
-            <span class="text-muted text-sm">Disabled</span>
+                    <!-- Schedule Toggle -->
+                    <div class="form-row">
+                      <label class="checkbox-label">
+                        <input
+                          type="checkbox"
+                          bind:checked={formScheduleEnabled}
+                        />
+                        Enable Internet Access Schedule
+                      </label>
+                    </div>
+
+                    <!-- Schedule Blocks -->
+                    {#if formScheduleEnabled}
+                      <div class="schedule-editor">
+                        {#each formBlocks as block, i}
+                          <div class="schedule-block-inline">
+                            <div class="time-inputs">
+                              <input
+                                type="time"
+                                bind:value={block.start_time}
+                              />
+                              <span>to</span>
+                              <input type="time" bind:value={block.end_time} />
+                            </div>
+                            <div class="day-toggles">
+                              {#each daysOfWeek as day}
+                                <button
+                                  class="day-btn-mini"
+                                  class:active={block.days.includes(day)}
+                                  onclick={() => toggleDay(i, day)}
+                                  >{day[0]}</button
+                                >
+                              {/each}
+                            </div>
+                            <button
+                              class="icon-btn"
+                              onclick={() => removeBlock(i)}
+                            >
+                              <Icon name="close" size={14} />
+                            </button>
+                          </div>
+                        {/each}
+                        <Button size="sm" variant="outline" onclick={addBlock}
+                          >+ Add Block</Button
+                        >
+                      </div>
+                    {/if}
+
+                    <div class="form-actions">
+                      <Button
+                        variant="ghost"
+                        onclick={cancelEdit}
+                        disabled={loading}>Cancel</Button
+                      >
+                      <Button
+                        variant="default"
+                        onclick={saveGroup}
+                        disabled={loading || !formName}>Save</Button
+                      >
+                    </div>
+                  </div>
+                </div>
+              </td>
+            </tr>
           {/if}
-        </td>
 
-        <td class="col-actions">
-          <div class="flex gap-2 justify-end">
-            <Button size="sm" variant="outline" onclick={() => openEdit(row)}
-              >Edit</Button
-            >
-            <Button
-              size="sm"
-              variant="destructive"
-              onclick={() => deleteGroup(row.id)}
-            >
-              <Icon name="delete" size={14} />
-            </Button>
-          </div>
-        </td>
-      {/snippet}
-    </Table>
+          {#each $groups as group (group.id)}
+            {#if editingId === group.id}
+              <!-- Edit Mode Row -->
+              <tr class="editing-row">
+                <td colspan="4">
+                  <div class="inline-form">
+                    <div class="form-grid">
+                      <!-- Basic Info Row -->
+                      <div class="form-row">
+                        <div class="field-group flex-1">
+                          <label for="edit-name">Name</label>
+                          <Input
+                            id="edit-name"
+                            bind:value={formName}
+                            placeholder="Name"
+                          />
+                        </div>
+                        <div class="field-group flex-1">
+                          <label for="edit-desc">Description</label>
+                          <Input
+                            id="edit-desc"
+                            bind:value={formDescription}
+                            placeholder="Description"
+                          />
+                        </div>
+                        <div class="field-group">
+                          <label>Color</label>
+                          <div class="color-picker">
+                            {#each colors as c}
+                              <button
+                                class="color-btn bg-{c}"
+                                class:selected={formColor === c}
+                                onclick={() => (formColor = c)}
+                                aria-label="Select {c}"
+                              ></button>
+                            {/each}
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Schedule Toggle -->
+                      <div class="form-row">
+                        <label class="checkbox-label">
+                          <input
+                            type="checkbox"
+                            bind:checked={formScheduleEnabled}
+                          />
+                          Enable Internet Access Schedule
+                        </label>
+                      </div>
+
+                      <!-- Schedule Blocks -->
+                      {#if formScheduleEnabled}
+                        <div class="schedule-editor">
+                          {#each formBlocks as block, i}
+                            <div class="schedule-block-inline">
+                              <div class="time-inputs">
+                                <input
+                                  type="time"
+                                  bind:value={block.start_time}
+                                />
+                                <span>to</span>
+                                <input
+                                  type="time"
+                                  bind:value={block.end_time}
+                                />
+                              </div>
+                              <div class="day-toggles">
+                                {#each daysOfWeek as day}
+                                  <button
+                                    class="day-btn-mini"
+                                    class:active={block.days.includes(day)}
+                                    onclick={() => toggleDay(i, day)}
+                                    >{day[0]}</button
+                                  >
+                                {/each}
+                              </div>
+                              <button
+                                class="icon-btn"
+                                onclick={() => removeBlock(i)}
+                              >
+                                <Icon name="close" size={14} />
+                              </button>
+                            </div>
+                          {/each}
+                          <Button size="sm" variant="outline" onclick={addBlock}
+                            >+ Add Block</Button
+                          >
+                        </div>
+                      {/if}
+
+                      <div class="form-actions">
+                        <Button
+                          variant="ghost"
+                          onclick={cancelEdit}
+                          disabled={loading}>Cancel</Button
+                        >
+                        <Button
+                          variant="default"
+                          onclick={saveGroup}
+                          disabled={loading || !formName}>Save</Button
+                        >
+                      </div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            {:else}
+              <!-- View Mode Row -->
+              <tr class="view-row">
+                <td class="col-name">
+                  <div class="flex items-center gap-2">
+                    <div class="color-dot bg-{group.color || 'blue'}"></div>
+                    <span class="font-medium">{group.name}</span>
+                  </div>
+                </td>
+                <td class="col-desc text-muted">
+                  {group.description || "-"}
+                </td>
+                <td class="col-schedule">
+                  {#if group.schedule?.enabled}
+                    <Badge variant="success">Active</Badge>
+                    <span class="text-xs text-muted ml-2">
+                      {group.schedule.blocks?.length || 0} blocks
+                    </span>
+                  {:else}
+                    <span class="text-muted text-sm">Disabled</span>
+                  {/if}
+                </td>
+                <td class="col-actions">
+                  <div class="flex gap-2 justify-end">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onclick={() => startEdit(group)}
+                      disabled={isAdding ||
+                        (editingId !== null && editingId !== group.id)}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onclick={() => deleteGroup(group.id)}
+                      disabled={isAdding || editingId !== null}
+                    >
+                      <Icon name="delete" size={14} />
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            {/if}
+          {/each}
+
+          {#if $groups.length === 0 && !isAdding}
+            <tr>
+              <td colspan="4" class="empty-state"> No groups found. </td>
+            </tr>
+          {/if}
+        </tbody>
+      </table>
+    </div>
   </Card>
 </div>
-
-<!-- Edit Modal -->
-{#if showEditModal}
-  <Modal
-    title={editingGroup ? "Edit Group" : "New Group"}
-    bind:open={showEditModal}
-  >
-    <div class="form-grid">
-      <!-- Basic Info -->
-      <div class="form-group">
-        <label for="name">Group Name</label>
-        <Input
-          id="name"
-          bind:value={formName}
-          placeholder="e.g. Kids Devices"
-        />
-      </div>
-
-      <div class="form-group">
-        <label for="desc">Description</label>
-        <Input
-          id="desc"
-          bind:value={formDescription}
-          placeholder="Optional description"
-        />
-      </div>
-
-      <div class="form-group">
-        <label>Color Tag</label>
-        <div class="color-picker">
-          {#each colors as c}
-            <button
-              class="color-btn bg-{c}"
-              class:selected={formColor === c}
-              onclick={() => (formColor = c)}
-              aria-label="Select {c}"
-            ></button>
-          {/each}
-        </div>
-      </div>
-
-      <hr class="divider" />
-
-      <!-- Schedule -->
-      <div class="schedule-section">
-        <div class="flex justify-between items-center mb-2">
-          <h3 class="text-sm font-medium">Internet Access Schedule</h3>
-          <label class="flex items-center gap-2 text-sm cursor-pointer">
-            <input type="checkbox" bind:checked={formScheduleEnabled} />
-            Enable Schedule
-          </label>
-        </div>
-
-        {#if formScheduleEnabled}
-          <div class="blocks-list">
-            {#each formBlocks as block, i}
-              <div class="schedule-block">
-                <div class="block-header">
-                  <span class="text-xs font-medium text-muted"
-                    >Block {i + 1} (Downtime)</span
-                  >
-                  <button class="remove-btn" onclick={() => removeBlock(i)}
-                    >Remove</button
-                  >
-                </div>
-
-                <div class="time-range">
-                  <div class="time-input">
-                    <label>Start</label>
-                    <input type="time" bind:value={block.start_time} />
-                  </div>
-                  <div class="time-input">
-                    <label>End</label>
-                    <input type="time" bind:value={block.end_time} />
-                  </div>
-                </div>
-
-                <div class="days-selector">
-                  {#each daysOfWeek as day}
-                    <button
-                      class="day-btn"
-                      class:active={block.days.includes(day)}
-                      onclick={() => toggleDay(i, day)}
-                    >
-                      {day[0]}
-                    </button>
-                  {/each}
-                </div>
-              </div>
-            {/each}
-
-            <Button
-              size="sm"
-              variant="outline"
-              onclick={addBlock}
-              class="w-full dashed"
-            >
-              + Add Time Block
-            </Button>
-            <p class="text-xs text-muted mt-2">
-              During these times, internet access will be blocked for devices in
-              this group.
-            </p>
-          </div>
-        {:else}
-          <div class="text-sm text-muted italic p-2 bg-surface rounded">
-            Schedule is disabled. Internet access allows 24/7.
-          </div>
-        {/if}
-      </div>
-
-      <div class="modal-footer">
-        <Button variant="ghost" onclick={() => (showEditModal = false)}
-          >Cancel</Button
-        >
-        <Button variant="default" onclick={saveGroup}>Save Group</Button>
-      </div>
-    </div>
-  </Modal>
-{/if}
 
 <style>
   .groups-page {
@@ -310,10 +446,102 @@
     align-items: center;
   }
 
-  .color-dot {
-    width: 10px;
-    height: 10px;
+  .table-container {
+    overflow-x: auto;
+  }
+
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th {
+    text-align: left;
+    padding: var(--space-3);
+    border-bottom: 2px solid var(--color-border);
+    color: var(--color-muted);
+    font-weight: 500;
+    font-size: var(--text-sm);
+  }
+
+  td {
+    padding: var(--space-3);
+    border-bottom: 1px solid var(--color-border);
+    vertical-align: middle;
+  }
+
+  .view-row:hover td {
+    background: var(--color-surfaceHover);
+  }
+
+  .editing-row td {
+    background: var(--color-surface);
+    padding: var(--space-4);
+  }
+
+  .inline-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .form-header h3 {
+    font-size: var(--text-md);
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .form-grid {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .form-row {
+    display: flex;
+    gap: var(--space-4);
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .field-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .field-group label {
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: var(--color-muted);
+  }
+
+  .flex-1 {
+    flex: 1;
+  }
+
+  /* Color Picker */
+  .color-picker {
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+    height: 38px; /* Match input height roughly */
+  }
+
+  .color-btn {
+    width: 20px;
+    height: 20px;
     border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  .color-btn:hover {
+    transform: scale(1.1);
+  }
+  .color-btn.selected {
+    border-color: var(--color-foreground);
+    box-shadow: 0 0 0 2px var(--color-background);
   }
 
   /* Colors */
@@ -336,131 +564,93 @@
     background-color: #6b7280;
   }
 
-  /* Form */
-  .form-grid {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-  }
-
-  .form-group {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-
-  .form-group label {
-    font-size: var(--text-sm);
-    font-weight: 500;
-    color: var(--dashboard-text);
-  }
-
-  /* Color Picker */
-  .color-picker {
-    display: flex;
-    gap: var(--space-2);
-  }
-
-  .color-btn {
-    width: 24px;
-    height: 24px;
+  .color-dot {
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
-    border: 2px solid transparent;
-    cursor: pointer;
-    transition: transform 0.1s;
-  }
-
-  .color-btn:hover {
-    transform: scale(1.1);
-  }
-
-  .color-btn.selected {
-    border-color: var(--color-foreground);
-    box-shadow: 0 0 0 2px var(--color-background);
-  }
-
-  .divider {
-    border: 0;
-    border-top: 1px solid var(--color-border);
   }
 
   /* Schedule */
-  .schedule-block {
+  .checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .schedule-editor {
     background: var(--color-backgroundSecondary);
     padding: var(--space-3);
     border-radius: var(--radius-md);
-    margin-bottom: var(--space-3);
-    border: 1px solid var(--color-border);
-  }
-
-  .block-header {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: var(--space-2);
-  }
-
-  .remove-btn {
-    font-size: var(--text-xs);
-    color: var(--color-destructive);
-    background: none;
-    border: none;
-    cursor: pointer;
-  }
-
-  .time-range {
-    display: flex;
-    gap: var(--space-4);
-    margin-bottom: var(--space-2);
-  }
-
-  .time-input {
     display: flex;
     flex-direction: column;
-    flex: 1;
+    gap: var(--space-2);
   }
 
-  .time-input label {
-    font-size: var(--text-xs);
-    color: var(--dashboard-text-muted);
+  .schedule-block-inline {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    background: var(--color-surface);
+    padding: var(--space-2);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
   }
 
-  .time-input input {
+  .time-inputs {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+  }
+
+  .time-inputs input {
+    padding: 2px 4px;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
-    padding: var(--space-1);
-    font-family: monospace;
   }
 
-  .days-selector {
+  .day-toggles {
     display: flex;
-    justify-content: space-between;
     gap: 2px;
   }
 
-  .day-btn {
-    flex: 1;
-    padding: 4px;
-    font-size: var(--text-xs);
-    background: var(--color-surface);
+  .day-btn-mini {
+    font-size: 10px;
+    padding: 2px 6px;
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
+    background: var(--color-background);
     cursor: pointer;
-    color: var(--color-muted);
   }
 
-  .day-btn.active {
+  .day-btn-mini.active {
     background: var(--color-primary);
     color: white;
     border-color: var(--color-primary);
   }
 
-  .modal-footer {
+  .icon-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--color-muted);
+    display: flex;
+    align-items: center;
+  }
+  .icon-btn:hover {
+    color: var(--color-destructive);
+  }
+
+  .form-actions {
     display: flex;
     justify-content: flex-end;
     gap: var(--space-2);
     margin-top: var(--space-2);
   }
 
+  /* Helpers */
   .flex {
     display: flex;
   }
@@ -470,11 +660,14 @@
   .items-center {
     align-items: center;
   }
-  .justify-between {
-    justify-content: space-between;
+  .justify-end {
+    justify-content: flex-end;
   }
   .font-medium {
     font-weight: 500;
+  }
+  .text-muted {
+    color: var(--color-muted);
   }
   .text-sm {
     font-size: var(--text-sm);
@@ -482,19 +675,12 @@
   .text-xs {
     font-size: 11px;
   }
-  .text-muted {
-    color: var(--color-muted);
-  }
   .ml-2 {
     margin-left: var(--space-2);
   }
-  .mb-2 {
-    margin-bottom: var(--space-2);
-  }
-  .mt-2 {
-    margin-top: var(--space-2);
-  }
-  .cursor-pointer {
-    cursor: pointer;
+  .empty-state {
+    text-align: center;
+    padding: var(--space-8);
+    color: var(--color-muted);
   }
 </style>

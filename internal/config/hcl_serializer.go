@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package config provides HCL serialization for Config struct to HCL.
 package config
 
@@ -15,6 +17,9 @@ func (cf *ConfigFile) SyncConfigToHCL() error {
 	cfg := cf.Config
 
 	// Sync top-level attributes
+	if cfg.SchemaVersion != "" {
+		body.SetAttributeValue("schema_version", cty.StringVal(cfg.SchemaVersion))
+	}
 	body.SetAttributeValue("ip_forwarding", cty.BoolVal(cfg.IPForwarding))
 	if cfg.MSSClamping {
 		body.SetAttributeValue("mss_clamping", cty.BoolVal(cfg.MSSClamping))
@@ -59,6 +64,122 @@ func (cf *ConfigFile) SyncConfigToHCL() error {
 	}
 	if err := cf.syncIntegrations(); err != nil {
 		return fmt.Errorf("sync integrations: %w", err)
+	}
+	if err := cf.syncQoSPolicies(); err != nil {
+		return fmt.Errorf("sync qos policies: %w", err)
+	}
+	if err := cf.syncFRR(); err != nil {
+		return fmt.Errorf("sync frr: %w", err)
+	}
+
+	return nil
+}
+
+// syncFRR synchronizes the frr block
+func (cf *ConfigFile) syncFRR() error {
+	body := cf.hclFile.Body()
+
+	// Remove existing frr blocks
+	for _, block := range body.Blocks() {
+		if block.Type() == "frr" {
+			body.RemoveBlock(block)
+		}
+	}
+
+	if cf.Config.FRR == nil {
+		return nil
+	}
+
+	frr := cf.Config.FRR
+	block := body.AppendNewBlock("frr", nil)
+	b := block.Body()
+
+	if frr.Enabled {
+		b.SetAttributeValue("enabled", cty.BoolVal(frr.Enabled))
+	}
+
+	if frr.OSPF != nil {
+		ospfBlock := b.AppendNewBlock("ospf", nil)
+		ob := ospfBlock.Body()
+
+		if frr.OSPF.RouterID != "" {
+			ob.SetAttributeValue("router_id", cty.StringVal(frr.OSPF.RouterID))
+		}
+		if len(frr.OSPF.Networks) > 0 {
+			ob.SetAttributeValue("networks", toCtyStringList(frr.OSPF.Networks))
+		}
+
+		for _, area := range frr.OSPF.Areas {
+			ab := ob.AppendNewBlock("area", []string{area.ID})
+			abb := ab.Body()
+			if len(area.Networks) > 0 {
+				abb.SetAttributeValue("networks", toCtyStringList(area.Networks))
+			}
+		}
+	}
+
+	return nil
+}
+
+// syncQoSPolicies synchronizes qos_policy blocks
+func (cf *ConfigFile) syncQoSPolicies() error {
+	body := cf.hclFile.Body()
+
+	// Remove all existing qos_policy blocks
+	for _, block := range body.Blocks() {
+		if block.Type() == "qos_policy" {
+			body.RemoveBlock(block)
+		}
+	}
+
+	// Add policies from config
+	for _, pol := range cf.Config.QoSPolicies {
+		block := body.AppendNewBlock("qos_policy", []string{pol.Name})
+		b := block.Body()
+
+		if pol.Interface != "" {
+			b.SetAttributeValue("interface", cty.StringVal(pol.Interface))
+		}
+		if pol.Enabled {
+			b.SetAttributeValue("enabled", cty.BoolVal(pol.Enabled))
+		}
+		if pol.UploadMbps > 0 {
+			b.SetAttributeValue("upload_mbps", cty.NumberIntVal(int64(pol.UploadMbps)))
+		}
+		if pol.DownloadMbps > 0 {
+			b.SetAttributeValue("download_mbps", cty.NumberIntVal(int64(pol.DownloadMbps)))
+		}
+
+		// Classes
+		for _, class := range pol.Classes {
+			cb := b.AppendNewBlock("class", []string{class.Name})
+			cbb := cb.Body()
+			if class.Rate != "" {
+				cbb.SetAttributeValue("rate", cty.StringVal(class.Rate))
+			}
+			if class.Ceil != "" {
+				cbb.SetAttributeValue("ceil", cty.StringVal(class.Ceil))
+			}
+			if class.Priority > 0 {
+				cbb.SetAttributeValue("priority", cty.NumberIntVal(int64(class.Priority)))
+			}
+		}
+
+		// Rules
+		for _, rule := range pol.Rules {
+			rb := b.AppendNewBlock("rule", []string{rule.Name})
+			rbb := rb.Body()
+			rbb.SetAttributeValue("class", cty.StringVal(rule.Class))
+			if rule.Protocol != "" {
+				rbb.SetAttributeValue("proto", cty.StringVal(rule.Protocol))
+			}
+			if rule.DestPort > 0 {
+				rbb.SetAttributeValue("dest_port", cty.NumberIntVal(int64(rule.DestPort)))
+			}
+			if rule.SrcIP != "" {
+				rbb.SetAttributeValue("src_ip", cty.StringVal(rule.SrcIP))
+			}
+		}
 	}
 
 	return nil
@@ -451,6 +572,9 @@ func (cf *ConfigFile) syncServices() error {
 			if len(scope.DNS) > 0 {
 				sbb.SetAttributeValue("dns", toCtyStringList(scope.DNS))
 			}
+			if scope.Domain != "" {
+				sbb.SetAttributeValue("domain", cty.StringVal(scope.Domain))
+			}
 			if scope.LeaseTime != "" {
 				sbb.SetAttributeValue("lease_time", cty.StringVal(scope.LeaseTime))
 			}
@@ -461,6 +585,9 @@ func (cf *ConfigFile) syncServices() error {
 				rbb.SetAttributeValue("ip", cty.StringVal(res.IP))
 				if res.Hostname != "" {
 					rbb.SetAttributeValue("hostname", cty.StringVal(res.Hostname))
+				}
+				if res.Description != "" {
+					rbb.SetAttributeValue("description", cty.StringVal(res.Description))
 				}
 			}
 		}
@@ -609,7 +736,7 @@ func (cf *ConfigFile) syncIntegrations() error {
 		for _, wg := range vpn.WireGuard {
 			wb := b.AppendNewBlock("wireguard", []string{wg.Name})
 			wbb := wb.Body()
-			wbb.SetAttributeValue("private_key", cty.StringVal(wg.PrivateKey))
+			wbb.SetAttributeValue("private_key", cty.StringVal(string(wg.PrivateKey)))
 			if wg.ListenPort > 0 {
 				wbb.SetAttributeValue("listen_port", cty.NumberIntVal(int64(wg.ListenPort)))
 			}
@@ -627,7 +754,7 @@ func (cf *ConfigFile) syncIntegrations() error {
 					pbb.SetAttributeValue("allowed_ips", toCtyStringList(peer.AllowedIPs))
 				}
 				if peer.PresharedKey != "" {
-					pbb.SetAttributeValue("preshared_key", cty.StringVal(peer.PresharedKey))
+					pbb.SetAttributeValue("preshared_key", cty.StringVal(string(peer.PresharedKey)))
 				}
 			}
 		}
@@ -639,7 +766,7 @@ func (cf *ConfigFile) syncIntegrations() error {
 				tsbb.SetAttributeValue("enabled", cty.BoolVal(ts.Enabled))
 			}
 			if ts.AuthKey != "" {
-				tsbb.SetAttributeValue("auth_key", cty.StringVal(ts.AuthKey))
+				tsbb.SetAttributeValue("auth_key", cty.StringVal(string(ts.AuthKey)))
 			}
 		}
 	}
@@ -850,6 +977,9 @@ func (cf *ConfigFile) appendRuleBlock(body *hclwrite.Body, rule *PolicyRule) {
 	if rule.Protocol != "" {
 		blockBody.SetAttributeValue("proto", cty.StringVal(rule.Protocol))
 	}
+	if rule.Service != "" {
+		blockBody.SetAttributeValue("service", cty.StringVal(rule.Service))
+	}
 	if rule.DestPort != 0 {
 		blockBody.SetAttributeValue("dest_port", cty.NumberIntVal(int64(rule.DestPort)))
 	}
@@ -936,11 +1066,8 @@ func (cf *ConfigFile) syncZones() error {
 			blockBody.RemoveAttribute("interface")
 		}
 
-		if len(zone.Interfaces) > 0 {
-			blockBody.SetAttributeValue("interfaces", toCtyStringList(zone.Interfaces))
-		} else {
-			blockBody.RemoveAttribute("interfaces")
-		}
+		// Never output deprecated interfaces field
+		blockBody.RemoveAttribute("interfaces")
 
 		if zone.Description != "" {
 			blockBody.SetAttributeValue("description", cty.StringVal(zone.Description))
@@ -952,6 +1079,31 @@ func (cf *ConfigFile) syncZones() error {
 			blockBody.SetAttributeValue("external", cty.BoolVal(*zone.External))
 		} else {
 			blockBody.RemoveAttribute("external")
+		}
+
+		// Remove existing match blocks
+		for _, b := range blockBody.Blocks() {
+			if b.Type() == "match" {
+				blockBody.RemoveBlock(b)
+			}
+		}
+
+		// Sync Matches
+		for _, match := range zone.Matches {
+			mb := blockBody.AppendNewBlock("match", nil)
+			mbb := mb.Body()
+			if match.Interface != "" {
+				mbb.SetAttributeValue("interface", cty.StringVal(match.Interface))
+			}
+			if match.Src != "" {
+				mbb.SetAttributeValue("src", cty.StringVal(match.Src))
+			}
+			if match.Dst != "" {
+				mbb.SetAttributeValue("dst", cty.StringVal(match.Dst))
+			}
+			if match.VLAN > 0 {
+				mbb.SetAttributeValue("vlan", cty.NumberIntVal(int64(match.VLAN)))
+			}
 		}
 
 		// Zone Management (Block)
@@ -1137,6 +1289,58 @@ func (cf *ConfigFile) syncInterfaces() error {
 			blockBody.SetAttributeValue("zone", cty.StringVal(iface.Zone))
 		} else {
 			blockBody.RemoveAttribute("zone")
+		}
+
+		// Bond
+		if iface.Bond != nil {
+			// Find existing bond block or create new
+			var bondBlock *hclwrite.Block
+			for _, b := range blockBody.Blocks() {
+				if b.Type() == "bond" {
+					bondBlock = b
+					break
+				}
+			}
+			if bondBlock == nil {
+				bondBlock = blockBody.AppendNewBlock("bond", nil)
+			}
+			bb := bondBlock.Body()
+			if iface.Bond.Mode != "" {
+				bb.SetAttributeValue("mode", cty.StringVal(iface.Bond.Mode))
+			}
+			if len(iface.Bond.Interfaces) > 0 {
+				bb.SetAttributeValue("interfaces", toCtyStringList(iface.Bond.Interfaces))
+			}
+		} else {
+			for _, b := range blockBody.Blocks() {
+				if b.Type() == "bond" {
+					blockBody.RemoveBlock(b)
+				}
+			}
+		}
+
+		// VLANs
+		// Clear existing VLAN blocks to ensure order and correctness
+		for _, b := range blockBody.Blocks() {
+			if b.Type() == "vlan" {
+				blockBody.RemoveBlock(b)
+			}
+		}
+		for _, vlan := range iface.VLANs {
+			vb := blockBody.AppendNewBlock("vlan", []string{vlan.ID})
+			vbb := vb.Body()
+			if vlan.Description != "" {
+				vbb.SetAttributeValue("description", cty.StringVal(vlan.Description))
+			}
+			if vlan.Zone != "" {
+				vbb.SetAttributeValue("zone", cty.StringVal(vlan.Zone))
+			}
+			if len(vlan.IPv4) > 0 {
+				vbb.SetAttributeValue("ipv4", toCtyStringList(vlan.IPv4))
+			}
+			if len(vlan.IPv6) > 0 {
+				vbb.SetAttributeValue("ipv6", toCtyStringList(vlan.IPv6))
+			}
 		}
 	}
 

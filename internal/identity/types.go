@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package identity
 
 import (
@@ -38,6 +40,7 @@ type DeviceGroup struct {
 	Color       string    `json:"color"`
 	Icon        string    `json:"icon"`
 	Schedule    *Schedule `json:"schedule,omitempty"`
+	TargetPolicy string   `json:"target_policy,omitempty"` // Policy to apply blocks to (e.g. "lan_wan")
 }
 
 // Clone returns a deep copy of DeviceIdentity

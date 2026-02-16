@@ -1,11 +1,14 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package validation
 
 import (
-	"fmt"
 	"net"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"grimm.is/flywall/internal/errors"
 )
 
 // Interface name validation
@@ -23,21 +26,21 @@ var (
 // ValidateInterfaceName validates a network interface name
 func ValidateInterfaceName(name string) error {
 	if name == "" {
-		return fmt.Errorf("interface name cannot be empty")
+		return errors.New(errors.KindValidation, "interface name cannot be empty")
 	}
 
 	if len(name) > 15 {
-		return fmt.Errorf("interface name too long (max 15 characters): %s", name)
+		return errors.Errorf(errors.KindValidation, "interface name too long (max 15 characters): %s", name)
 	}
 
 	if !interfaceNameRegex.MatchString(name) {
-		return fmt.Errorf("invalid interface name: %s (must be alphanumeric with -_.)", name)
+		return errors.Errorf(errors.KindValidation, "invalid interface name: %s (must be alphanumeric with -_.)", name)
 	}
 
 	// Check for dangerous characters
 	for _, char := range dangerousChars {
 		if strings.Contains(name, char) {
-			return fmt.Errorf("interface name contains dangerous character: %s", char)
+			return errors.Errorf(errors.KindValidation, "interface name contains dangerous character: %s", char)
 		}
 	}
 
@@ -47,21 +50,21 @@ func ValidateInterfaceName(name string) error {
 // ValidateIdentifier validates a general identifier (policy names, zone names, etc.)
 func ValidateIdentifier(id string) error {
 	if id == "" {
-		return fmt.Errorf("identifier cannot be empty")
+		return errors.New(errors.KindValidation, "identifier cannot be empty")
 	}
 
 	if len(id) > 255 {
-		return fmt.Errorf("identifier too long (max 255 characters)")
+		return errors.New(errors.KindValidation, "identifier too long (max 255 characters)")
 	}
 
 	if !identifierRegex.MatchString(id) {
-		return fmt.Errorf("invalid identifier: %s (must be alphanumeric with -_)", id)
+		return errors.Errorf(errors.KindValidation, "invalid identifier: %s (must be alphanumeric with -_)", id)
 	}
 
 	// Check for dangerous characters
 	for _, char := range dangerousChars {
 		if strings.Contains(id, char) {
-			return fmt.Errorf("identifier contains dangerous character: %s", char)
+			return errors.Errorf(errors.KindValidation, "identifier contains dangerous character: %s", char)
 		}
 	}
 
@@ -71,7 +74,7 @@ func ValidateIdentifier(id string) error {
 // ValidatePath validates a file path against an allowlist of permitted directories
 func ValidatePath(path string, allowedDirs []string) error {
 	if path == "" {
-		return fmt.Errorf("path cannot be empty")
+		return errors.New(errors.KindValidation, "path cannot be empty")
 	}
 
 	// Clean the path to normalize it
@@ -87,18 +90,18 @@ func ValidatePath(path string, allowedDirs []string) error {
 			}
 		}
 		if !allowed {
-			return fmt.Errorf("path not in allowed directories: %s", cleanPath)
+			return errors.Errorf(errors.KindValidation, "path not in allowed directories: %s", cleanPath)
 		}
 	}
 
 	// Reject path traversal attempts
 	if strings.Contains(path, "..") {
-		return fmt.Errorf("path traversal not allowed: %s", path)
+		return errors.Errorf(errors.KindValidation, "path traversal not allowed: %s", path)
 	}
 
 	// Check for null bytes
 	if strings.Contains(path, "\x00") {
-		return fmt.Errorf("null byte in path")
+		return errors.New(errors.KindValidation, "null byte in path")
 	}
 
 	return nil
@@ -107,14 +110,14 @@ func ValidatePath(path string, allowedDirs []string) error {
 // ValidateIPOrCIDR validates an IP address or CIDR range
 func ValidateIPOrCIDR(s string) error {
 	if s == "" {
-		return fmt.Errorf("IP/CIDR cannot be empty")
+		return errors.New(errors.KindValidation, "IP/CIDR cannot be empty")
 	}
 
 	// Try parsing as CIDR first
 	if strings.Contains(s, "/") {
 		_, _, err := net.ParseCIDR(s)
 		if err != nil {
-			return fmt.Errorf("invalid CIDR: %w", err)
+			return errors.Wrap(err, errors.KindValidation, "invalid CIDR")
 		}
 		return nil
 	}
@@ -122,7 +125,7 @@ func ValidateIPOrCIDR(s string) error {
 	// Try parsing as IP
 	ip := net.ParseIP(s)
 	if ip == nil {
-		return fmt.Errorf("invalid IP address: %s", s)
+		return errors.Errorf(errors.KindValidation, "invalid IP address: %s", s)
 	}
 
 	return nil
@@ -135,13 +138,13 @@ func ValidateAllowlist(value string, allowed []string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("value not in allowlist: %s", value)
+	return errors.Errorf(errors.KindValidation, "value not in allowlist: %s", value)
 }
 
 // ValidatePortNumber validates a port number
 func ValidatePortNumber(port int) error {
 	if port < 1 || port > 65535 {
-		return fmt.Errorf("invalid port number: %d (must be 1-65535)", port)
+		return errors.Errorf(errors.KindValidation, "invalid port number: %d (must be 1-65535)", port)
 	}
 	return nil
 }
@@ -157,7 +160,7 @@ func ValidateProtocol(proto string) error {
 		}
 	}
 
-	return fmt.Errorf("invalid protocol: %s (must be one of: %s)", proto, strings.Join(validProtocols, ", "))
+	return errors.Errorf(errors.KindValidation, "invalid protocol: %s (must be one of: %s)", proto, strings.Join(validProtocols, ", "))
 }
 
 // SanitizeString removes dangerous characters from a string (for display purposes)

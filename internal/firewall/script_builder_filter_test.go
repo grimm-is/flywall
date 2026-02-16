@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package firewall
 
 import (
@@ -11,8 +13,8 @@ import (
 func TestFilterTableGeneration(t *testing.T) {
 	cfg := &config.Config{
 		Zones: []config.Zone{
-			{Name: "LAN", Interfaces: []string{"eth1"}},
-			{Name: "WAN", Interfaces: []string{"eth0"}},
+			{Name: "LAN", Matches: []config.RuleMatch{{Interface: "eth1"}}},
+			{Name: "WAN", Matches: []config.RuleMatch{{Interface: "eth0"}}},
 		},
 		Policies: []config.Policy{
 			{
@@ -30,14 +32,14 @@ func TestFilterTableGeneration(t *testing.T) {
 		},
 	}
 
-	sb, err := BuildFilterTableScript(FromGlobalConfig(cfg), nil, "test_table", "")
+	sb, err := BuildFilterTableScript(FromGlobalConfig(cfg), nil, "test_table", "", nil)
 	if err != nil {
 		t.Fatalf("BuildFilterTableScript() error = %v", err)
 	}
 	script := sb.Build()
 
 	// Verify Chain Creation
-	if !strings.Contains(script, "add chain inet test_table policy_LAN_WAN") {
+	if !strings.Contains(script, "add chain inet test_table policy_lan_wan") {
 		t.Error("Missing policy chain creation")
 	}
 
@@ -71,7 +73,7 @@ func TestFlowOffloadGeneration(t *testing.T) {
 		},
 	}
 
-	sb, err := BuildFilterTableScript(FromGlobalConfig(cfg), nil, "test_table", "")
+	sb, err := BuildFilterTableScript(FromGlobalConfig(cfg), nil, "test_table", "", nil)
 	if err != nil {
 		t.Fatalf("BuildFilterTableScript() error = %v", err)
 	}
@@ -102,7 +104,7 @@ func TestConcatenatedSetsGeneration(t *testing.T) {
 		},
 	}
 
-	sb, err := BuildFilterTableScript(FromGlobalConfig(cfg), nil, "test_table", "")
+	sb, err := BuildFilterTableScript(FromGlobalConfig(cfg), nil, "test_table", "", nil)
 	if err != nil {
 		t.Fatalf("BuildFilterTableScript() error = %v", err)
 	}
@@ -147,7 +149,7 @@ func TestBuildFilterTableScriptComments(t *testing.T) {
 		},
 	}
 
-	sb, err := BuildFilterTableScript(cfg, nil, "flywall", "abc123")
+	sb, err := BuildFilterTableScript(cfg, nil, "flywall", "abc123", nil)
 	if err != nil {
 		t.Fatalf("BuildFilterTableScript error: %v", err)
 	}
@@ -169,7 +171,7 @@ func TestBuildFilterTableScriptComments(t *testing.T) {
 	}
 
 	// Verify policy chain comment
-	if !strings.Contains(script, `[policy:LAN->WAN]`) {
+	if !strings.Contains(script, `[policy:lan->wan]`) {
 		t.Errorf("Policy chain comment not found in script")
 	}
 }
@@ -182,7 +184,7 @@ func TestDNSSetFilterGeneration(t *testing.T) {
 		},
 	}
 
-	sb, err := BuildFilterTableScript(FromGlobalConfig(cfg), nil, "test_table", "")
+	sb, err := BuildFilterTableScript(FromGlobalConfig(cfg), nil, "test_table", "", nil)
 	if err != nil {
 		t.Fatalf("BuildFilterTableScript() error = %v", err)
 	}

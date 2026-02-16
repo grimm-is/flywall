@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 import (
@@ -70,7 +72,7 @@ func TestValidateZones(t *testing.T) {
 		{
 			name: "valid match block",
 			zones: []Zone{
-				{Name: "dmz", Matches: []ZoneMatch{
+				{Name: "dmz", Matches: []RuleMatch{
 					{Interface: "eth2", Src: "10.0.0.0/8", VLAN: 200},
 				}},
 			},
@@ -79,7 +81,7 @@ func TestValidateZones(t *testing.T) {
 		{
 			name: "invalid match block src",
 			zones: []Zone{
-				{Name: "dmz", Matches: []ZoneMatch{
+				{Name: "dmz", Matches: []RuleMatch{
 					{Interface: "eth2", Src: "bad-cidr"},
 				}},
 			},
@@ -88,7 +90,7 @@ func TestValidateZones(t *testing.T) {
 		{
 			name: "invalid match block VLAN",
 			zones: []Zone{
-				{Name: "dmz", Matches: []ZoneMatch{
+				{Name: "dmz", Matches: []RuleMatch{
 					{Interface: "eth2", VLAN: 5000},
 				}},
 			},
@@ -214,13 +216,7 @@ func TestValidateIPSets(t *testing.T) {
 			},
 			wantErrs: 1,
 		},
-		{
-			name: "unknown firehol list",
-			ipsets: []IPSet{
-				{Name: "test", FireHOLList: "unknown_list"},
-			},
-			wantErrs: 1,
-		},
+
 		{
 			name: "invalid URL",
 			ipsets: []IPSet{
@@ -536,5 +532,305 @@ func TestValidationErrorMethods(t *testing.T) {
 	errs = append(errs, err)
 	if !errs.HasErrors() {
 		t.Error("should have errors")
+	}
+}
+
+// TestIntentValidator_ValidateIntent tests the intent validation functionality
+func TestIntentValidator_ValidateIntent(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      *Config
+		expectError bool
+		errorField  string
+	}{
+		{
+			name: "valid config",
+			config: &Config{
+				Interfaces: []Interface{
+					{Name: "eth0", IPv4: []string{"192.168.1.1/24"}, Zone: "lan"},
+				},
+				Zones: []Zone{
+					{Name: "lan"},
+				},
+				Policies: []Policy{
+					{
+						From: "lan",
+						To:   "wan",
+						Rules: []PolicyRule{
+							{Action: "accept", Protocol: "tcp", DestPort: 80},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "conflicting rules",
+			config: &Config{
+				Interfaces: []Interface{
+					{Name: "eth0", IPv4: []string{"192.168.1.1/24"}, Zone: "lan"},
+				},
+				Zones: []Zone{
+					{Name: "lan"},
+				},
+				Policies: []Policy{
+					{
+						From: "lan",
+						To:   "wan",
+						Rules: []PolicyRule{
+							{Action: "accept", Protocol: "tcp", DestPort: 80},
+							{Action: "drop", Protocol: "tcp", DestPort: 80},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorField:  "policies",
+		},
+		{
+			name: "interface in multiple zones",
+			config: &Config{
+				Interfaces: []Interface{
+					{Name: "eth0", IPv4: []string{"192.168.1.1/24"}, Zone: "lan"},
+					{Name: "eth0", IPv4: []string{"10.0.0.1/24"}, Zone: "dmz"},
+				},
+				Zones: []Zone{
+					{Name: "lan"},
+					{Name: "dmz"},
+				},
+			},
+			expectError: true,
+			errorField:  "interfaces",
+		},
+		{
+			name: "overly permissive rule",
+			config: &Config{
+				Interfaces: []Interface{
+					{Name: "eth0", IPv4: []string{"192.168.1.1/24"}, Zone: "lan"},
+				},
+				Zones: []Zone{
+					{Name: "lan"},
+				},
+				Policies: []Policy{
+					{
+						From: "lan",
+						To:   "wan",
+						Rules: []PolicyRule{
+							{Action: "accept"},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorField:  "policies",
+		},
+		{
+			name: "undefined zone reference",
+			config: &Config{
+				Interfaces: []Interface{
+					{Name: "eth0", IPv4: []string{"192.168.1.1/24"}, Zone: "nonexistent"},
+				},
+				Zones: []Zone{
+					{Name: "lan"},
+				},
+			},
+			expectError: true,
+			errorField:  "interfaces",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			validator := NewIntentValidator(tt.config)
+			errors := validator.ValidateIntent()
+
+			hasError := len(errors) > 0
+			if hasError != tt.expectError {
+				t.Errorf("ValidateIntent() error = %v, expectError %v", hasError, tt.expectError)
+				return
+			}
+
+			if tt.expectError && len(errors) > 0 {
+				found := false
+				for _, err := range errors {
+					if err.Field == tt.errorField {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected error in field %s, got errors in fields: %v", tt.errorField, getFieldNames(errors))
+				}
+			}
+		})
+	}
+}
+
+func getFieldNames(errors []ValidationError) []string {
+	names := make([]string, len(errors))
+	for i, err := range errors {
+		names[i] = err.Field
+	}
+	return names
+}
+
+// TestIntentValidator_rulesConflict tests rule conflict detection
+func TestIntentValidator_rulesConflict(t *testing.T) {
+	validator := NewIntentValidator(&Config{})
+
+	tests := []struct {
+		name     string
+		rule1    PolicyRule
+		rule2    PolicyRule
+		conflict bool
+	}{
+		{
+			name:     "same action no conflict",
+			rule1:    PolicyRule{Action: "accept", Protocol: "tcp", DestPort: 80},
+			rule2:    PolicyRule{Action: "accept", Protocol: "tcp", DestPort: 80},
+			conflict: false,
+		},
+		{
+			name:     "different actions same criteria",
+			rule1:    PolicyRule{Action: "accept", Protocol: "tcp", DestPort: 80},
+			rule2:    PolicyRule{Action: "drop", Protocol: "tcp", DestPort: 80},
+			conflict: true,
+		},
+		{
+			name:     "different protocols no conflict",
+			rule1:    PolicyRule{Action: "accept", Protocol: "tcp", DestPort: 80},
+			rule2:    PolicyRule{Action: "drop", Protocol: "udp", DestPort: 80},
+			conflict: false,
+		},
+		{
+			name:     "different ports no conflict",
+			rule1:    PolicyRule{Action: "accept", Protocol: "tcp", DestPort: 80},
+			rule2:    PolicyRule{Action: "drop", Protocol: "tcp", DestPort: 443},
+			conflict: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := validator.rulesConflict(tt.rule1, tt.rule2)
+			if result != tt.conflict {
+				t.Errorf("rulesConflict() = %v, want %v", result, tt.conflict)
+			}
+		})
+	}
+}
+
+// TestIntentValidator_isOverlyPermissive tests overly permissive rule detection
+func TestIntentValidator_isOverlyPermissive(t *testing.T) {
+	validator := NewIntentValidator(&Config{})
+
+	tests := []struct {
+		name       string
+		rule       PolicyRule
+		permissive bool
+	}{
+		{
+			name:       "accept all",
+			rule:       PolicyRule{Action: "accept"},
+			permissive: true,
+		},
+		{
+			name:       "accept with src IP",
+			rule:       PolicyRule{Action: "accept", SrcIP: "192.168.1.0/24"},
+			permissive: false,
+		},
+		{
+			name:       "drop all",
+			rule:       PolicyRule{Action: "drop"},
+			permissive: false,
+		},
+		{
+			name:       "accept with port",
+			rule:       PolicyRule{Action: "accept", DestPort: 80},
+			permissive: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := validator.isOverlyPermissive(tt.rule)
+			if result != tt.permissive {
+				t.Errorf("isOverlyPermissive() = %v, want %v", result, tt.permissive)
+			}
+		})
+	}
+}
+
+// TestDeepValidate tests the comprehensive validation functionality
+func TestDeepValidate(t *testing.T) {
+	config := &Config{
+		Interfaces: []Interface{
+			{Name: "eth0", IPv4: []string{"192.168.1.1/24"}, Zone: "lan"},
+		},
+		Zones: []Zone{
+			{Name: "lan"},
+			{Name: "wan"},
+		},
+		Policies: []Policy{
+			{
+				From: "lan",
+				To:   "wan",
+				Rules: []PolicyRule{
+					{Action: "accept", Protocol: "tcp", DestPort: 80, Log: true},
+				},
+			},
+		},
+	}
+
+	errors := config.DeepValidate()
+	if len(errors) > 0 {
+		t.Errorf("DeepValidate() returned unexpected errors: %v", errors)
+	}
+}
+
+// TestDeepValidate_WithErrors tests validation with intentional errors
+func TestDeepValidate_WithErrors(t *testing.T) {
+	config := &Config{
+		Interfaces: []Interface{
+			{Name: "eth0", IPv4: []string{"invalid-ip"}, Zone: "nonexistent"},
+		},
+		Zones: []Zone{
+			{Name: "lan"},
+		},
+		Policies: []Policy{
+			{
+				From: "nonexistent",
+				To:   "another-nonexistent",
+				Rules: []PolicyRule{
+					{Action: "accept"},
+				},
+			},
+		},
+	}
+
+	errors := config.DeepValidate()
+	if len(errors) == 0 {
+		t.Error("DeepValidate() should have returned errors but didn't")
+	}
+
+	// Check for expected error types
+	found := map[string]bool{
+		"interfaces": false,
+		"policies":   false,
+	}
+
+	for _, err := range errors {
+		if err.Field == "interfaces" {
+			found["interfaces"] = true
+		}
+		if err.Field == "policies" {
+			found["policies"] = true
+		}
+	}
+
+	for field, found := range found {
+		if !found {
+			t.Errorf("Expected error in field %s but none found", field)
+		}
 	}
 }

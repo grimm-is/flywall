@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build !linux
 // +build !linux
 
@@ -81,9 +83,9 @@ func (m *Manager) RemoveDynamicNATRule(match func(config.NATRule) bool) error {
 }
 
 // GenerateRules generates the nftables ruleset script (Stub).
-func (m *Manager) GenerateRules(cfg *Config) (string, error) {
+func (m *Manager) GenerateRules(cfg *Config, resolvedIPSets map[string][]string) (string, error) {
 	// 1. Build filter table script (no metadata on non-Linux)
-	filterScript, err := BuildFilterTableScript(cfg, cfg.VPN, "flywall", "")
+	filterScript, err := BuildFilterTableScript(cfg, cfg.VPN, "flywall", "", resolvedIPSets)
 	if err != nil {
 		return "", fmt.Errorf("failed to build filter table script: %w", err)
 	}

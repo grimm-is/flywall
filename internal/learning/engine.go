@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package learning
 
 import (
@@ -17,6 +19,20 @@ import (
 	"grimm.is/flywall/internal/learning/flowdb"
 )
 
+// EngineVerdict represents the verdict for a packet in inline IPS mode
+type EngineVerdict int
+
+const (
+	// VerdictInspect continues inspecting packets in this flow
+	VerdictInspect EngineVerdict = iota
+	// VerdictAllow accepts the packet and continues inspecting future packets
+	VerdictAllow
+	// VerdictDrop drops the packet
+	VerdictDrop
+	// VerdictOffload accepts the packet and marks the flow for kernel offload
+	VerdictOffload
+)
+
 // DeviceManager abstracts the device manager
 type DeviceManager interface {
 	GetDevice(mac string) device.DeviceInfo
@@ -27,7 +43,15 @@ type NotificationDispatcher interface {
 	SendSimple(title, message, level string)
 }
 
-// Engine is the main learning engine that coordinates flow learning and DNS correlation
+// Engine is the main learning engine that coordinates flow learning and DNS correlation.
+// It sits between the packet interception layer (nflog/nfqueue) and the firewall management layer.
+//
+// Key Responsibilities:
+// 1. Ingest packets from the network.
+// 2. Classify flows as new or known.
+// 3. Correlate flows with DNS/SNI hints.
+// 4. Maintain a state database of all observed flows.
+// 5. Provide decisions (verdicts) for inline blocking/allowing.
 type Engine struct {
 	mu           sync.RWMutex
 	config       *config.RuleLearningConfig
@@ -262,8 +286,15 @@ func (e *Engine) shouldNotifyScan(srcMAC string) bool {
 	return true
 }
 
-// ProcessPacket handles a packet that doesn't match existing firewall rules
-// Returns the verdict: true = accept, false = drop
+// ProcessPacket handles a packet that doesn't match existing firewall rules.
+// This is the hot path for the learning engine.
+//
+// Logic:
+// 1. Fast Path: Check in-memory LRU cache. If found, update stats and return verdict immediately.
+// 2. Slow Path: Check SQLite database. If found, update cache and return verdict.
+// 3. New Flow: If not found, create a new pending flow, persist to DB, and notify if needed.
+//
+// Returns the verdict: true = accept, false = drop.
 func (e *Engine) ProcessPacket(pkt *PacketInfo) (bool, error) {
 	if pkt == nil {
 		return false, fmt.Errorf("packet info required")
@@ -409,13 +440,231 @@ func (e *Engine) ProcessPacket(pkt *PacketInfo) (bool, error) {
 	return learningMode, nil
 }
 
+// ProcessPacketInline handles packets in inline IPS mode with packet window tracking.
+// This method returns an EngineVerdict that indicates whether to:
+// - Continue inspecting (VerdictInspect)
+// - Allow the packet (VerdictAllow)
+// - Drop the packet (VerdictDrop)
+// - Offload the flow to kernel (VerdictOffload)
+func (e *Engine) ProcessPacketInline(pkt *PacketInfo) (EngineVerdict, error) {
+	if pkt == nil {
+		return VerdictDrop, fmt.Errorf("packet info required")
+	}
+
+	e.mu.RLock()
+	learningMode := e.learningMode
+	cfg := e.config
+	e.mu.RUnlock()
+
+	// Default values if not configured
+	packetWindow := 10
+	offloadMark := uint32(0x200000)
+	if cfg != nil {
+		if cfg.PacketWindow > 0 {
+			packetWindow = cfg.PacketWindow
+		}
+		if cfg.OffloadMark != "" {
+			if parsed, err := config.ParseOffloadMark(cfg.OffloadMark); err == nil {
+				offloadMark = parsed
+			}
+		}
+	}
+
+	// FAST PATH: Check in-memory cache first (no I/O)
+	if entry, ok := e.flowCache.Get(pkt.SrcMAC, pkt.Protocol, pkt.DstPort); ok {
+		// Update stats in cached entry
+		entry.Flow.LastSeen = clock.Now()
+		entry.Flow.Occurrences++
+		entry.Flow.SrcIP = pkt.SrcIP
+		entry.Flow.DstIPSample = pkt.DstIP
+		entry.PacketCount++
+		entry.Dirty = true // Mark for async DB write
+
+		// Check if we've exceeded the packet window for offloading
+		if entry.PacketCount > packetWindow {
+			// Check flow state to determine if we can offload
+			switch entry.Flow.State {
+			case flowdb.StateAllowed:
+				// Flow is trusted - offload to kernel
+				e.logger.Info("offloading trusted flow",
+					"src_mac", pkt.SrcMAC,
+					"src_ip", pkt.SrcIP,
+					"protocol", pkt.Protocol,
+					"dst_port", pkt.DstPort,
+					"packet_count", entry.PacketCount,
+					"mark", fmt.Sprintf("0x%x", offloadMark),
+				)
+				return VerdictOffload, nil
+			case flowdb.StateDenied:
+				// Flow is blocked - drop packet
+				return VerdictDrop, nil
+			default:
+				// Still in pending state - continue inspecting
+				return VerdictInspect, nil
+			}
+		}
+
+		// Within packet window - return verdict based on flow state
+		switch entry.Flow.State {
+		case flowdb.StateAllowed:
+			return VerdictAllow, nil
+		case flowdb.StateDenied:
+			return VerdictDrop, nil
+		default: // pending
+			if learningMode {
+				return VerdictAllow, nil
+			}
+			return VerdictInspect, nil
+		}
+	}
+
+	// SLOW PATH: Cache miss - query database
+	existingFlow, err := e.db.FindFlow(pkt.SrcMAC, pkt.Protocol, pkt.DstPort)
+	if err != nil {
+		return VerdictDrop, fmt.Errorf("failed to find flow: %w", err)
+	}
+
+	if existingFlow != nil {
+		// Update existing flow
+		existingFlow.SrcIP = pkt.SrcIP
+		existingFlow.DstIPSample = pkt.DstIP
+		if err := e.db.UpsertFlow(existingFlow); err != nil {
+			e.logger.Error("failed to update flow", "error", err)
+		}
+
+		// Populate cache for future packets (starting count at 1)
+		e.flowCache.Put(pkt.SrcMAC, pkt.Protocol, pkt.DstPort, &FlowCacheEntry{
+			Flow:        existingFlow,
+			Verdict:     existingFlow.State == flowdb.StateAllowed,
+			Dirty:       false,
+			PacketCount: 1,
+		})
+
+		// Return verdict based on state
+		switch existingFlow.State {
+		case flowdb.StateAllowed:
+			return VerdictAllow, nil
+		case flowdb.StateDenied:
+			return VerdictDrop, nil
+		default: // pending
+			if learningMode {
+				return VerdictAllow, nil
+			}
+			return VerdictInspect, nil
+		}
+	}
+
+	// Create new flow
+	newFlow := &flowdb.Flow{
+		SrcMAC:             pkt.SrcMAC,
+		SrcIP:              pkt.SrcIP,
+		SrcHostname:        pkt.SrcHostname,
+		Protocol:           pkt.Protocol,
+		DstPort:            pkt.DstPort,
+		DstIPSample:        pkt.DstIP,
+		Policy:             pkt.Policy,
+		LearningModeActive: learningMode,
+	}
+
+	// Enrich with device info
+	if e.deviceManager != nil {
+		info := e.deviceManager.GetDevice(pkt.SrcMAC)
+		newFlow.Vendor = info.Vendor
+		if info.Device != nil {
+			newFlow.DeviceID = info.Device.ID
+		}
+	} else {
+		// Fallback to simple vendor lookup if no manager
+		newFlow.Vendor = network.LookupVendor(pkt.SrcMAC)
+	}
+
+	// Set initial state based on learning mode
+	if learningMode {
+		newFlow.State = flowdb.StateAllowed
+	} else {
+		newFlow.State = flowdb.StatePending
+	}
+
+	if err := e.db.UpsertFlow(newFlow); err != nil {
+		return VerdictDrop, fmt.Errorf("failed to save new flow: %w", err)
+	}
+
+	e.logger.Info("new flow detected",
+		"src_mac", pkt.SrcMAC,
+		"src_ip", pkt.SrcIP,
+		"protocol", pkt.Protocol,
+		"dst_port", pkt.DstPort,
+		"dst_ip", pkt.DstIP,
+		"state", newFlow.State,
+	)
+
+	// Add to cache with packet count of 1
+	e.flowCache.Put(pkt.SrcMAC, pkt.Protocol, pkt.DstPort, &FlowCacheEntry{
+		Flow:        newFlow,
+		Verdict:     learningMode,
+		Dirty:       false,
+		PacketCount: 1,
+	})
+
+	// Enrich with DNS context
+	go e.enrichFlowWithDNS(newFlow.ID, pkt.DstIP)
+
+	// If learning mode and auto-allowed, trigger callback
+	if learningMode && e.onFlowAllowed != nil {
+		go func() {
+			if err := e.onFlowAllowed(newFlow); err != nil {
+				e.logger.Error("failed to apply allowed flow rule", "error", err)
+			}
+		}()
+	}
+
+	// If learning mode OFF, notify about new pending flow (unless port scan)
+	if !learningMode {
+		// Check for port scan before notifying
+		if e.isPortScan(pkt.SrcMAC, pkt.DstPort) {
+			e.logger.Debug("suppressing notification - port scan detected",
+				"src_mac", pkt.SrcMAC,
+				"src_ip", pkt.SrcIP,
+			)
+			// Trigger Port Scan Alert
+			if e.dispatcher != nil && e.shouldNotifyScan(pkt.SrcMAC) {
+				msg := fmt.Sprintf("Port scan detected from %s (%s) targeting %s", pkt.SrcIP, pkt.SrcMAC, pkt.DstIP)
+				go e.dispatcher.SendSimple("Port Scan Detected", msg, "warning")
+			}
+		} else if e.shouldNotify(pkt.SrcMAC) {
+			// Trigger New Flow Alert
+			if e.onNewFlow != nil {
+				go e.onNewFlow(newFlow)
+			}
+			if e.dispatcher != nil {
+				msg := fmt.Sprintf("New flow detected: %s (%s) -> %s:%d (%s)",
+					pkt.SrcIP, pkt.SrcMAC, pkt.DstIP, pkt.DstPort, pkt.Protocol)
+				go e.dispatcher.SendSimple("New Flow Detected", msg, "info")
+			}
+		}
+	}
+
+	// Return initial verdict
+	if learningMode {
+		return VerdictAllow, nil
+	}
+	return VerdictInspect, nil
+}
+
 // ProcessSNI handles SNI hint discovered from separate inspection process
 // Deprecated: Use ProcessTLSHint instead for JA3 support
 func (e *Engine) ProcessSNI(srcMAC, srcIP, dstIP, sni string) {
 	e.ProcessTLSHint(srcMAC, srcIP, dstIP, sni, "", "")
 }
 
-// ProcessTLSHint handles TLS Client Hello data including SNI and JA3 fingerprint
+// ProcessTLSHint handles TLS Client Hello data including SNI and JA3 fingerprint.
+// This is called asynchronously when the inspection engine (e.g. nfqueue/sni_reader)
+// detects a TLS handshake.
+//
+// It enriches the existing flow (identified by SrcIP+SrcMAC+TCP:443) with:
+// 1. Application Identity (inferred from SNI)
+// 2. Vendor Identity (inferred from MAC/SNI)
+// 3. JA3 Fingerprint (TLS client signature)
 func (e *Engine) ProcessTLSHint(srcMAC, srcIP, dstIP, sni, ja3Hash, ja3Raw string) {
 	if sni == "" && ja3Hash == "" {
 		return
@@ -770,6 +1019,8 @@ func (e *Engine) GetStats() (map[string]int64, error) {
 		"scrutiny_flows":     stats.ScrutinyFlows,
 		"total_occurrences":  stats.TotalOccurrences,
 		"total_domain_hints": stats.TotalDomainHints,
+		"tcp_flows":          stats.TCPFlows,
+		"udp_flows":          stats.UDPFlows,
 	}
 
 	// Add DNS cache stats
@@ -827,7 +1078,9 @@ func (e *Engine) cleanupWorker() {
 }
 
 // dbFlushWorker periodically flushes dirty cache entries to the database.
-// This implements write-back caching for flow updates.
+// This implements write-back caching for flow updates (LastSeen, Occurrences).
+// Instead of writing to SQLite for every packet (which would be too slow),
+// we accumulate updates in memory and batch-write them every few seconds.
 func (e *Engine) dbFlushWorker() {
 	defer e.wg.Done()
 
@@ -882,4 +1135,5 @@ type PacketInfo struct {
 	Protocol    string // "tcp" or "udp"
 	Interface   string
 	Policy      string // Firewall policy name
+	Payload     string // Optional payload info (e.g. DNS domain)
 }

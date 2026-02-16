@@ -30,7 +30,9 @@ interface "lo" {
 }
 
 zone "lan" {
-  interfaces = ["lo"]
+  match {
+    interface = "lo"
+  }
 }
 
 ddns {
@@ -49,13 +51,13 @@ start_ctl "$TEST_CONFIG"
 dilated_sleep 2
 
 # Check for DDNS service in logs (check both CTL_LOG and application log)
-APP_LOG="/var/log/flywall/flywall.log"
+APP_LOG="/opt/flywall/var/log/flywall.log"
 if grep -qi "DDNS" "$CTL_LOG" 2>/dev/null || grep -qi "DDNS" "$APP_LOG" 2>/dev/null; then
     ok 0 "DDNS service initialized (log found)"
 else
     diag "CTL_LOG output:"
     cat "$CTL_LOG" 2>/dev/null | sed 's/^/# /'
-    diag "Application log output (/var/log/flywall/flywall.log):"
+    diag "Application log output (/opt/flywall/var/log/flywall.log):"
     cat "$APP_LOG" 2>/dev/null | tail -30 | sed 's/^/# /'
     ok 1 "DDNS not mentioned in logs"
 fi
@@ -63,4 +65,3 @@ fi
 
 # Cleanup handled by cleanup_on_exit trap
 rm -f "$TEST_CONFIG"
-

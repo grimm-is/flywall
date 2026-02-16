@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 // +build linux
 
@@ -5,13 +7,13 @@ package qos
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/logging"
 
 	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
 )
 
 // Manager handles QoS traffic shaping configuration.
@@ -31,19 +33,19 @@ func NewManager(logger *logging.Logger) *Manager {
 
 // ApplyConfig applies QoS configuration to interfaces.
 func (m *Manager) ApplyConfig(cfg *config.Config) error {
-	for _, policy := range cfg.QoSPolicies {
+	for i, policy := range cfg.QoSPolicies {
 		if !policy.Enabled {
 			continue
 		}
 
-		if err := m.applyPolicy(policy); err != nil {
+		if err := m.applyPolicy(policy, i); err != nil {
 			return fmt.Errorf("failed to apply QoS policy %s: %w", policy.Name, err)
 		}
 	}
 	return nil
 }
 
-func (m *Manager) applyPolicy(pol config.QoSPolicy) error {
+func (m *Manager) applyPolicy(pol config.QoSPolicy, policyIdx int) error {
 	link, err := netlink.LinkByName(pol.Interface)
 	if err != nil {
 		return fmt.Errorf("interface %s not found: %w", pol.Interface, err)
@@ -148,102 +150,57 @@ func (m *Manager) applyPolicy(pol config.QoSPolicy) error {
 		}
 	}
 
-	// 5. Apply Classification Rules (Filters)
-	for _, rule := range pol.Rules {
+	// 5. Apply Classification Rules (Filters) using FWMark
+	for j, rule := range pol.Rules {
 		classMinor, ok := classIDMap[rule.Class]
 		if !ok {
-			m.logger.Warn("QoS rule references unknown class", "rule", rule.Name, "class", rule.Class)
 			continue
 		}
 
-		flowID := netlink.MakeHandle(1, classMinor)
-
-		// Construct u32 filter
-		filter := &netlink.U32{
-			FilterAttrs: netlink.FilterAttrs{
-				LinkIndex: link.Attrs().Index,
-				Parent:    netlink.MakeHandle(1, 0), // Attach to root
-				Priority:  1,
-				Protocol:  unix.ETH_P_IP,
-			},
-			ClassId: flowID,
-		}
-
-		// Add selectors
-		// Note: netlink.U32 is complex to build manually with raw selectors.
-		// For simplicity/robustness in this phase, we'll implement basic matchers:
-		// - IP Protocol
-		// - Dst Port
-
-		hasMatch := false
-
-		// Match Protocol (TCP=6, UDP=17)
-		if rule.Protocol != "" {
-			proto := uint8(0)
-			switch strings.ToLower(rule.Protocol) {
-			case "tcp":
-				proto = 6
-			case "udp":
-				proto = 17
-			case "icmp":
-				proto = 1
-			}
-
-			if proto > 0 {
-				// Match Protocol at offset 9 (8 bit)
-				filter.Sel = &netlink.TcU32Sel{
-					Keys: []netlink.TcU32Key{
-						{
-							Mask:    0x00ff0000,
-							Val:     uint32(proto) << 16,
-							Off:     8,
-							OffMask: 0,
-						},
-					},
-					Flags: netlink.TC_U32_TERMINAL,
-				}
-				hasMatch = true
+		classIdx := -1
+		for idx, class := range pol.Classes {
+			if class.Name == rule.Class {
+				classIdx = idx
+				break
 			}
 		}
-
-		// Match Destination Port
-		if rule.DestPort > 0 {
-			// Offset 20 is TCP/UDP header start (assuming no IP options)
-			// Dest port is bytes 2-3 of transport header
-			// This is tricky with simple u32 without parsing variable IP header length.
-			// Ideally we use u32 match ip dport X
-
-			// For this MVP, let's look for simple port match assuming standard IP header (20 bytes)
-			// UDP/TCP Dst Port is at IP+22 (20 bytes IP + 2 bytes SrcPort)
-			// So offset 20+0 implies transport header...
-
-			// Actually, let's use the 'tc' command wrapper for filters, similar to how we handled other complex things.
-			// It's much safer than constructing raw byte codes blindly.
-			// OR, since verifying byte code generation is what we want to avoid...
-
-			// Let's stick to valid Go code. If U32 is too hard, we can assume just class setup is the goal
-			// and empty filters match nothing (or match all).
-
-			// IMPROVEMENT: Use `tc filter add` via exec.Command for the rules to ensure correctness
-			// while keeping qdisc/class management in Go.
-
-			// For now, let's leave filters minimal or skip if too complex for raw struct construction without helper.
-			// The key verification is that we CAN create the structure.
-
-			// Adding a dummy filter to satisfy the requirement that we tried.
-			if !hasMatch {
-				// Match all if no specific rules
-				// filter.Sel = nil implies match all?
-			}
+		if classIdx == -1 {
+			continue
 		}
 
-		if hasMatch {
-			if err := netlink.FilterAdd(filter); err != nil {
-				m.logger.Warn("failed to add filter for rule", "rule", rule.Name, "error", err)
-			}
+		mark := CalculateFWMark(policyIdx, classIdx)
+
+		// FWMark filter using raw tc command (netlink lib limitations)
+		//
+		// CRITICAL IMPLEMENTATION NOTE:
+		// We are intentionally executing the raw `tc` command here instead of using the `vishvananda/netlink` library.
+		// As of v1.3.0, the library's `FilterAdd` implementation for the `fw` filter type has serialization issues
+		// where the `handle` (fwmark) and `classid` attributes are sometimes omitted or incorrectly encoded.
+		//
+		// This caused integration tests to fail because `tc filter show` verified the filter existed but
+		// had no handle (mark) associated, rendering the QoS classification ineffective.
+		//
+		// We attempted to:
+		// 1. Use `netlink.Fw` struct (missing in older vendored versions).
+		// 2. Define a local `Fw` struct (library type assertion fails).
+		//
+		// DECISION:
+		// Until the upstream library is updated/patched, we use `os/exec` for reliability on this critical path.
+		// Do not revert to `netlink.FilterAdd` for `fw` type without verifying `tc filter show` contains
+		// correct handles (e.g. 0xf000) and classids.
+		cmd := exec.Command("tc", "filter", "add", "dev", pol.Interface,
+			"parent", "1:0",
+			"protocol", "ip",
+			"prio", fmt.Sprintf("%d", 100+j),
+			"handle", fmt.Sprintf("0x%x", mark),
+			"fw",
+			"classid", fmt.Sprintf("1:%x", classMinor),
+		)
+
+		if out, err := cmd.CombinedOutput(); err != nil {
+			m.logger.Warn("failed to add fwmark filter", "mark", mark, "error", err, "output", string(out))
 		}
 	}
-
 	return nil
 }
 

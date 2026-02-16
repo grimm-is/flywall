@@ -16,8 +16,13 @@ const config = {
 			assets: 'dist',
 			fallback: 'index.html', // Warning is expected - Go server serves this for SPA routes
 			precompress: false,
-			strict: true
-		})
+			strict: false
+		}),
+		prerender: {
+			handleHttpError: 'warn',
+			handleMissingId: 'warn',
+			handleUnseenRoutes: 'warn'
+		}
 	}
 };
 

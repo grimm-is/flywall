@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package firewall
 
 import (
@@ -16,22 +18,22 @@ import (
 
 // IPSetService manages IPSet lifecycle, auto-updates, and metadata.
 type IPSetService struct {
-	tableName      string
-	cacheDir       string
-	fireholManager *FireHOLManager
-	ipsetManager   *IPSetManager
-	stateStore     state.Store
-	logger         *logging.Logger
-	mu             sync.RWMutex
-	ctx            context.Context
-	cancel         context.CancelFunc
+	tableName    string
+	cacheDir     string
+	listManager  *ListManager
+	ipsetManager *IPSetManager
+	stateStore   state.Store
+	logger       *logging.Logger
+	mu           sync.RWMutex
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 // IPSetMetadata tracks cache information for IPSet lists.
 type IPSetMetadata struct {
 	Name         string    `json:"name"`
 	Type         string    `json:"type"`
-	Source       string    `json:"source"` // "manual", "firehol", "url"
+	Source       string    `json:"source"` // "manual", "managed", "url"
 	SourceURL    string    `json:"source_url,omitempty"`
 	LastUpdate   time.Time `json:"last_update"`
 	NextUpdate   time.Time `json:"next_update"`
@@ -42,11 +44,17 @@ type IPSetMetadata struct {
 
 // NewIPSetService creates a new IPSet service.
 func NewIPSetService(tableName, cacheDir string, stateStore state.Store, logger *logging.Logger) *IPSetService {
+	// Initialize ListManager (defaults)
+	listMgr, err := NewListManager(cacheDir, logger, "")
+	if err != nil {
+		logger.Error("Failed to initialize ListManager", "error", err)
+	}
+
 	return &IPSetService{
-		ipsetManager:   NewIPSetManager(tableName),
-		fireholManager: NewFireHOLManager(cacheDir, logger),
-		stateStore:     stateStore,
-		logger:         logger,
+		ipsetManager: NewIPSetManager(tableName),
+		listManager:  listMgr,
+		stateStore:   stateStore,
+		logger:       logger,
 	}
 }
 
@@ -100,20 +108,32 @@ func (s *IPSetService) applyIPSet(ipset *config.IPSet) error {
 	var source string
 	var sourceURL string
 
+	// Determine managed list name (legacy or new)
+	managedList := ipset.ManagedList
+	if managedList == "" {
+		managedList = ipset.FireHOLList
+	}
+
 	switch {
 	case len(ipset.Entries) > 0:
 		entries = ipset.Entries
 		source = "manual"
-	case ipset.FireHOLList != "":
-		listEntries, err := s.fireholManager.DownloadList(ipset.FireHOLList)
+	case managedList != "":
+		if s.listManager == nil {
+			return fmt.Errorf("list manager not initialized")
+		}
+		listEntries, err := s.listManager.DownloadList(managedList)
 		if err != nil {
-			return fmt.Errorf("failed to download firehol list %s: %w", ipset.FireHOLList, err)
+			return fmt.Errorf("failed to download managed list %s: %w", managedList, err)
 		}
 		entries = listEntries
-		source = "firehol"
-		sourceURL = s.getFireHOLURL(ipset.FireHOLList)
+		source = "managed"
+		sourceURL, _ = s.listManager.GetListURL(managedList)
 	case ipset.URL != "":
-		listEntries, err := s.fireholManager.DownloadFromURL(ipset.URL)
+		if s.listManager == nil {
+			return fmt.Errorf("list manager not initialized")
+		}
+		listEntries, err := s.listManager.DownloadFromURL(ipset.URL)
 		if err != nil {
 			return fmt.Errorf("failed to download from URL %s: %w", ipset.URL, err)
 		}
@@ -121,7 +141,7 @@ func (s *IPSetService) applyIPSet(ipset *config.IPSet) error {
 		source = "url"
 		sourceURL = ipset.URL
 	default:
-		return fmt.Errorf("ipset %s has no entries, firehol_list, or url", ipset.Name)
+		return fmt.Errorf("ipset %s has no entries, managed_list, or url", ipset.Name)
 	}
 
 	// Add entries to the set
@@ -160,12 +180,6 @@ func (s *IPSetService) applyIPSet(ipset *config.IPSet) error {
 }
 
 // updateIPSet updates an IPSet with fresh data from its source.
-// This method handles:
-// 1. Checking metadata to determine source (FireHOL vs URL)
-// 2. Downloading fresh data (using FireHOLManager which handles caching/ETags)
-// 3. Flushing the existing nftables set
-// 4. Repopulating the set with new entries
-// 5. Updating metadata with new stats and timestamp
 func (s *IPSetService) updateIPSet(name string) error {
 	// Get current metadata
 	metadata, err := s.getMetadata(name)
@@ -173,13 +187,17 @@ func (s *IPSetService) updateIPSet(name string) error {
 		return fmt.Errorf("failed to get metadata: %w", err)
 	}
 
+	if s.listManager == nil {
+		return fmt.Errorf("list manager not initialized")
+	}
+
 	// Download fresh entries based on source
 	var entries []string
 	switch metadata.Source {
-	case "firehol":
-		entries, err = s.fireholManager.DownloadList(metadata.SourceURL)
+	case "managed", "firehol": // support legacy metadata value
+		entries, err = s.listManager.DownloadFromURL(metadata.SourceURL)
 	case "url":
-		entries, err = s.fireholManager.DownloadFromURL(metadata.SourceURL)
+		entries, err = s.listManager.DownloadFromURL(metadata.SourceURL)
 	default:
 		return fmt.Errorf("cannot auto-update manual ipset %s", name)
 	}
@@ -226,11 +244,20 @@ func (s *IPSetService) validateIPSet(ipset *config.IPSet) error {
 	if len(ipset.Entries) > 0 {
 		sources++
 	}
-	if ipset.FireHOLList != "" {
+
+	managedList := ipset.ManagedList
+	if managedList == "" {
+		managedList = ipset.FireHOLList
+	}
+
+	if managedList != "" {
 		sources++
-		// Validate FireHOL list name
-		if _, exists := WellKnownLists[ipset.FireHOLList]; !exists {
-			return fmt.Errorf("unknown firehol list: %s", ipset.FireHOLList)
+		if s.listManager == nil {
+			return fmt.Errorf("list manager not initialized")
+		}
+		// Validate list existence using GetListURL
+		if _, err := s.listManager.GetListURL(managedList); err != nil {
+			return fmt.Errorf("unknown managed list: %s", managedList)
 		}
 	}
 	if ipset.URL != "" {
@@ -242,7 +269,7 @@ func (s *IPSetService) validateIPSet(ipset *config.IPSet) error {
 	}
 
 	if sources == 0 {
-		return fmt.Errorf("ipset %s must have entries, firehol_list, or url", ipset.Name)
+		return fmt.Errorf("ipset %s must have entries, managed_list, or url", ipset.Name)
 	}
 	if sources > 1 {
 		return fmt.Errorf("ipset %s cannot have multiple sources", ipset.Name)
@@ -254,8 +281,8 @@ func (s *IPSetService) validateIPSet(ipset *config.IPSet) error {
 	}
 
 	// Test network connectivity for remote sources
-	if ipset.FireHOLList != "" || ipset.URL != "" {
-		if err := s.testConnectivity(ipset.FireHOLList, ipset.URL); err != nil {
+	if managedList != "" || ipset.URL != "" {
+		if err := s.testConnectivity(managedList, ipset.URL); err != nil {
 			return fmt.Errorf("network connectivity test failed: %w", err)
 		}
 	}
@@ -263,11 +290,18 @@ func (s *IPSetService) validateIPSet(ipset *config.IPSet) error {
 	return nil
 }
 
-// testConnectivity tests network connectivity to FireHOL or custom URL.
-func (s *IPSetService) testConnectivity(fireholList, url string) error {
+// testConnectivity tests network connectivity to Managed List or custom URL.
+func (s *IPSetService) testConnectivity(managedList, url string) error {
 	var testURL string
-	if fireholList != "" {
-		testURL = s.getFireHOLURL(fireholList)
+	if managedList != "" {
+		if s.listManager == nil {
+			return nil // Skip check if manager broken (log warning elsewhere)
+		}
+		u, err := s.listManager.GetListURL(managedList)
+		if err != nil {
+			return err
+		}
+		testURL = u
 	} else if url != "" {
 		testURL = url
 	} else {
@@ -293,10 +327,11 @@ func (s *IPSetService) testConnectivity(fireholList, url string) error {
 	return nil
 }
 
-// getFireHOLURL returns the URL for a FireHOL list name.
-func (s *IPSetService) getFireHOLURL(listName string) string {
-	if listInfo, exists := WellKnownLists[listName]; exists {
-		return listInfo.URL
+// getListURL returns the URL for a named list.
+func (s *IPSetService) getListURL(listName string) string {
+	if s.listManager != nil {
+		u, _ := s.listManager.GetListURL(listName)
+		return u
 	}
 	return ""
 }
@@ -365,12 +400,12 @@ func (s *IPSetService) GetMetadata(name string) (IPSetMetadata, error) {
 
 // ClearCache clears the FireHOL cache.
 func (s *IPSetService) ClearCache() error {
-	return s.fireholManager.ClearCache()
+	return s.listManager.ClearCache()
 }
 
 // GetCacheInfo returns cache information.
 func (s *IPSetService) GetCacheInfo() (map[string]interface{}, error) {
-	return s.fireholManager.GetCacheInfo()
+	return s.listManager.GetCacheInfo()
 }
 
 // AddEntry adds a single entry to an IPSet.

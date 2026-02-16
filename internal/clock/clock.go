@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package clock provides a mockable time source for testing.
 // In production, it simply wraps time.Now(). For tests, use MockClock.
 //

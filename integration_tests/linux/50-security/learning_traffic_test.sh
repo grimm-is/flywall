@@ -18,8 +18,8 @@ if ! command -v ip >/dev/null 2>&1; then
 fi
 
 # Need log directory
-mkdir -p /var/log/flywall
-LOG_FILE="/var/log/flywall/flywall.log"
+mkdir -p /opt/flywall/var/log
+LOG_FILE="/opt/flywall/var/log/flywall.log"
 # Clear log file
 : > "$LOG_FILE"
 
@@ -37,6 +37,11 @@ FLOW_DB="$STATE_DIR/flow.db"
 
 # Register cleanup handler
 cleanup_on_exit
+custom_cleanup() {
+    teardown_test_topology
+    _full_cleanup_handler
+}
+trap 'custom_cleanup' EXIT INT TERM
 
 # --- Setup ---
 TEST_CONFIG=$(mktemp_compatible "learning_traffic.hcl")
@@ -52,11 +57,15 @@ rule_learning {
 }
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 interface "veth-lan" {
@@ -96,6 +105,11 @@ while ! grep -qE "Learning service started|starting .* learning engine" "$CTL_LO
     dilated_sleep 0.2
     count=$((count + 1))
     if [ $count -ge 25 ]; then  # 5s max
+        # Check if nflog permission error prevents learning
+        if grep -q "netlink receive: operation not permitted" "$CTL_LOG" 2>/dev/null; then
+            echo "1..0 # SKIP NFLog requires CAP_NET_ADMIN (not available in this environment)"
+            exit 0
+        fi
         diag "Timeout waiting for learning service"
         break
     fi

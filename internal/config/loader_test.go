@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 import (
@@ -28,8 +30,8 @@ policy "lan" "wan" {
 		t.Fatalf("LoadHCL() error = %v", err)
 	}
 
-	if cfg.SchemaVersion != "1.0" {
-		t.Errorf("SchemaVersion = %q, want %q", cfg.SchemaVersion, "1.0")
+	if cfg.SchemaVersion != "1.1" {
+		t.Errorf("SchemaVersion = %q, want %q", cfg.SchemaVersion, "1.1")
 	}
 
 	if !cfg.IPForwarding {
@@ -72,8 +74,8 @@ interface "eth0" {
 
 	// Config should be parsed correctly
 	cfg := result.Config
-	if cfg.SchemaVersion != "1.0" {
-		t.Errorf("SchemaVersion = %q, want %q (default)", cfg.SchemaVersion, "1.0")
+	if cfg.SchemaVersion != "1.1" {
+		t.Errorf("SchemaVersion = %q, want %q (default)", cfg.SchemaVersion, "1.1")
 	}
 
 	// Protection should be parsed into the global_protection field
@@ -182,8 +184,8 @@ ip_forwarding = true
 	if err != nil {
 		t.Fatalf("LoadFile(hcl) error = %v", err)
 	}
-	if cfg.SchemaVersion != "1.0" {
-		t.Errorf("HCL SchemaVersion = %q, want %q", cfg.SchemaVersion, "1.0")
+	if cfg.SchemaVersion != "1.1" {
+		t.Errorf("HCL SchemaVersion = %q, want %q", cfg.SchemaVersion, "1.1")
 	}
 
 	// Test JSON file
@@ -200,14 +202,14 @@ ip_forwarding = true
 	if err != nil {
 		t.Fatalf("LoadFile(json) error = %v", err)
 	}
-	if cfg.SchemaVersion != "1.0" {
-		t.Errorf("JSON SchemaVersion = %q, want %q", cfg.SchemaVersion, "1.0")
+	if cfg.SchemaVersion != "1.1" {
+		t.Errorf("JSON SchemaVersion = %q, want %q", cfg.SchemaVersion, "1.1")
 	}
 }
 
 func TestLoadHCLWithOptions_StrictVersion(t *testing.T) {
 	hcl := `
-schema_version = "1.0"
+schema_version = "1.1"
 ip_forwarding = true
 `
 	opts := LoadOptions{
@@ -238,7 +240,7 @@ func TestSaveHCL(t *testing.T) {
 
 	// Create a complex config to test structure
 	cfg := &Config{
-		SchemaVersion: "1.0",
+		SchemaVersion: "1.1",
 		IPForwarding:  true,
 		Interfaces: []Interface{
 			{

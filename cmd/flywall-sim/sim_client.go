@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package main
 
 import (
@@ -64,8 +66,20 @@ func (c *SimControlPlaneClient) GetStatus() (*ctlplane.Status, error) {
 	}, nil
 }
 
+func (c *SimControlPlaneClient) GetMonitors() ([]ctlplane.MonitorResult, error) {
+	return []ctlplane.MonitorResult{}, nil
+}
+
 func (c *SimControlPlaneClient) GetConfig() (*config.Config, error) {
 	return c.config, nil
+}
+
+func (c *SimControlPlaneClient) GetRunningConfig() (*config.Config, error) {
+	return c.config, nil // Sim returns same for both
+}
+
+func (c *SimControlPlaneClient) GetForgivingResult() (*config.ForgivingLoadResult, error) {
+	return nil, nil // Sim doesn't support forgiving load yet
 }
 
 func (c *SimControlPlaneClient) GetInterfaces() ([]ctlplane.InterfaceStatus, error) {
@@ -89,6 +103,10 @@ func (c *SimControlPlaneClient) GetServices() ([]ctlplane.ServiceStatus, error) 
 func (c *SimControlPlaneClient) ApplyConfig(cfg *config.Config) error {
 	c.config = cfg
 	c.kernel.LoadConfig(cfg)
+	return nil
+}
+
+func (c *SimControlPlaneClient) DiscardConfig() error {
 	return nil
 }
 

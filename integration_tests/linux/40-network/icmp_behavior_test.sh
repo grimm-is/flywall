@@ -48,11 +48,15 @@ schema_version = "1.0"
 ip_forwarding = true
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 interface "veth-lan" {
@@ -100,24 +104,20 @@ ok $? "Test topology created"
 
 # Test 2: Start firewall
 diag "Starting firewall with ICMP config..."
-$APP_BIN ctl "$TEST_CONFIG" > /tmp/icmp_behavior_ctl.log 2>&1 &
+$APP_BIN ctl "$TEST_CONFIG" > /tmp/icmp_behavior_ctl_$$.log 2>&1 &
 CTL_PID=$!
 track_pid $CTL_PID
 
-count=0
-while [ ! -S "$CTL_SOCKET" ]; do
-    dilated_sleep 1
-    count=$((count + 1))
-    if [ $count -ge 15 ]; then
-        diag "Timeout waiting for firewall socket"
-        cat /tmp/icmp_behavior_ctl.log | head -30
-        ok 1 "Firewall started"
-        exit 1
-    fi
-done
+if ! wait_for_file "$CTL_SOCKET" 15; then
+    diag "Timeout waiting for firewall socket"
+    cat /tmp/icmp_behavior_ctl_$$.log | head -30
+    ok 1 "Firewall started"
+    exit 1
+fi
 ok 0 "Firewall started"
 
-dilated_sleep 2
+# Wait for NFT config to load
+wait_for_condition "nft list table inet flywall >/dev/null 2>&1" 5
 
 # Test 3: Verify ICMP rules exist in nftables
 diag "Checking ICMP rules in nftables..."

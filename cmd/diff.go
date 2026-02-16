@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
@@ -29,7 +31,7 @@ func RunDiff(configFile string) error {
 	// Use nil logger for now or stdout?
 	fwMgr := firewall.NewManagerWithConn(nil, logger, "")
 
-	generatedRules, err := fwMgr.GenerateRules(firewall.FromGlobalConfig(cfg))
+	generatedRules, err := fwMgr.GenerateRules(firewall.FromGlobalConfig(cfg), nil)
 	if err != nil {
 		return fmt.Errorf("failed to generate ruleset: %w", err)
 	}

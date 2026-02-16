@@ -42,7 +42,9 @@ interface "veth-lan" {
 }
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 # Enable mDNS reflector (which enables collector)

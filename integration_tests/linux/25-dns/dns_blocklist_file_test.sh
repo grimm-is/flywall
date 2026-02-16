@@ -16,8 +16,8 @@ if ! command -v dig >/dev/null 2>&1; then
     exit 0
 fi
 
-CONFIG_FILE="/tmp/dns_blocklist_file.hcl"
-BLOCKLIST_FILE="/tmp/test_blocklist.txt"
+CONFIG_FILE="/tmp/dns_blocklist_file_$$.hcl"
+BLOCKLIST_FILE="/tmp/test_blocklist_$$.txt"
 
 # Create a test blocklist file
 cat > "$BLOCKLIST_FILE" << 'EOF'
@@ -37,7 +37,9 @@ interface "lo" {
 }
 
 zone "local" {
-    interfaces = ["lo"]
+    match {
+        interface = "lo"
+    }
     services {
         dns = true
     }

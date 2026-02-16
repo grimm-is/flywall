@@ -11,7 +11,7 @@ require_root
 require_binary
 cleanup_on_exit
 
-CONFIG_FILE="/tmp/mtu_test.hcl"
+CONFIG_FILE="/tmp/mtu_test_$$.hcl"
 
 # Create test config with MTU settings
 cat > "$CONFIG_FILE" <<EOF

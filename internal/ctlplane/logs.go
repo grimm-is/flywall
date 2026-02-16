@@ -1,8 +1,11 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package ctlplane
 
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,7 +36,7 @@ func (s *Server) GetLogs(args *GetLogsArgs, reply *GetLogsReply) error {
 	case LogSourceDHCP:
 		entries, err = getDHCPLogs(args)
 	case LogSourceDNS:
-		entries, err = getDNSLogs(args)
+		entries, err = s.getDNSLogs(args)
 	case LogSourceFirewall, LogSourceAPI, LogSourceCtlPlane, LogSourceGateway, LogSourceAuth:
 		// Get from application log buffer
 		entries = s.getAppLogEntries(string(LogSource(args.Source)), args)
@@ -302,7 +305,50 @@ func getDHCPLogs(args *GetLogsArgs) ([]LogEntry, error) {
 }
 
 // getDNSLogs reads DNS query logs
-func getDNSLogs(args *GetLogsArgs) ([]LogEntry, error) {
+func (s *Server) getDNSLogs(args *GetLogsArgs) ([]LogEntry, error) {
+	// Try to use structured query log store first
+	if s.queryLogStore != nil {
+		// Calculate offset if needed (not supported by GetLogsArgs directly, but we can implement basic paging)
+		// For now, just get the limit.
+		// Note: GetRecentLogs returns newest first.
+		qEntries, err := s.queryLogStore.GetRecentLogs(args.Limit, 0, args.Search)
+		if err == nil {
+			entries := make([]LogEntry, 0, len(qEntries))
+			for _, q := range qEntries {
+				// Map to LogEntry
+				msg := fmt.Sprintf("%s %s %s -> %s (%dms)", q.Type, q.Domain, q.ClientIP, q.RCode, q.DurationMs)
+				if q.Blocked {
+					msg = fmt.Sprintf("BLOCKED %s %s (%s)", q.Type, q.Domain, q.BlockList)
+				}
+
+				entry := LogEntry{
+					Timestamp: q.Timestamp.Format(time.RFC3339),
+					Source:    LogSourceDNS,
+					Level:     "info",
+					Message:   msg,
+					Extra: map[string]string{
+						"CLIENT":   q.ClientIP,
+						"DOMAIN":   q.Domain,
+						"TYPE":     q.Type,
+						"RCODE":    q.RCode,
+						"UPSTREAM": q.Upstream,
+						"DURATION": fmt.Sprintf("%d", q.DurationMs),
+					},
+				}
+
+				if q.Blocked {
+					entry.Level = "warn"
+					entry.Extra["BLOCKED"] = "true"
+					entry.Extra["BLOCKLIST"] = q.BlockList
+				}
+
+				entries = append(entries, entry)
+			}
+			return entries, nil
+		}
+		// If DB fails, fall back to syslog
+	}
+
 	var entries []LogEntry
 
 	syslogArgs := &GetLogsArgs{Limit: 10000}
@@ -360,13 +406,15 @@ func (s *Server) getAllLogs(args *GetLogsArgs) ([]LogEntry, error) {
 		allEntries = append(allEntries, entries...)
 	}
 
-	// Manual sort by timestamp (newest first for consistent limiting)
-	// Since we appended in arbitrary order, we should probably sort before limiting
-	// But limitEntries just takes last N.
+	// Get DNS logs
+	if entries, err := s.getDNSLogs(subArgs); err == nil {
+		allEntries = append(allEntries, entries...)
+	}
 
-	// Real sorting would import "sort"
-	// For now, relies on limitEntries taking the end... which presumes appended order is somewhat chronological?
-	// Actually, this logic is a bit weak for interleaved logs, but the primary fix here is preserving filters.
+	// Sort by timestamp to ensure correct limiting
+	sort.Slice(allEntries, func(i, j int) bool {
+		return allEntries[i].Timestamp < allEntries[j].Timestamp
+	})
 
 	return limitEntries(allEntries, args.Limit), nil
 }

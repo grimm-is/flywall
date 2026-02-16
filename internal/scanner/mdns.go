@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package scanner
 
 import (
@@ -15,7 +17,7 @@ func ExtractMDNS(packet gopacket.Packet, record *DeviceFingerprint) {
 		return
 	}
 	udp, _ := udpLayer.(*layers.UDP)
-	
+
 	if udp.SrcPort != 5353 && udp.DstPort != 5353 {
 		return
 	}
@@ -23,7 +25,7 @@ func ExtractMDNS(packet gopacket.Packet, record *DeviceFingerprint) {
 	// Parse DNS
 	if dnsLayer := packet.Layer(layers.LayerTypeDNS); dnsLayer != nil {
 		dns, _ := dnsLayer.(*layers.DNS)
-		
+
 		// Look at Answers (advertising services) or Additional records
 		// Devices often announce themselves in response to queries or spontaneously
 		extractDNSRecords(dns.Answers, record)
@@ -35,13 +37,13 @@ func ExtractMDNS(packet gopacket.Packet, record *DeviceFingerprint) {
 func extractDNSRecords(records []layers.DNSResourceRecord, record *DeviceFingerprint) {
 	for _, rr := range records {
 		name := string(rr.Name)
-		
+
 		// Capture Service Types (PTR records often point to service types like _http._tcp.local)
 		if rr.Type == layers.DNSTypePTR {
 			// The Name is usually the service type (e.g. _services._dns-sd._udp.local)
 			// The PTR data points to the instance name
 			// But for fingerprinting, the SERVICE TYPE is most valuable (e.g. _googlecast._tcp)
-			
+
 			// If the name starts with _, it's likely a service signature
 			if strings.HasPrefix(name, "_") {
 				// Clean up trailing dots
@@ -49,7 +51,7 @@ func extractDNSRecords(records []layers.DNSResourceRecord, record *DeviceFingerp
 				record.AddMDNS("", cleanName)
 			}
 		}
-		
+
 		// Capture instance names from SRV records
 		if rr.Type == layers.DNSTypeSRV {
 			// This is usually the specific device name "Living Room TV._googlecast._tcp.local"

@@ -17,11 +17,11 @@ export default defineConfig({
         },
     ],
     webServer: {
-        command: 'npm run dev',
+        command: 'npm run dev:mock',
         url: 'http://localhost:5173',
         reuseExistingServer: true,
         env: {
-            API_URL: 'http://localhost:8080', // Connect to our test backend
+            API_URL: 'http://localhost:8081', // Connect to our test backend
         }
     },
 });

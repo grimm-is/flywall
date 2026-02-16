@@ -10,6 +10,7 @@
         "login": "Sign In",
         "logout": "Logout",
         "password": "Password",
+        "password_placeholder": "Enter your password",
         "password_min_chars": "Minimum 8 characters",
         "setup_subtitle": "Create your admin account to get started",
         "setup_title": "Welcome to {name}",
@@ -42,7 +43,9 @@
         "enable_item": "Enable {item}",
         "enabled": "Enabled",
         "gateway": "Gateway",
+        "hostname": "Hostname",
         "interface": "Interface",
+        "ip_address": "IP Address",
         "loading": "Loading...",
         "mtu": "MTU",
         "name": "Name",
@@ -52,10 +55,12 @@
         "optional": "Optional",
         "page_not_found": "Packet Dropped (Page Not Found)",
         "protocol": "Protocol",
+        "refresh": "Refresh",
         "running": "Running",
         "save": "Save",
         "save_changes": "Save Changes",
         "save_item": "Save {item}",
+        "select": "Select",
         "settings": "Settings",
         "source": "Source",
         "status": "Status",
@@ -96,7 +101,24 @@
         "total_leases": "{n} total DHCP leases",
         "unknown": "Unknown",
         "welcome": "Welcome to {name}",
-        "zones_configured": "{n} zones configured"
+        "zones_configured": "{n} zones configured",
+        "initializing": "Initializing System...",
+        "uptime": "UPTIME",
+        "load": "LOAD",
+        "version": "VERSION",
+        "traffic": "NETWORK TRAFFIC",
+        "live": "LIVE",
+        "rx_rate": "RX RATE",
+        "tx_rate": "TX RATE",
+        "peak": "Peak: {rate}",
+        "packets": "PACKETS",
+        "firewall_rules": "Firewall Rules",
+        "dhcp_leases": "DHCP Leases ({n})",
+        "active_zones": "Active Zones",
+        "blocked_hosts": "Blocked Hosts",
+        "system_logs": "SYSTEM LOGS",
+        "view_all": "View All",
+        "no_recent_logs": "No recent logs..."
     },
     "dhcp": {
         "active_leases": "Active Leases ({n})",
@@ -106,6 +128,7 @@
         "dns_servers": "DNS Servers (comma separated)",
         "domain": "Domain",
         "enable": "Enable DHCP",
+        "external_lease_file": "External Lease File",
         "integration": "Integration",
         "interface": "Interface",
         "lease_time": "Lease Time",
@@ -167,6 +190,11 @@
         "blocklists": "Blocklists",
         "blocklist_url": "Blocklist URL",
         "blocklist_format": "Format",
+        "blocklist_formats": {
+            "domains": "Domain list (one per line)",
+            "hosts": "Hosts file format",
+            "adblock": "AdBlock/uBlock format"
+        },
         "refresh_hours": "Refresh (hours)",
         "local_hosts": "Local DNS Records",
         "host_ip": "IP Address",
@@ -244,6 +272,12 @@
         "use_dhcp": "Use DHCP",
         "vendor": "Vendor",
         "vlan_id": "VLAN ID",
+        "update_failed": "Failed to update interface",
+        "vlan_create_failed": "Failed to create VLAN",
+        "bond_create_failed": "Failed to create Bond",
+        "delete_confirm": "Delete {type} interface \"{name}\"? This cannot be undone.",
+        "delete_failed": "Failed to delete interface",
+        "delete_not_supported": "Only VLAN, Bond, and Ethernet interfaces can be deleted.",
         "vlans": "VLANs",
         "zone": "Zone"
     },
@@ -355,6 +389,10 @@
         "ipsets": "IPSets",
         "learning": "Network Learning",
         "logs": "Logs",
+        "policy": "Policy",
+        "topology": "Topology",
+        "discovery": "Discovery",
+        "system": "System",
         "nat": "NAT",
         "network": "Network",
         "routing": "Routing",
@@ -362,7 +400,8 @@
         "settings": "Settings",
         "vpn": "VPN",
         "qos": "QoS",
-        "zones": "Zones"
+        "zones": "Zones",
+        "alerts": "Alerts"
     },
     "network": {
         "alias": "Alias (Name)",
@@ -405,7 +444,10 @@
         "unlink_identity": "Unlink Identity",
         "update_failed": "Failed to update device",
         "update_success": "Device updated successfully",
-        "vendor": "Vendor"
+        "vendor": "Vendor",
+        "wan": "WAN",
+        "lan": "LAN",
+        "unknown": "Unknown"
     },
     "notifications": {
         "clear_all": "Clear all",
@@ -525,6 +567,7 @@
         "ip_forwarding_desc": "Enable packet forwarding between interfaces. Required for router functionality.",
         "mss_clamping": "MSS Clamping",
         "mss_clamping_desc": "Automatically clamp TCP Maximum Segment Size to Path MTU. Fixes connectivity issues (e.g., stalling HTTPS) on PPPoE/VPN links.",
+        "loading": "Loading settings...",
         "password": "Password",
         "reboot": "Reboot",
         "reboot_confirm": "Are you sure you want to REBOOT the system? Connectivity will be lost.",
@@ -609,7 +652,9 @@
         "management_access_desc": "Allow access FROM this zone TO the firewall",
         "network_services": "Network Services",
         "network_services_desc": "Services provided BY the firewall TO this zone",
+        "no_selectors": "No selectors assigned",
         "none_assigned": "None assigned",
+        "selectors": "Selectors:",
         "services": "Services:",
         "svc": {
             "api": "API",
@@ -622,5 +667,16 @@
         },
         "zone_name": "Zone Name",
         "zone_type": "Zone Type"
+    },
+    "scheduled_tasks": {
+        "title": "Scheduled Tasks",
+        "task": "Task",
+        "schedule": "Schedule",
+        "type": "Type",
+        "run_now": "Run Now",
+        "no_tasks": "No scheduled tasks",
+        "loading": "Loading tasks...",
+        "run_success": "Task \"{name}\" triggered successfully",
+        "run_failed": "Failed to run task \"{name}\""
     }
 }

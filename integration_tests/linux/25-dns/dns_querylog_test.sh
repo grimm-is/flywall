@@ -35,7 +35,7 @@ diag "================================================"
 
 # --- Setup ---
 TEST_CONFIG=$(mktemp_compatible "dns_querylog.hcl")
-cat > "$TEST_CONFIG" << 'EOF'
+cat > "$TEST_CONFIG" << EOF
 schema_version = "1.1"
 
 interface "lo" {
@@ -44,7 +44,9 @@ interface "lo" {
 }
 
 zone "local" {
-  interfaces = ["lo"]
+  match {
+    interface = "lo"
+  }
   services {
     dns = true
   }
@@ -64,7 +66,7 @@ dns {
 
 api {
   enabled = true
-  listen = "0.0.0.0:8080"
+  listen = "0.0.0.0:$TEST_API_PORT"
   require_auth = false
 }
 EOF
@@ -74,7 +76,7 @@ ok 0 "Created DNS config"
 # Test 1: Start system
 diag "Starting system..."
 start_ctl "$TEST_CONFIG"
-start_api -listen :8080
+start_api -listen :$TEST_API_PORT
 ok 0 "System started with API"
 
 # Wait for DNS binding
@@ -96,26 +98,26 @@ dilated_sleep 2
 
 # Test 3: Query the API for logs
 diag "Querying API for DNS history..."
-curl -s "http://127.0.0.1:8080/api/dns/queries?limit=10" > /tmp/dns_querylog_api.json
+curl -s "http://127.0.0.1:$TEST_API_PORT/api/dns/queries?limit=10" > /tmp/dns_querylog_api_$$.json
 
 # Check if our query is in the log
-if grep -q "logtest.local" /tmp/dns_querylog_api.json; then
+if grep -q "logtest.local" /tmp/dns_querylog_api_$$.json; then
     ok 0 "Query found in API logs"
 else
-    cat /tmp/dns_querylog_api.json
+    cat /tmp/dns_querylog_api_$$.json
     ok 1 "Query found in API logs" severity fail error "logtest.local not found in logs"
 fi
 
 # Test 4: Check stats
 diag "Querying API for DNS stats..."
-curl -s "http://127.0.0.1:8080/api/dns/stats" > /tmp/dns_stats_api.json
+curl -s "http://127.0.0.1:$TEST_API_PORT/api/dns/stats" > /tmp/dns_stats_api_$$.json
 
 # Should have at least 1 total query
-TOTAL_QUERIES=$(grep -o '"total_queries":[0-9]*' /tmp/dns_stats_api.json | cut -d: -f2)
+TOTAL_QUERIES=$(grep -o '"total_queries":[0-9]*' /tmp/dns_stats_api_$$.json | cut -d: -f2)
 if [ -n "$TOTAL_QUERIES" ] && [ "$TOTAL_QUERIES" -ge 1 ]; then
     ok 0 "Stats reflect queries (Count: $TOTAL_QUERIES)"
 else
-    cat /tmp/dns_stats_api.json
+    cat /tmp/dns_stats_api_$$.json
     ok 1 "Stats reflect queries" severity fail
 fi
 

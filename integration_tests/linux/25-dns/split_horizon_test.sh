@@ -51,14 +51,18 @@ interface "veth-wan" {
 }
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
   services {
     dns = true
   }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 # New DNS syntax

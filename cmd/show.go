@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
@@ -43,7 +45,7 @@ func RunShow(configFile string, summary bool, remoteURL, apiKey string) error {
 		// Generate rules from fetched config
 		logger := logging.New(logging.DefaultConfig())
 		fwMgr := firewall.NewManagerWithConn(nil, logger, "")
-		generatedRules, err := fwMgr.GenerateRules(firewall.FromGlobalConfig(cfg))
+		generatedRules, err := fwMgr.GenerateRules(firewall.FromGlobalConfig(cfg), nil)
 		if err != nil {
 			return fmt.Errorf("failed to generate ruleset: %w", err)
 		}
@@ -95,7 +97,7 @@ func RunShow(configFile string, summary bool, remoteURL, apiKey string) error {
 	// Use nil conn as we only generate
 	fwMgr := firewall.NewManagerWithConn(nil, logger, "")
 
-	generatedRules, err := fwMgr.GenerateRules(firewall.FromGlobalConfig(cfg))
+	generatedRules, err := fwMgr.GenerateRules(firewall.FromGlobalConfig(cfg), nil)
 	if err != nil {
 		return fmt.Errorf("failed to generate ruleset: %w", err)
 	}

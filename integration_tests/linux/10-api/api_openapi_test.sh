@@ -15,7 +15,7 @@ cleanup_on_exit
 
 log() { echo "[TEST] $1"; }
 
-CONFIG_FILE="/tmp/api_openapi.hcl"
+CONFIG_FILE="/tmp/api_openapi_$$.hcl"
 
 # Minimal config
 cat > "$CONFIG_FILE" <<EOF

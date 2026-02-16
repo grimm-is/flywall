@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package auth provides user authentication and session management.
 package auth
 
@@ -5,20 +7,20 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"grimm.is/flywall/internal/clock"
+	"grimm.is/flywall/internal/install"
 
-	"grimm.is/flywall/internal/brand"
+	"grimm.is/flywall/internal/errors"
+
+	"grimm.is/flywall/internal/clock"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Role defines user permission levels
 type Role string
 
 const (
@@ -27,7 +29,6 @@ const (
 	RoleViewer   Role = "viewer"   // Read-only dashboard access
 )
 
-// User represents a system user
 type User struct {
 	Username  string    `json:"username"`
 	Hash      string    `json:"hash"` // bcrypt hash
@@ -36,7 +37,6 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Session represents an active login session
 type Session struct {
 	Token     string    `json:"token"`
 	Username  string    `json:"username"`
@@ -44,7 +44,6 @@ type Session struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// Store manages users and sessions
 type Store struct {
 	path     string
 	users    map[string]*User
@@ -52,7 +51,6 @@ type Store struct {
 	mu       sync.RWMutex
 }
 
-// AuthData is the persisted auth state
 type AuthData struct {
 	Users    map[string]*User    `json:"users"`
 	Sessions map[string]*Session `json:"sessions"`
@@ -60,9 +58,8 @@ type AuthData struct {
 
 // DefaultAuthPath is the default location for auth data
 // Uses DefaultStateDir which should be writable by the firewall service
-var DefaultAuthPath = filepath.Join(brand.GetStateDir(), "auth.json")
+var DefaultAuthPath = filepath.Join(install.GetStateDir(), "auth.json")
 
-// NewStore creates a new auth store
 func NewStore(path string) (*Store, error) {
 	if path == "" {
 		path = DefaultAuthPath
@@ -176,17 +173,15 @@ func (s *Store) saveLocked() error {
 	return os.Rename(tmpPath, s.path)
 }
 
-// HasUsers returns true if any users exist
 func (s *Store) HasUsers() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.users) > 0
 }
 
-// CreateUser creates a new user
 func (s *Store) CreateUser(username, password string, role Role) error {
 	if username == "" || password == "" {
-		return errors.New("username and password required")
+		return errors.New(errors.KindValidation, "username and password required")
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -198,7 +193,7 @@ func (s *Store) CreateUser(username, password string, role Role) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.users[username]; exists {
-		return errors.New("user already exists")
+		return errors.New(errors.KindConflict, "user already exists")
 	}
 
 	now := clock.Now()
@@ -213,18 +208,17 @@ func (s *Store) CreateUser(username, password string, role Role) error {
 	return s.saveLocked()
 }
 
-// Authenticate validates credentials and returns a session
 func (s *Store) Authenticate(username, password string) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	user, exists := s.users[username]
 	if !exists {
-		return nil, errors.New("invalid credentials")
+		return nil, errors.New(errors.KindPermission, "invalid credentials")
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Hash), []byte(password)); err != nil {
-		return nil, errors.New("invalid credentials")
+		return nil, errors.New(errors.KindPermission, "invalid credentials")
 	}
 
 	// Generate session token
@@ -250,7 +244,6 @@ func (s *Store) Authenticate(username, password string) (*Session, error) {
 	return session, nil
 }
 
-// ValidateSession checks if a session token is valid
 func (s *Store) ValidateSession(token string) (*User, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -258,27 +251,26 @@ func (s *Store) ValidateSession(token string) (*User, error) {
 	// SECURITY: If no users exist, reject ALL sessions
 	// This prevents stale session cookies from authenticating after a clean rebuild
 	if len(s.users) == 0 {
-		return nil, errors.New("no users configured")
+		return nil, errors.New(errors.KindUnavailable, "no users configured")
 	}
 
 	session, exists := s.sessions[token]
 	if !exists {
-		return nil, errors.New("invalid session")
+		return nil, errors.New(errors.KindPermission, "invalid session")
 	}
 
 	if session.ExpiresAt.Before(clock.Now()) {
-		return nil, errors.New("session expired")
+		return nil, errors.New(errors.KindPermission, "session expired")
 	}
 
 	user, exists := s.users[session.Username]
 	if !exists {
-		return nil, errors.New("user not found")
+		return nil, errors.New(errors.KindNotFound, "user not found")
 	}
 
 	return user, nil
 }
 
-// Logout invalidates a session
 func (s *Store) Logout(token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -287,19 +279,17 @@ func (s *Store) Logout(token string) error {
 	return s.saveLocked()
 }
 
-// GetUser returns a user by username
 func (s *Store) GetUser(username string) (*User, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	user, exists := s.users[username]
 	if !exists {
-		return nil, errors.New("user not found")
+		return nil, errors.New(errors.KindNotFound, "user not found")
 	}
 	return user, nil
 }
 
-// ListUsers returns all users (without password hashes)
 func (s *Store) ListUsers() []*User {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -317,7 +307,6 @@ func (s *Store) ListUsers() []*User {
 	return users
 }
 
-// UpdatePassword changes a user's password
 func (s *Store) UpdatePassword(username, newPassword string) error {
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 	if err != nil {
@@ -329,7 +318,7 @@ func (s *Store) UpdatePassword(username, newPassword string) error {
 
 	user, exists := s.users[username]
 	if !exists {
-		return errors.New("user not found")
+		return errors.New(errors.KindNotFound, "user not found")
 	}
 
 	user.Hash = string(hash)
@@ -338,14 +327,13 @@ func (s *Store) UpdatePassword(username, newPassword string) error {
 	return s.saveLocked()
 }
 
-// UpdateRole changes a user's role
 func (s *Store) UpdateRole(username string, role Role) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	user, exists := s.users[username]
 	if !exists {
-		return errors.New("user not found")
+		return errors.New(errors.KindNotFound, "user not found")
 	}
 
 	// Don't allow demoting the last admin
@@ -357,7 +345,7 @@ func (s *Store) UpdateRole(username string, role Role) error {
 			}
 		}
 		if adminCount <= 1 {
-			return errors.New("cannot demote last admin user")
+			return errors.New(errors.KindValidation, "cannot demote last admin user")
 		}
 	}
 
@@ -367,13 +355,12 @@ func (s *Store) UpdateRole(username string, role Role) error {
 	return s.saveLocked()
 }
 
-// DeleteUser removes a user
 func (s *Store) DeleteUser(username string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, exists := s.users[username]; !exists {
-		return errors.New("user not found")
+		return errors.New(errors.KindNotFound, "user not found")
 	}
 
 	// Don't allow deleting last admin
@@ -384,7 +371,7 @@ func (s *Store) DeleteUser(username string) error {
 		}
 	}
 	if s.users[username].Role == RoleAdmin && adminCount <= 1 {
-		return errors.New("cannot delete last admin user")
+		return errors.New(errors.KindValidation, "cannot delete last admin user")
 	}
 
 	delete(s.users, username)

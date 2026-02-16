@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build !linux
 // +build !linux
 
@@ -88,3 +90,11 @@ type DHCPReclaimer interface {
 
 // SetDHCPReclaimer is a no-op on non-Linux.
 func (s *Service) SetDHCPReclaimer(mgr DHCPReclaimer) {}
+
+// Replicator defines the interface for getting state version.
+type Replicator interface {
+	CurrentVersion() uint64
+}
+
+// SetReplicator is a no-op on non-Linux.
+func (s *Service) SetReplicator(r Replicator) {}

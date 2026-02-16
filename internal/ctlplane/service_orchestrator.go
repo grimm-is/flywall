@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package ctlplane
 
 import (
@@ -97,9 +99,17 @@ type ReloadResult struct {
 // ReloadAll reloads configuration for all services.
 // It ensures Firewall is reloaded first.
 // Returns a ReloadResult indicating success or partial failure.
+// ReloadAll reloads configuration for all services.
+// It ensures Firewall is reloaded first.
+// Returns a ReloadResult indicating success or partial failure.
 func (so *ServiceOrchestrator) ReloadAll(cfg *config.Config) *ReloadResult {
 	so.mu.RLock()
 	defer so.mu.RUnlock()
+
+	log.Printf("[ORCH] DEBUG: ReloadAll called. Registered services: %d", len(so.services))
+	for k := range so.services {
+		log.Printf("[ORCH] DEBUG: Service registered: %s", k)
+	}
 
 	result := &ReloadResult{
 		Success:        true,
@@ -108,12 +118,17 @@ func (so *ServiceOrchestrator) ReloadAll(cfg *config.Config) *ReloadResult {
 
 	// 1. Reload Firewall first (critical)
 	if fw, ok := so.services["Firewall"]; ok {
+		log.Printf("[ORCH] DEBUG: Reloading Firewall...")
 		if _, err := fw.Reload(cfg); err != nil {
 			result.Success = false
 			result.FailedServices["Firewall"] = err.Error()
 			// Firewall failure is critical, but we continue to try other services
 			log.Printf("[ORCH] Critical: failed to reload firewall: %v", err)
+		} else {
+			log.Printf("[ORCH] DEBUG: Firewall reloaded successfully")
 		}
+	} else {
+		log.Printf("[ORCH] CRITICAL WARNING: Firewall service NOT found in orchestrator!")
 	}
 
 	// 2. Reload other services

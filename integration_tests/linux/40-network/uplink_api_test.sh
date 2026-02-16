@@ -43,12 +43,14 @@ interface "lo" {
 }
 
 zone "local" {
-  interfaces = ["lo"]
+  match {
+    interface = "lo"
+  }
 }
 
 api {
   enabled = true
-  listen = "0.0.0.0:8080"
+  listen = "0.0.0.0:$TEST_API_PORT"
   require_auth = false
 }
 
@@ -57,7 +59,7 @@ uplink_group "default" {
   enabled = true
   failover_mode = "priority"
   source_networks = ["0.0.0.0/0"]
-  
+
   uplink "primary" {
     interface = "eth0"
     type = "wan"
@@ -69,15 +71,27 @@ EOF
 # Test 1: Start system
 export FLYWALL_LOG_LEVEL=debug
 start_ctl "$TEST_CONFIG"
-start_api -listen :8080
+start_api -listen :$TEST_API_PORT
 ok 0 "System started with API"
 
+# Wait for initialization (start_api handles basic readiness)
+wait_for_port $TEST_API_PORT 10
+
 # Wait for initialization
-dilated_sleep 2
 
 # Test 2: Get uplink groups
 diag "Testing GET /api/uplinks/groups..."
-HTTP_CODE=$(curl -s -o /tmp/uplink_groups.json -w "%{http_code}" "http://127.0.0.1:8080/api/uplinks/groups")
+retry_count=0
+while [ $retry_count -lt 3 ]; do
+    HTTP_CODE=$(curl -s -o /tmp/uplink_groups_$$.json -w "%{http_code}" "http://127.0.0.1:$TEST_API_PORT/api/uplinks/groups")
+    if [ "$HTTP_CODE" != "000" ] && [ -n "$HTTP_CODE" ]; then
+        break
+    fi
+    diag "Curl failed (code $HTTP_CODE), retrying..."
+    sleep 1
+    retry_count=$((retry_count + 1))
+done
+
 if [ "$HTTP_CODE" -eq 200 ]; then
     ok 0 "GET /api/uplinks/groups returns 200"
 else
@@ -86,7 +100,7 @@ fi
 
 # Test 3: Toggle uplink (disable then enable)
 diag "Testing POST /api/uplinks/toggle..."
-TOGGLE_RESPONSE=$(curl -s -X POST "http://127.0.0.1:8080/api/uplinks/toggle" \
+TOGGLE_RESPONSE=$(curl -s -X POST "http://127.0.0.1:$TEST_API_PORT/api/uplinks/toggle" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: test-bypass" \
   -d '{"group_name": "default", "uplink_name": "primary", "enabled": false}')
@@ -100,15 +114,25 @@ fi
 
 # Test 4: Test uplink connectivity
 diag "Testing POST /api/uplinks/test..."
-HTTP_CODE=$(curl -s -o /tmp/uplink_test.json -w "%{http_code}" -X POST "http://127.0.0.1:8080/api/uplinks/test" \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: test-bypass" \
-  -d '{"group_name": "default", "uplink_name": "primary"}')
+retry_count=0
+while [ $retry_count -lt 3 ]; do
+    HTTP_CODE=$(curl -s -o /tmp/uplink_test_$$.json -w "%{http_code}" -X POST "http://127.0.0.1:$TEST_API_PORT/api/uplinks/test" \
+      -H "Content-Type: application/json" \
+      -H "X-API-Key: test-bypass" \
+      -d '{"group_name": "default", "uplink_name": "primary"}')
+    
+    if [ "$HTTP_CODE" != "000" ] && [ -n "$HTTP_CODE" ]; then
+        break
+    fi
+    diag "Curl failed (code $HTTP_CODE), retrying..."
+    sleep 1
+    retry_count=$((retry_count + 1))
+done
 
 if [ "$HTTP_CODE" -eq 200 ]; then
     ok 0 "POST /api/uplinks/test returns 200"
 else
-    cat /tmp/uplink_test.json
+    cat /tmp/uplink_test_$$.json
     ok 1 "POST /api/uplinks/test returns 200" severity fail expected "200" actual "$HTTP_CODE"
 fi
 

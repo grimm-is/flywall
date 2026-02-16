@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package ui provides a unified UI abstraction layer that can render
 // to both TUI (Bubble Tea) and Web (HTML/React) interfaces.
 //

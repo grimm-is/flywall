@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package vpn
 
 import (
@@ -22,7 +24,7 @@ func TestWireGuardConfig_MarshalJSON_MasksPrivateKey(t *testing.T) {
 	if strings.Contains(jsonStr, "private-key-12345") {
 		t.Error("JSON output should NOT contain actual private key")
 	}
-	if !strings.Contains(jsonStr, "******") {
+	if !strings.Contains(jsonStr, "(hidden)") {
 		t.Error("JSON output SHOULD contain masked private key")
 	}
 }

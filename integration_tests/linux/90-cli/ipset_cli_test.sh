@@ -4,9 +4,11 @@ set -x
 # Verifies the `flywall ipset` subcommands work correctly.
 #
 # Tests:
-# 1. `flywall ipset list` returns JSON response
-# 2. `flywall ipset show <name>` returns set details
-# 3. IPSets from config are visible via CLI
+# 1. Config with IPSet created
+# 2. Control plane started
+# 3. API server started
+# 4. `flywall ipset list` returns data
+# 5. IPSet visible in nftables
 
 TEST_TIMEOUT=30
 
@@ -18,21 +20,12 @@ cleanup_on_exit
 
 plan 5
 
-cleanup() {
-    diag "Cleanup..."
-    stop_ctl
-    # Kill API server
-    [ -n "$API_PID" ] && kill $API_PID 2>/dev/null
-    rm -f "$TEST_CONFIG" 2>/dev/null
-}
-trap cleanup EXIT
-
 # --- Setup ---
 diag "Starting CLI IPSet Commands Test"
 
 # Create config with an IPSet
 TEST_CONFIG=$(mktemp_compatible "ipset_cli.hcl")
-cat > "$TEST_CONFIG" << 'EOF'
+cat > "$TEST_CONFIG" << EOF
 schema_version = "1.0"
 ip_forwarding = true
 
@@ -42,7 +35,9 @@ interface "lo" {
 }
 
 zone "lan" {
-  interfaces = ["lo"]
+  match {
+    interface = "lo"
+  }
 }
 
 # Define an IPSet with static entries
@@ -54,7 +49,7 @@ ipset "test_blocklist" {
 
 api {
   enabled = false
-  listen = "127.0.0.1:8080"
+  listen = "127.0.0.1:$TEST_API_PORT"
 }
 EOF
 
@@ -65,13 +60,14 @@ start_ctl "$TEST_CONFIG"
 ok 0 "Control plane started"
 
 # Start API server (required for CLI ipset commands)
-start_api "$TEST_CONFIG"
+start_api -listen :$TEST_API_PORT
 ok 0 "API server started"
 
 # Test: flywall ipset list
 diag "Testing 'flywall ipset list'..."
-LIST_OUTPUT=$($APP_BIN ipset list --api http://127.0.0.1:8080 2>&1)
-if echo "$LIST_OUTPUT" | grep -qiE "test_blocklist|NAME|ipset"; then
+LIST_OUTPUT=$(timeout 10 $APP_BIN ipset list --api http://127.0.0.1:$TEST_API_PORT 2>&1)
+EXIT_CODE=$?
+if [ $EXIT_CODE -eq 0 ] && echo "$LIST_OUTPUT" | grep -qiE "test_blocklist|NAME|ipset"; then
     ok 0 "ipset list command works"
     diag "Output: $(echo "$LIST_OUTPUT" | head -5)"
 else
@@ -80,7 +76,7 @@ else
         diag "API may not have ipset endpoints: $LIST_OUTPUT"
         ok 0 "ipset list command ran (endpoint may be missing)"
     else
-        ok 1 "ipset list failed: $LIST_OUTPUT"
+        ok 1 "ipset list failed (exit=$EXIT_CODE): $LIST_OUTPUT"
     fi
 fi
 
@@ -104,11 +100,4 @@ else
     fi
 fi
 
-# Summary
-if [ $failed_count -eq 0 ]; then
-    diag "All CLI IPSet tests passed!"
-    exit 0
-else
-    diag "Some tests failed"
-    exit 1
-fi
+diag "CLI IPSet tests completed"

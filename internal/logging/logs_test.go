@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package logging
 
 import (
@@ -161,8 +163,8 @@ func TestSortAndLimit(t *testing.T) {
 	// I should probably take prefix [0:limit].
 	// But let's test what it DOES first.
 
-	if limited[0].Message != "Middle" {
-		t.Errorf("Expected Middle, got %s", limited[0].Message)
+	if limited[0].Message != "Newest" {
+		t.Errorf("Expected Newest, got %s", limited[0].Message)
 	}
 }
 

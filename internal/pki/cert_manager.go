@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package pki
 
 import (
@@ -14,23 +16,27 @@ import (
 	"time"
 
 	"context"
-	"log"
 
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/clock"
+	"grimm.is/flywall/internal/logging"
 )
 
 type CertManager struct {
 	CertDir string
+	logger  *logging.Logger
 }
 
-func NewCertManager(certDir string) *CertManager {
-	return &CertManager{CertDir: certDir}
+func NewCertManager(certDir string, logger *logging.Logger) *CertManager {
+	return &CertManager{
+		CertDir: certDir,
+		logger:  logger,
+	}
 }
 
 func (m *CertManager) EnsureCert() error {
-	certPath := filepath.Join(m.CertDir, "cert.pem")
-	keyPath := filepath.Join(m.CertDir, "key.pem")
+	certPath := filepath.Join(m.CertDir, "server.crt")
+	keyPath := filepath.Join(m.CertDir, "server.key")
 
 	// Check if already exist
 	if _, err := os.Stat(certPath); err == nil {
@@ -116,7 +122,7 @@ func (m *CertManager) generateSelfSigned(certPath, keyPath string) error {
 	}
 	defer certOut.Close()
 	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
-		return fmt.Errorf("failed to write data to cert.pem: %w", err)
+		return fmt.Errorf("failed to write data to server.crt: %w", err)
 	}
 
 	// Write Key
@@ -128,7 +134,7 @@ func (m *CertManager) generateSelfSigned(certPath, keyPath string) error {
 
 	privBytes := x509.MarshalPKCS1PrivateKey(priv)
 	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: privBytes}); err != nil {
-		return fmt.Errorf("failed to write data to key.pem: %w", err)
+		return fmt.Errorf("failed to write data to server.key: %w", err)
 	}
 
 	return nil
@@ -209,7 +215,7 @@ func (m *CertManager) StartAutoRenew(ctx context.Context, interval time.Duration
 				return
 			case <-ticker.C:
 				if err := m.EnsureCert(); err != nil {
-					log.Printf("[CertManager] Failed to renew certificate: %v", err)
+					m.logger.Warn("Failed to renew certificate", "error", err)
 				}
 			}
 		}

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 // Policy defines traffic rules between zones.
@@ -22,11 +24,14 @@ type Policy struct {
 
 	Log       bool         `hcl:"log,optional" json:"log,omitempty"`               // Log packets matching default action
 	LogPrefix string       `hcl:"log_prefix,optional" json:"log_prefix,omitempty"` // Prefix for log messages
-	Rules     []PolicyRule `hcl:"rule,block" json:"rules"`
+	Rules     []PolicyRule `hcl:"rule,block" json:"rule,omitempty"`
 
 	// Inheritance - allows policies to inherit rules from a parent policy
 	// Child policies get all parent rules first, then their own additional rules
 	Inherits string `hcl:"inherits,optional" json:"inherits,omitempty"` // Name of parent policy to inherit from
+
+	// Metadata for UI Projection (not persisted to HCL)
+	Origin string `json:"origin,omitempty"` // "explicit" (default) or "implicit_zone_config"
 }
 
 // GetEffectiveRules returns the policy's rules including any inherited rules.
@@ -103,6 +108,7 @@ type PolicyRule struct {
 	DestPorts []int    `hcl:"dest_ports,optional" json:"dest_ports,omitempty"` // Multiple ports
 	SrcPort   int      `hcl:"src_port,optional" json:"src_port,omitempty"`
 	SrcPorts  []int    `hcl:"src_ports,optional" json:"src_ports,omitempty"`
+	Service   string   `hcl:"service,optional" json:"service,omitempty"`       // Service Macro (e.g. "ssh") - expands to Proto/Port
 	Services  []string `hcl:"services,optional" json:"services,omitempty"`     // Service names like "http", "ssh"
 	SrcIP     string   `hcl:"src_ip,optional" json:"src_ip,omitempty"`         // Source IP/CIDR
 	SrcIPSet  string   `hcl:"src_ipset,optional" json:"src_ipset,omitempty"`   // Source IPSet name
@@ -118,7 +124,7 @@ type PolicyRule struct {
 
 	// GeoIP matching (requires MaxMind database)
 	SourceCountry string `hcl:"source_country,optional" json:"source_country,omitempty"` // ISO 3166-1 alpha-2 country code (e.g., "US", "CN")
-	DestCountry   string `hcl:"dest_country,optional" json:"dest_country,omitempty"`   // ISO 3166-1 alpha-2 country code
+	DestCountry   string `hcl:"dest_country,optional" json:"dest_country,omitempty"`     // ISO 3166-1 alpha-2 country code
 
 	// Invert matching (match everything EXCEPT the specified value)
 	InvertSrc  bool `hcl:"invert_src,optional" json:"invert_src,omitempty"`   // Negate source IP/IPSet match
@@ -154,6 +160,9 @@ type PolicyRule struct {
 
 	// UI Organization
 	GroupTag string `hcl:"group,optional" json:"group,omitempty"` // Section grouping: "User Access", "IoT Isolation"
+
+	// Metadata for UI Projection
+	Origin string `json:"origin,omitempty"` // "explicit" or "implicit_zone_config"
 }
 
 // NATRule defines Network Address Translation rules.

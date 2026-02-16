@@ -1,11 +1,15 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package main
 
 import (
 	"os"
 	"time"
 
+	"grimm.is/flywall/internal/alerting"
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
+	"grimm.is/flywall/internal/ctlplane"
 	"grimm.is/flywall/internal/i18n"
 	"grimm.is/flywall/internal/tui"
 
@@ -21,6 +25,14 @@ func (m *MockBackend) GetStatus() (*tui.EnrichedStatus, error) {
 	return &tui.EnrichedStatus{
 		Running: true,
 		Uptime:  "3d 14h 22m",
+	}, nil
+}
+
+func (m *MockBackend) GetSystemStats() (*ctlplane.SystemStats, error) {
+	return &ctlplane.SystemStats{
+		CPUUsage:    15.5,
+		MemoryTotal: 8 * 1024 * 1024 * 1024,
+		MemoryUsed:  2 * 1024 * 1024 * 1024,
 	}, nil
 }
 
@@ -44,6 +56,32 @@ func (m *MockBackend) GetConfig() (*config.Config, error) {
 		},
 	}
 	return cfg, nil
+}
+
+func (m *MockBackend) ApplyConfig(cfg *config.Config) error {
+	return nil
+}
+
+func (m *MockBackend) ListBackups() ([]ctlplane.BackupInfo, error) {
+	return []ctlplane.BackupInfo{
+		{Version: 1, Description: "Initial Setup", Timestamp: time.Now().Add(-2 * time.Hour).Format(time.RFC3339)},
+	}, nil
+}
+
+func (m *MockBackend) RestoreBackup(version int) error {
+	return nil
+}
+
+func (m *MockBackend) Reboot() error {
+	return nil
+}
+
+func (m *MockBackend) GetBandwidth(window string) ([]ctlplane.BandwidthPoint, error) {
+	return []ctlplane.BandwidthPoint{}, nil
+}
+
+func (m *MockBackend) GetAlerts(limit int) ([]alerting.AlertEvent, error) {
+	return []alerting.AlertEvent{}, nil
 }
 
 func main() {

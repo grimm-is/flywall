@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
@@ -19,6 +21,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"grimm.is/flywall/internal/install"
 
 	"grimm.is/flywall/internal/api"
 	"grimm.is/flywall/internal/api/storage"
@@ -224,32 +228,53 @@ func buildAntiLockoutInterfaces(cfg *config.Config) []string {
 	if cfg.Zones != nil {
 		for _, zone := range cfg.Zones {
 			if zone.Management != nil && (zone.Management.WebUI || zone.Management.SSH) {
-				for _, ifaceName := range zone.Interfaces {
-					if seen[ifaceName] {
+				for _, m := range zone.Matches {
+					if m.Interface == "" || seen[m.Interface] {
 						continue
 					}
 					disabled := false
 					for _, iface := range cfg.Interfaces {
-						if iface.Name == ifaceName && iface.DisableAntiLockout {
+						if iface.Name == m.Interface && iface.DisableAntiLockout {
 							disabled = true
 							break
 						}
 					}
 					if !disabled {
-						interfaces = append(interfaces, ifaceName)
-						seen[ifaceName] = true
+						interfaces = append(interfaces, m.Interface)
+						seen[m.Interface] = true
 					}
 				}
 			}
 		}
 	}
+	// In Dev Mode/Demo Mode, allow WAN access (eth0)
+	if isDevMode() {
+		devIfaces := []string{"eth0", "wan"}
+		for _, name := range devIfaces {
+			if !seen[name] {
+				interfaces = append(interfaces, name)
+				seen[name] = true
+				logging.Info(fmt.Sprintf("DevMode: allowing anti-lockout on %s", name))
+			}
+		}
+	}
+
 	return interfaces
+}
+
+// isDevMode checks kernel arguments for dev_mode=true
+func isDevMode() bool {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), "dev_mode=true")
 }
 
 // acquireSingleInstanceLock attempts to acquire an exclusive lock to ensure single instance.
 // Returns the lock file descriptor (caller must keep it open) or an error.
 func acquireSingleInstanceLock(cfg *config.Config, sandboxEnabled bool) (int, error) {
-	lockFile := "/var/run/flywall_api.lock"
+	lockFile := filepath.Join(install.GetRunDir(), "flywall_api.lock")
 	fd, err := syscall.Open(lockFile, syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC, 0600)
 	if err != nil {
 		return -1, fmt.Errorf("failed to open lock file %s: %w", lockFile, err)
@@ -355,9 +380,9 @@ func runParentProcess(cfg *config.Config, sandboxEnabled bool, inheritedListener
 	}
 
 	// Initialize PKI (host side - captures external IPs for SANs)
-	certDir := filepath.Join(brand.GetStateDir(), "certs")
+	certDir := filepath.Join(install.GetStateDir(), "certs")
 	if err := os.MkdirAll(certDir, 0700); err == nil {
-		cm := pki.NewCertManager(certDir)
+		cm := pki.NewCertManager(certDir, logging.WithComponent("pki"))
 		if err := cm.EnsureCert(); err != nil {
 			logging.Warn(fmt.Sprintf("Failed to generate certs on host: %v", err))
 		}
@@ -437,7 +462,7 @@ func runServerProcess(
 	}
 
 	// Ensure auth directory exists with proper permissions
-	authDir := brand.GetStateDir()
+	authDir := install.GetStateDir()
 	if err := os.MkdirAll(authDir, 0755); err != nil {
 		logging.Warn(fmt.Sprintf("Warning: failed to create auth directory: %v", err))
 	}
@@ -447,7 +472,7 @@ func runServerProcess(
 		fixAuthDirOwnership(authDir, uid, gid)
 
 		// Also ensure socket directory exists and is owned by drop user
-		sockDir := "/var/run/flywall/api"
+		sockDir := filepath.Join(install.GetRunDir(), "api")
 		if err := os.MkdirAll(sockDir, 0755); err != nil {
 			logging.Warn(fmt.Sprintf("Warning: failed to create socket directory: %v", err))
 		}
@@ -458,7 +483,7 @@ func runServerProcess(
 
 	// Setup and enter chroot (only if root and sandbox enabled)
 	if runtime.GOOS == "linux" && syscall.Geteuid() == 0 && sandboxEnabled {
-		jailPath := "/run/" + brand.LowerName + "-api-jail"
+		jailPath := filepath.Join(install.GetRunDir(), brand.LowerName+"-api-jail")
 		if err := setupChroot(jailPath); err != nil {
 			return fmt.Errorf("failed to setup chroot: %w", err)
 		}
@@ -560,7 +585,7 @@ func initializeAPIServer(
 	if cfg.Audit != nil && cfg.Audit.Enabled {
 		stateDir := cfg.StateDir
 		if stateDir == "" {
-			stateDir = "/var/lib/flywall"
+			stateDir = install.GetStateDir()
 		}
 		dbPath := cfg.Audit.DatabasePath
 		if dbPath == "" {
@@ -611,7 +636,11 @@ func initializeAPIServer(
 
 // initializeAPIKeyManager creates and populates the API key manager.
 func initializeAPIKeyManager(cfg *config.Config, authDir string) *api.APIKeyManager {
-	dbPath := filepath.Join(authDir, "api_state.db")
+	stateDir := cfg.StateDir
+	if stateDir == "" {
+		stateDir = install.GetStateDir()
+	}
+	dbPath := filepath.Join(stateDir, "api_state.db")
 
 	stateOpts := state.DefaultOptions(dbPath)
 	stateStore, err := state.NewSQLiteStore(stateOpts)
@@ -690,7 +719,7 @@ func setupTLS(rtCfg *APIRuntimeConfig, cfg *config.Config, isolated bool) (certF
 	if cfg.API != nil && cfg.API.TLSListen != "" {
 		useTLS = true
 		isSelfSigned = true
-		certDir := filepath.Join(brand.GetStateDir(), "certs")
+		certDir := filepath.Join(install.GetStateDir(), "certs")
 		if err := os.MkdirAll(certDir, 0700); err != nil {
 			logging.Error(fmt.Sprintf("failed to create cert dir: %v", err))
 			os.Exit(1)
@@ -711,16 +740,16 @@ func setupTLS(rtCfg *APIRuntimeConfig, cfg *config.Config, isolated bool) (certF
 	if (isolated && !rtCfg.NoSandbox) || rtCfg.ForceTLS {
 		useTLS = true
 		isSelfSigned = true
-		certDir := filepath.Join(brand.GetStateDir(), "certs")
+		certDir := filepath.Join(install.GetStateDir(), "certs")
 		if err := os.MkdirAll(certDir, 0700); err != nil {
 			logging.Error(fmt.Sprintf("failed to create cert dir: %v", err))
 			os.Exit(1)
 		}
 
-		certFile = filepath.Join(certDir, "cert.pem")
-		keyFile = filepath.Join(certDir, "key.pem")
+		certFile = filepath.Join(certDir, "server.crt")
+		keyFile = filepath.Join(certDir, "server.key")
 
-		cm := pki.NewCertManager(certDir)
+		cm := pki.NewCertManager(certDir, logging.WithComponent("pki"))
 		if err := cm.EnsureCert(); err != nil {
 			logging.Error(fmt.Sprintf("failed to ensure TLS certificates: %v", err))
 			os.Exit(1)
@@ -777,22 +806,12 @@ func startHTTPServer(
 		}
 	}
 
-	// Create server with secure defaults
-	serverConfig := api.DefaultServerConfig()
-	srv := &http.Server{
-		Handler:           apiServer.Handler(),
-		ReadHeaderTimeout: serverConfig.ReadHeaderTimeout,
-		ReadTimeout:       serverConfig.ReadTimeout,
-		WriteTimeout:      serverConfig.WriteTimeout,
-		IdleTimeout:       serverConfig.IdleTimeout,
-		MaxHeaderBytes:    serverConfig.MaxHeaderBytes,
-	}
-
 	// Start server in goroutine
 	go func() {
 		logging.Info(fmt.Sprintf("Starting API server on %s (%s, HTTP)", serverListenAddr, network))
 
-		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+		// Use apiServer.ServeListener to handle the listener (and ensure graceful shutdown support)
+		if err := apiServer.ServeListener(listener); err != nil && err != http.ErrServerClosed {
 			logging.Error(fmt.Sprintf("API server failed: %v", err))
 			os.Exit(1)
 		}
@@ -806,7 +825,7 @@ func startHTTPServer(
 	logging.Info("Shutting down API server...")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Shutdown(ctx)
+	return apiServer.Shutdown(ctx)
 }
 
 // startTLSServer starts the HTTPS server with optional HTTP redirect.

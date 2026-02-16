@@ -63,7 +63,9 @@ interface "br0" {
 }
 
 zone "containers" {
-    interfaces = ["br0"]
+    match {
+        interface = "br0"
+    }
 }
 
 dhcp {

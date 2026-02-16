@@ -56,7 +56,7 @@ Example:
 test('Enable Feature X', async ({ page, request }) => {
     await page.goto('/settings');
     await page.getByLabel('Feature X').check();
-    
+
     // Verify backend state
     const response = await request.get(`${process.env.API_URL}/api/config`);
     const config = await response.json();

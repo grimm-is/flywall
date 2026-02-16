@@ -11,7 +11,7 @@ require_root
 require_binary
 cleanup_on_exit
 
-CONFIG_FILE="/tmp/netns_test.hcl"
+CONFIG_FILE="/tmp/netns_test_$$.hcl"
 
 cat > "$CONFIG_FILE" <<EOF
 schema_version = "1.0"

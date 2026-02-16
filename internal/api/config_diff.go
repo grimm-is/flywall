@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -46,6 +48,12 @@ type RouteWithStatus struct {
 	Status ConfigItemStatus `json:"_status"`
 }
 
+// InterfaceWithStatus wraps an Interface with its staging status
+type InterfaceWithStatus struct {
+	config.Interface
+	Status ConfigItemStatus `json:"_status"`
+}
+
 // ConfigWithStatus is the full config with status fields for UI rendering
 type ConfigWithStatus struct {
 	// Core fields from config.Config
@@ -55,14 +63,14 @@ type ConfigWithStatus struct {
 	EnableFlowOffload bool   `json:"enable_flow_offload"`
 
 	// Items with status
-	Policies []PolicyWithStatus  `json:"policies"`
-	NAT      []NATRuleWithStatus `json:"nat"`
-	Zones    []ZoneWithStatus    `json:"zones"`
-	IPSets   []IPSetWithStatus   `json:"ipsets"`
-	Routes   []RouteWithStatus   `json:"routes"`
+	Interfaces []InterfaceWithStatus `json:"interfaces"`
+	Policies   []PolicyWithStatus    `json:"policies"`
+	NAT        []NATRuleWithStatus   `json:"nat"`
+	Zones      []ZoneWithStatus      `json:"zones"`
+	IPSets     []IPSetWithStatus     `json:"ipsets"`
+	Routes     []RouteWithStatus     `json:"routes"`
 
 	// Pass through other fields unchanged
-	Interfaces    []config.Interface           `json:"interfaces"`
 	RoutingTables []config.RoutingTable        `json:"routing_tables,omitempty"`
 	PolicyRoutes  []config.PolicyRoute         `json:"policy_routes,omitempty"`
 	MarkRules     []config.MarkRule            `json:"mark_rules,omitempty"`
@@ -105,7 +113,6 @@ func BuildConfigWithStatus(staged, running *config.Config) *ConfigWithStatus {
 		IPForwarding:      staged.IPForwarding,
 		MSSClamping:       staged.MSSClamping,
 		EnableFlowOffload: staged.EnableFlowOffload,
-		Interfaces:        staged.Interfaces,
 		RoutingTables:     staged.RoutingTables,
 		PolicyRoutes:      staged.PolicyRoutes,
 		MarkRules:         staged.MarkRules,
@@ -134,17 +141,19 @@ func BuildConfigWithStatus(staged, running *config.Config) *ConfigWithStatus {
 
 	// If no running config, everything is pending_add
 	if running == nil {
+		result.Interfaces = wrapInterfacesAllPending(staged.Interfaces)
 		result.Policies = wrapPoliciesAllPending(staged.Policies)
 		result.NAT = wrapNATAllPending(staged.NAT)
 		result.Zones = wrapZonesAllPending(staged.Zones)
 		result.IPSets = wrapIPSetsAllPending(staged.IPSets)
 		result.Routes = wrapRoutesAllPending(staged.Routes)
-		result.HasPendingChanges = len(staged.Policies) > 0 || len(staged.NAT) > 0 ||
+		result.HasPendingChanges = len(staged.Interfaces) > 0 || len(staged.Policies) > 0 || len(staged.NAT) > 0 ||
 			len(staged.Zones) > 0 || len(staged.IPSets) > 0 || len(staged.Routes) > 0
 		return result
 	}
 
 	// Compute status for each section
+	result.Interfaces = computeInterfaceStatuses(staged.Interfaces, running.Interfaces)
 	result.Policies = computePolicyStatuses(staged.Policies, running.Policies)
 	result.NAT = computeNATStatuses(staged.NAT, running.NAT)
 	result.Zones = computeZoneStatuses(staged.Zones, running.Zones)
@@ -152,11 +161,14 @@ func BuildConfigWithStatus(staged, running *config.Config) *ConfigWithStatus {
 	result.Routes = computeRouteStatuses(staged.Routes, running.Routes)
 
 	// Check for deletions (items in running but not in staged)
+	deletedInterfaces := findDeletedInterfaces(staged.Interfaces, running.Interfaces)
 	deletedPolicies := findDeletedPolicies(staged.Policies, running.Policies)
 	deletedNAT := findDeletedNAT(staged.NAT, running.NAT)
 	deletedZones := findDeletedZones(staged.Zones, running.Zones)
 	deletedIPSets := findDeletedIPSets(staged.IPSets, running.IPSets)
 	deletedRoutes := findDeletedRoutes(staged.Routes, running.Routes)
+
+	result.Interfaces = append(result.Interfaces, deletedInterfaces...)
 
 	result.Policies = append(result.Policies, deletedPolicies...)
 	result.NAT = append(result.NAT, deletedNAT...)
@@ -397,6 +409,57 @@ func wrapRoutesAllPending(routes []config.Route) []RouteWithStatus {
 	return result
 }
 
+// Helper functions for Interfaces
+func computeInterfaceStatuses(staged, running []config.Interface) []InterfaceWithStatus {
+	runningMap := make(map[string]config.Interface)
+	for _, iface := range running {
+		runningMap[iface.Name] = iface
+	}
+
+	result := make([]InterfaceWithStatus, 0, len(staged))
+	for _, iface := range staged {
+		if runningIface, exists := runningMap[iface.Name]; exists {
+			if interfacesEqual(runningIface, iface) {
+				result = append(result, InterfaceWithStatus{Interface: iface, Status: StatusLive})
+			} else {
+				result = append(result, InterfaceWithStatus{Interface: iface, Status: StatusPendingEdit})
+			}
+		} else {
+			result = append(result, InterfaceWithStatus{Interface: iface, Status: StatusPendingAdd})
+		}
+	}
+	return result
+}
+
+func findDeletedInterfaces(staged, running []config.Interface) []InterfaceWithStatus {
+	stagedMap := make(map[string]bool)
+	for _, iface := range staged {
+		stagedMap[iface.Name] = true
+	}
+
+	var deleted []InterfaceWithStatus
+	for _, iface := range running {
+		if !stagedMap[iface.Name] {
+			deleted = append(deleted, InterfaceWithStatus{Interface: iface, Status: StatusPendingDelete})
+		}
+	}
+	return deleted
+}
+
+func wrapInterfacesAllPending(interfaces []config.Interface) []InterfaceWithStatus {
+	result := make([]InterfaceWithStatus, len(interfaces))
+	for i, iface := range interfaces {
+		result[i] = InterfaceWithStatus{Interface: iface, Status: StatusPendingAdd}
+	}
+	return result
+}
+
+func interfacesEqual(a, b config.Interface) bool {
+	aJSON, _ := json.Marshal(a)
+	bJSON, _ := json.Marshal(b)
+	return string(aJSON) == string(bJSON)
+}
+
 // Equality helpers (using JSON comparison for simplicity)
 func policiesEqual(a, b config.Policy) bool {
 	aJSON, _ := json.Marshal(a)
@@ -430,6 +493,11 @@ func routesEqual(a, b config.Route) bool {
 
 // hasAnyPending checks if any items have pending status
 func hasAnyPending(c *ConfigWithStatus) bool {
+	for _, i := range c.Interfaces {
+		if i.Status != StatusLive {
+			return true
+		}
+	}
 	for _, p := range c.Policies {
 		if p.Status != StatusLive {
 			return true

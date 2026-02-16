@@ -79,7 +79,7 @@ zone "vpn" {
   description = "Remote Access VPN"
   match { interface = "wg0" }
   match { interface = "wg+" } # Wildcard match for dynamic peers
-  
+
   management {
     web_ui = true
     ssh    = true
@@ -184,11 +184,11 @@ dhcp {
 dns {
   mode       = "forward"
   forwarders = ["8.8.8.8", "1.1.1.1"]
-  
+
   # Serve DNS to LAN and DMZ
   serve "lan" {
     local_domain = "home.lab"
-    
+
     # Local DNS records
     host "10.0.0.1" { hostnames = ["router.home.lab"] }
     host "10.0.0.10" { hostnames = ["server.dmz.lab"] }
@@ -212,12 +212,12 @@ vpn {
     private_key_file = "/etc/flywall/wg0.key"
     listen_port = 51820
     address     = ["10.10.0.1/24"]
-    
+
     peer "phone" {
-      public_key = "G+w..." 
+      public_key = "G+w..."
       allowed_ips = ["10.10.0.2/32"]
     }
-    
+
     peer "laptop" {
       public_key = "X/y..."
       allowed_ips = ["10.10.0.3/32"]

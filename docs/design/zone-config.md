@@ -3,7 +3,7 @@
 ## Problem
 
 Zone membership is configured in two places:
-- `interface "eth0" { zone = "WAN" }` 
+- `interface "eth0" { zone = "WAN" }`
 - `zone "WAN" { interfaces = ["eth0"] }`
 
 This creates redundancy and potential for conflicts.
@@ -85,7 +85,7 @@ zone "guest" {
 ```hcl
 zone "guest" {
   src = "192.168.10.0/24"  # Applies to ALL matches below
-  
+
   match = [
     { interface = "eth1" },   # Inherits src
     { interface = "wlan0" }   # Inherits src

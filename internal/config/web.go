@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 // WebConfig configures the public-facing web server (Proxy).
@@ -11,9 +13,9 @@ type WebConfig struct {
 	TLSKey  string `hcl:"tls_key,optional" json:"tls_key,omitempty"`   // Path to TLS key
 
 	// Behavior
-	DisableRedirect bool `hcl:"disable_redirect,optional" json:"disable_redirect,omitempty"` // Disable HTTP->HTTPS redirect
-	ServeUI         bool `hcl:"serve_ui,optional" json:"serve_ui,omitempty"`                 // Serve the dashboard (default true)
-	ServeAPI        bool `hcl:"serve_api,optional" json:"serve_api,omitempty"`               // Serve API paths (default true)
+	DisableRedirect bool `hcl:"disable_redirect,optional" json:"disable_redirect,omitempty" tui:"title=Disable Redirect,desc=Disable HTTP to HTTPS redirect"`
+	ServeUI         bool `hcl:"serve_ui,optional" json:"serve_ui,omitempty" tui:"title=Enable UI,desc=Serve the web dashboard"`
+	ServeAPI        bool `hcl:"serve_api,optional" json:"serve_api,omitempty" tui:"title=Enable API Routes,desc=Serve API on same port"`
 
 	// Access Control
 	Allow []AccessRule `hcl:"allow,block" json:"allow,omitempty"`

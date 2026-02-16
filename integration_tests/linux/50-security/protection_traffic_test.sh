@@ -51,11 +51,15 @@ schema_version = "1.0"
 ip_forwarding = true
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 interface "veth-lan" {
@@ -71,6 +75,7 @@ interface "veth-wan" {
 # Enable protection on WAN interface
 protection "wan_protection" {
   interface = "veth-wan"
+  enabled   = true
 
   anti_spoofing = true
   bogon_filtering = true
@@ -95,8 +100,8 @@ diag "Creating network namespace topology..."
 setup_test_topology
 ok $? "Test topology created"
 
-# Test 2: Apply firewall rules with protection config
-apply_firewall_rules "$TEST_CONFIG" /tmp/protection_traffic.log
+diag "Applying firewall rules..."
+apply_firewall_rules "$TEST_CONFIG"
 ok $? "Firewall rules applied with protection config"
 
 dilated_sleep 1
@@ -104,7 +109,13 @@ clear_kernel_log
 
 # Test 3: Verify protection rules exist in nftables
 diag "Verifying protection rules created..."
-if nft list table inet flywall 2>/dev/null | grep -qE "saddr 10\.0\.0\.0/8|saddr 192\.168\.0\.0/16|saddr 172\.16\.0\.0/12"; then
+nft list table inet flywall > /tmp/nft_output 2>/dev/null
+cat /tmp/nft_output
+echo "--- Flywall Log ---"
+cat /var/log/flywall/flywall.log
+echo "-------------------"
+
+if grep -qE "saddr \{.*10\.0\.0\.0/8.*\}|saddr 10\.0\.0\.0/8" /tmp/nft_output; then
     ok 0 "Protection rules for RFC1918 exist"
 else
     diag "Protection rules not found. nftables output:"

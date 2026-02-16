@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -5,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -124,6 +127,9 @@ func CSRFMiddleware(manager *CSRFManager, authStore interface{}) func(http.Handl
 			// Only check CSRF on state-changing methods
 			if r.Method != http.MethodPost && r.Method != http.MethodPut &&
 				r.Method != http.MethodDelete && r.Method != http.MethodPatch {
+				// Yield processor to prevent potential scheduler starvation in tight loops
+				// (suspected Heisenbug)
+				runtime.Gosched()
 				next.ServeHTTP(w, r)
 				return
 			}

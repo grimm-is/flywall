@@ -29,17 +29,10 @@ TOTAL_LOC=${TOTAL_LOC:-0}
 TEST_LOC=$((TOTAL_LOC - APP_LOC))
 
 # Calculate Ratio
-RATIO_STR="0:0"
+# Calculate Test Percentage (Test / Code)
+PERCENTAGE="0.0%"
 if [ "$APP_LOC" -gt 0 ] && [ "$TEST_LOC" -gt 0 ]; then
-    # Simple GCD implementation in shell/awk
-    GCD=$(awk -v a="$TEST_LOC" -v b="$APP_LOC" 'BEGIN { while(b){t=b; b=a%b; a=t} print a }')
-    S_TEST=$((TEST_LOC / GCD))
-    S_APP=$((APP_LOC / GCD))
-    RATIO_STR="$S_TEST:$S_APP"
-elif [ "$APP_LOC" -gt 0 ]; then
-    RATIO_STR="0:1"
-elif [ "$TEST_LOC" -gt 0 ]; then
-    RATIO_STR="1:0"
+    PERCENTAGE=$(awk -v t="$TEST_LOC" -v a="$APP_LOC" 'BEGIN { printf "%.1f%%", (t/a)*100 }')
 fi
 
 # Calculate Reading Time (25 lines/min)
@@ -55,6 +48,6 @@ fi
 echo "-----------------------------------"
 echo "Application LOC: $APP_LOC"
 echo "Test LOC:        $TEST_LOC"
-echo "Test Ratio:      $RATIO_STR (Test:Code)"
+echo "Test Percentage: $PERCENTAGE (Test/Code)"
 echo "Reading Time:    $TIME_STR (@25 lines/min)"
 echo "-----------------------------------"

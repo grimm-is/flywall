@@ -1,19 +1,24 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 // +build linux
 
 package firewall
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
+
+	"grimm.is/flywall/internal/install"
 
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
+	"grimm.is/flywall/internal/errors"
 	"grimm.is/flywall/internal/logging"
 
 	"path/filepath"
@@ -60,7 +65,7 @@ func NewManagerWithConn(conn NFTablesConn, logger *logging.Logger, cacheDir stri
 		logger = logging.New(logging.DefaultConfig())
 	}
 	if cacheDir == "" {
-		cacheDir = filepath.Join(brand.GetStateDir(), "iplists")
+		cacheDir = filepath.Join(install.GetStateDir(), "iplists")
 	}
 	return &Manager{
 		conn:     conn,
@@ -91,6 +96,16 @@ func (m *Manager) ApplyConfig(cfg *Config) error {
 	effectiveCfg.NAT = make([]config.NATRule, len(localCfg.NAT)+len(m.dynamicRules))
 	copy(effectiveCfg.NAT, localCfg.NAT)
 	copy(effectiveCfg.NAT[len(localCfg.NAT):], m.dynamicRules)
+
+	// DEBUG: Trace protections
+	if len(effectiveCfg.Protections) > 0 {
+		m.logger.Info("ApplyConfig: Found protection rules", "count", len(effectiveCfg.Protections))
+		for _, p := range effectiveCfg.Protections {
+			m.logger.Info(" - Protection", "interface", p.Interface, "enabled", p.Enabled)
+		}
+	} else {
+		m.logger.Warn("ApplyConfig: No protection rules found in config")
+	}
 
 	// Merge scheduled rules into policies
 	// We need to deep copy policies too if we modify them
@@ -135,7 +150,15 @@ func (m *Manager) ApplyConfig(cfg *Config) error {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 
-	finalScript, err := m.GenerateRules(&effectiveCfg)
+	// 1. Resolve IPSets (Download/Fetch)
+	// This happens BEFORE rule generation to ensure the set
+	// elements are included in the atomic script.
+	resolvedIPSets, err := m.resolveIPSets(localCfg)
+	if err != nil {
+		return fmt.Errorf("ipset resolution failed: %w", err)
+	}
+
+	finalScript, err := m.GenerateRules(&effectiveCfg, resolvedIPSets)
 	if err != nil {
 		return err
 	}
@@ -143,15 +166,16 @@ func (m *Manager) ApplyConfig(cfg *Config) error {
 	// 4. Validate script before applying
 	applier := NewAtomicApplier()
 	if err := applier.ValidateScript(finalScript); err != nil {
-
 		// Dump script to log for debugging if validation fails
 		// Truncate to avoid massive logs (first 1000 chars)
 		limit := 1000
 		if len(finalScript) < limit {
 			limit = len(finalScript)
 		}
-		m.logger.Error("Validation failed for script", "script_snippet", finalScript[:limit])
-		return fmt.Errorf("ruleset validation failed: %w", err)
+		m.logger.WithError(err).WithFields(map[string]any{
+			"script_snippet": finalScript[:limit],
+		}).Error("Ruleset validation failed")
+		return errors.Wrap(err, errors.KindValidation, "ruleset validation failed")
 	}
 
 	// 5. Apply atomically
@@ -159,15 +183,7 @@ func (m *Manager) ApplyConfig(cfg *Config) error {
 		return fmt.Errorf("atomic apply failed: %w", err)
 	}
 
-	// 6. Apply IPSets separately (these use nft CLI already)
-	// IPSets need to be applied after the table exists
-	// 6. Apply IPSets separately (these use nft CLI already)
-	// IPSets need to be applied after the table exists
-	ipsetManager := NewIPSetManager(brand.LowerName)
-	if err := m.applyIPSets(localCfg, ipsetManager); err != nil {
-		// Log warning but don't fail - IPSets are supplementary
-		m.logger.Warn("Failed to apply IPSets", "error", err)
-	}
+	// 6. IPSet logic removed (handled atomically above)
 
 	// Update expectedGenID for integrity monitor
 	if m.monitorEnabled {
@@ -188,10 +204,77 @@ func (m *Manager) ApplyConfig(cfg *Config) error {
 	return nil
 }
 
+// resolveIPSets fetches all IPSet data (static strings, downloads)
+// and returns a map of set contents.
+func (m *Manager) resolveIPSets(cfg *Config) (map[string][]string, error) {
+	resolved := make(map[string][]string)
+
+	// Initialize ListManager
+	// We pass empty string for config file here as we rely on defaults/config dir behavior
+	// In a real scenario, we might want to pass a configured path from cfg.Global.ListConfig
+	listMgr, err := NewListManager(m.cacheDir, m.logger, "")
+	if err != nil {
+		m.logger.Warn("Failed to initialize ListManager (using defaults)", "error", err)
+	}
+
+	// Safety limit to prevent memory exhaustion DoS
+	const MaxTotalIPs = 500000
+	totalIPs := 0
+
+	for _, ipset := range cfg.IPSets {
+		var entries []string
+
+		// 1. Static entries
+		if len(ipset.Entries) > 0 {
+			entries = append(entries, ipset.Entries...)
+		}
+
+		// 2. Managed List (Generic or Legacy FireHOL)
+		listName := ipset.ManagedList
+		if listName == "" {
+			listName = ipset.FireHOLList // Fallback for backward compatibility
+		}
+
+		if listName != "" && listMgr != nil {
+			ips, err := listMgr.DownloadList(listName)
+			if err != nil {
+				m.logger.Warn("failed to download managed list (using static entries only)", "list", listName, "error", err)
+			} else {
+				entries = append(entries, ips...)
+			}
+		}
+
+		// 3. Custom URL
+		if ipset.URL != "" && listMgr != nil {
+			ips, err := listMgr.DownloadFromURL(ipset.URL)
+			if err != nil {
+				m.logger.Warn("failed to download from URL (using static entries only)", "url", ipset.URL, "error", err)
+			} else {
+				entries = append(entries, ips...)
+			}
+		}
+
+		totalIPs += len(entries)
+		if totalIPs > MaxTotalIPs {
+			return nil, fmt.Errorf("ipset total entry count exceeds limit (%d)", MaxTotalIPs)
+		}
+
+		if len(entries) > 0 {
+			resolved[ipset.Name] = entries
+		}
+	}
+	return resolved, nil
+}
+
 // enableRouteLocalnet enables route_localnet on interfaces where Web/API access is required.
 func (m *Manager) enableRouteLocalnet(cfg *Config) error {
 	// Helper to write file
 	writeSysctl := func(path, value string) error {
+		// Read first to avoid unnecessary writes (reduction of side effects)
+		current, err := os.ReadFile(path)
+		if err == nil && strings.TrimSpace(string(current)) == value {
+			return nil
+		}
 		return os.WriteFile(path, []byte(value), 0644)
 	}
 
@@ -324,12 +407,15 @@ func (m *Manager) validateConfig(cfg *Config) error {
 	// Validate Zone Names
 	for _, zone := range cfg.Zones {
 		if !isValidIdentifier(zone.Name) {
-			return fmt.Errorf("invalid zone name '%s': must match [a-zA-Z0-9_.-]+", zone.Name)
+			return errors.Errorf(errors.KindValidation, "invalid zone name '%s': must match [a-zA-Z0-9_.-]+", zone.Name)
 		}
 		// Validate Interfaces in Zone
-		for _, iface := range zone.Interfaces {
-			if !isValidIdentifier(iface) {
-				return fmt.Errorf("invalid interface name '%s' in zone '%s'", iface, zone.Name)
+		for _, m := range zone.Matches {
+			if m.Interface == "" {
+				continue // Skip empty matches or non-interface matches
+			}
+			if !isValidIdentifier(m.Interface) {
+				return errors.Errorf(errors.KindValidation, "invalid interface name '%s' in zone '%s'", m.Interface, zone.Name)
 			}
 		}
 	}
@@ -337,14 +423,14 @@ func (m *Manager) validateConfig(cfg *Config) error {
 	// Validate Interface Objects
 	for _, iface := range cfg.Interfaces {
 		if !isValidIdentifier(iface.Name) {
-			return fmt.Errorf("invalid interface definition name '%s'", iface.Name)
+			return errors.Errorf(errors.KindValidation, "invalid interface definition name '%s'", iface.Name)
 		}
 	}
 
 	// Validate IPSets
 	for _, ipset := range cfg.IPSets {
 		if !isValidIdentifier(ipset.Name) {
-			return fmt.Errorf("invalid ipset name '%s'", ipset.Name)
+			return errors.Errorf(errors.KindValidation, "invalid ipset name '%s'", ipset.Name)
 		}
 	}
 
@@ -352,10 +438,10 @@ func (m *Manager) validateConfig(cfg *Config) error {
 	// but we check the from/to fields just in case
 	for _, pol := range cfg.Policies {
 		if !isValidIdentifier(pol.From) {
-			return fmt.Errorf("invalid policy from-zone '%s'", pol.From)
+			return errors.Errorf(errors.KindValidation, "invalid policy from-zone '%s'", pol.From)
 		}
 		if pol.To != "Firewall" && !isValidIdentifier(pol.To) {
-			return fmt.Errorf("invalid policy to-zone '%s'", pol.To)
+			return errors.Errorf(errors.KindValidation, "invalid policy to-zone '%s'", pol.To)
 		}
 	}
 
@@ -375,8 +461,11 @@ func (m *Manager) applyIPSets(cfg *Config, ipsetMgr *IPSetManager) error {
 		return nil
 	}
 
-	// Create FireHOL manager for downloading lists
-	fireholMgr := NewFireHOLManager(m.cacheDir, m.logger)
+	// Create ListManager for downloading lists
+	listMgr, err := NewListManager(m.cacheDir, m.logger, "")
+	if err != nil {
+		m.logger.Warn("Failed to initialize ListManager (using defaults)", "error", err)
+	}
 
 	for _, ipset := range cfg.IPSets {
 		// Determine set type
@@ -398,23 +487,28 @@ func (m *Manager) applyIPSets(cfg *Config, ipsetMgr *IPSetManager) error {
 			entries = append(entries, ipset.Entries...)
 		}
 
-		// FireHOL list
-		if ipset.FireHOLList != "" {
-			ips, err := fireholMgr.DownloadList(ipset.FireHOLList)
+		// Managed List (Generic or Legacy FireHOL)
+		listName := ipset.ManagedList
+		if listName == "" {
+			listName = ipset.FireHOLList // Fallback
+		}
+
+		if listName != "" && listMgr != nil {
+			ips, err := listMgr.DownloadList(listName)
 			if err != nil {
 				// Log warning but continue - network might be unavailable
-				m.logger.Warn("Failed to download FireHOL list", "list", ipset.FireHOLList, "error", err)
+				m.logger.Warn("failed to download managed list", "list", listName, "error", err)
 			} else {
 				entries = append(entries, ips...)
-				m.logger.Info("Downloaded IPs from FireHOL list", "list", ipset.FireHOLList, "count", len(ips))
+				m.logger.Info("Downloaded IPs from managed list", "list", listName, "count", len(ips))
 			}
 		}
 
 		// Custom URL
-		if ipset.URL != "" {
-			ips, err := fireholMgr.DownloadFromURL(ipset.URL)
+		if ipset.URL != "" && listMgr != nil {
+			ips, err := listMgr.DownloadFromURL(ipset.URL)
 			if err != nil {
-				m.logger.Warn("Failed to download from URL", "url", ipset.URL, "error", err)
+				m.logger.Warn("failed to download from URL", "url", ipset.URL, "error", err)
 			} else {
 				entries = append(entries, ips...)
 				m.logger.Info("Downloaded IPs from URL", "url", ipset.URL, "count", len(ips))
@@ -441,9 +535,8 @@ func (m *Manager) applyIPSets(cfg *Config, ipsetMgr *IPSetManager) error {
 // which typically expect host byte order.
 // DO NOT use this for packet headers (IP, Port, etc) which are always Network Byte Order (Big Endian).
 func hostEndianBytes(v uint32) []byte {
-	// Detect system endianness at runtime using unsafe pointer
-	buf := [4]byte{}
-	*(*uint32)(unsafe.Pointer(&buf[0])) = v
+	var buf [4]byte
+	binary.NativeEndian.PutUint32(buf[:], v)
 	return buf[:]
 }
 
@@ -455,7 +548,7 @@ func pad(s string) []byte {
 
 // GenerateRules generates the nftables ruleset script for the given configuration.
 // It does not apply the rules.
-func (m *Manager) GenerateRules(cfg *Config) (string, error) {
+func (m *Manager) GenerateRules(cfg *Config, resolvedIPSets map[string][]string) (string, error) {
 	// Compute config hash for metadata tracking
 	// Use a simple representation - zone count + policy count + interface count
 	// This is fast and changes when config structure changes
@@ -464,7 +557,8 @@ func (m *Manager) GenerateRules(cfg *Config) (string, error) {
 	configHash := HashConfig([]byte(configSummary))
 
 	// 1. Build filter table script
-	filterScript, err := BuildFilterTableScript(cfg, cfg.VPN, brand.LowerName, configHash)
+	filterScript, err := BuildFilterTableScript(
+		cfg, cfg.VPN, brand.LowerName, configHash, resolvedIPSets)
 	if err != nil {
 		return "", fmt.Errorf("failed to build filter table script: %w", err)
 	}
@@ -521,8 +615,8 @@ func (m *Manager) PreRenderSafeMode(cfg *Config) {
 		isWAN := false
 		for _, zone := range cfg.Zones {
 			if zone.Name == "WAN" || zone.Name == "wan" || zone.Name == "Internet" {
-				for _, zi := range zone.Interfaces {
-					if zi == iface.Name {
+				for _, m := range zone.Matches {
+					if m.Interface == iface.Name {
 						isWAN = true
 						break
 					}

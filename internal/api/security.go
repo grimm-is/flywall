@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -38,6 +40,7 @@ type attemptTracker struct {
 	count       int
 	lastAttempt time.Time
 	attempts    []time.Time
+	blocked     bool
 }
 
 // NewSecurityManager creates a security manager that uses IPSets for IP blocking
@@ -90,20 +93,37 @@ func (sm *SecurityManager) RecordFailedAttempt(ip, reason string, threshold int,
 	if tracker.count >= threshold {
 		sm.logger.Warn("Blocking IP due to repeated failures", "ip", ip, "attempts", tracker.count, "reason", reason)
 
-		// Add to blocked IPSet via IPBlocker interface
-		if sm.blocker != nil {
-			// Release lock before RPC call to avoid deadlock
-			sm.mu.Unlock()
-			err := sm.blockIPLocked(ip, reason)
-			sm.mu.Lock()
-			return err
+		// Check if already being blocked to avoid duplicate attempts
+		if tracker.blocked {
+			return nil
 		}
+
+		// Mark as blocked to prevent duplicate attempts
+		tracker.blocked = true
+
+		// Release lock before RPC call to avoid deadlock
+		sm.mu.Unlock()
+		err := sm.blockIPLocked(ip, reason)
+		sm.mu.Lock()
+
+		// Clear attempt tracker after successful block
+		if err == nil {
+			delete(sm.attempts, ip)
+		} else {
+			// If blocking failed, reset the blocked flag
+			// Re-check existence to be safe after re-acquiring lock
+			if currentTracker, exists := sm.attempts[ip]; exists && currentTracker == tracker {
+				currentTracker.blocked = false
+			}
+		}
+		return err
 	}
 
 	return nil
 }
 
 // blockIPLocked adds an IP to the blocked IPSet (caller must NOT hold lock)
+// The RPC call is made asynchronously to avoid blocking HTTP request handlers.
 func (sm *SecurityManager) blockIPLocked(ip, reason string) error {
 	if sm.blocker == nil {
 		return fmt.Errorf("IPBlocker not available")
@@ -111,14 +131,27 @@ func (sm *SecurityManager) blockIPLocked(ip, reason string) error {
 
 	sm.logger.Info("Blocking IP", "ip", ip, "reason", reason)
 
-	if err := sm.blocker.AddToIPSet(sm.blockedIPSet, ip); err != nil {
-		return fmt.Errorf("failed to add to blocked set: %w", err)
-	}
+	// Fire and forget - don't block the request handler on RPC
+	// The RPC call can hang if the control plane is busy or connection is bad
+	// Use a goroutine with timeout to prevent leaks
+	go func(setName, targetIP string) {
+		// Timeout to prevent goroutine leaks if RPC hangs forever
+		done := make(chan error, 1)
+		go func() {
+			done <- sm.blocker.AddToIPSet(setName, targetIP)
+		}()
 
-	// Clear attempt tracker
-	sm.mu.Lock()
-	delete(sm.attempts, ip)
-	sm.mu.Unlock()
+		select {
+		case err := <-done:
+			if err != nil {
+				sm.logger.Error("Failed to add IP to blocked set", "ip", targetIP, "error", err)
+			} else {
+				sm.logger.Debug("Successfully blocked IP", "ip", targetIP)
+			}
+		case <-time.After(10 * time.Second):
+			sm.logger.Error("Timeout blocking IP", "ip", targetIP)
+		}
+	}(sm.blockedIPSet, ip)
 
 	return nil
 }

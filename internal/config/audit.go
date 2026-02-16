@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 // AuditConfig configures the audit logging subsystem.
@@ -15,6 +17,5 @@ type AuditConfig struct {
 	KernelAudit bool `hcl:"kernel_audit,optional" json:"kernel_audit,omitempty"`
 
 	// DatabasePath overrides the default audit database location.
-	// Default: /var/lib/flywall/audit.db
 	DatabasePath string `hcl:"database_path,optional" json:"database_path,omitempty"`
 }

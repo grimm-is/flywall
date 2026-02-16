@@ -1,15 +1,17 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package api implements the REST API server for Flywall.
 //
 // # Overview
 //
-// The API server runs as an unprivileged user (nobody) in a sandboxed network
+// The API server runs as an unprivileged user (flywall or nobody) in a sandboxed network
 // namespace. It handles HTTP/HTTPS requests and forwards privileged operations
 // to the control plane via RPC.
 //
 // # Security Model
 //
 // The API is sandboxed with:
-//   - Dropped privileges (runs as nobody)
+//   - Dropped privileges (runs as unprivileged user)
 //   - Network namespace isolation (169.254.255.2/30)
 //   - Chroot jail (optional)
 //   - CSRF protection for browser clients

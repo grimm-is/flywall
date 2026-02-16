@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "timestamp": "2026-01-18T07:54:48.126848-06:00",
+  "description": "Pre-safe-apply backup",
+  "path": "configs/backups/config.1.20260118-075448.hcl",
+  "size": 515,
+  "is_auto": false,
+  "pinned": false,
+  "schema_version": "1.0"
+}

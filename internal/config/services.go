@@ -1,16 +1,26 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 // DHCPServer configuration.
 type DHCPServer struct {
 	Enabled bool        `hcl:"enabled,optional" json:"enabled"`
-	Scopes  []DHCPScope `hcl:"scope,block" json:"scopes"`
+	Scopes  []DHCPScope `hcl:"scope,block" json:"scope"`
 	// Mode specifies how DHCP server is managed:
 	//   - "builtin" (default): Use Flywall's built-in DHCP server
 	//   - "external": External DHCP server (dnsmasq, isc-dhcp, kea) is in use
 	//   - "import": Import leases from external server for visibility
 	Mode string `hcl:"mode,optional" json:"mode,omitempty"`
 	// ExternalLeaseFile is the path to external DHCP server's lease file (for import mode)
-	ExternalLeaseFile string `hcl:"external_lease_file,optional" json:"external_lease_file,omitempty"`
+	ExternalLeaseFile string            `hcl:"external_lease_file,optional" json:"external_lease_file,omitempty"`
+	VendorClasses     []DHCPVendorClass `hcl:"vendor_class,block" json:"vendor_class,omitempty"`
+}
+
+// DHCPVendorClass defines options to be sent to clients matching a specific vendor class identifier (Option 60).
+type DHCPVendorClass struct {
+	Name       string            `hcl:"name,label" json:"name"`
+	Identifier string            `hcl:"identifier" json:"identifier"` // Match string in option 60
+	Options    map[string]string `hcl:"options,optional" json:"options,omitempty"`
 }
 
 // DHCPScope defines a DHCP pool.
@@ -20,6 +30,7 @@ type DHCPScope struct {
 	RangeStart string   `hcl:"range_start" json:"range_start"`
 	RangeEnd   string   `hcl:"range_end" json:"range_end"`
 	Router     string   `hcl:"router" json:"router"`
+	RelayTo    []string `hcl:"relay_to,optional" json:"relay_to,omitempty"` // Upstream DHCP servers for Relay Mode
 	DNS        []string `hcl:"dns,optional" json:"dns"`
 	LeaseTime  string   `hcl:"lease_time,optional" json:"lease_time"` // e.g. "24h"
 	Domain     string   `hcl:"domain,optional" json:"domain,omitempty"`
@@ -28,7 +39,7 @@ type DHCPScope struct {
 	// Numeric codes MUST have type prefix: "66" = "str:tftp.boot", "150" = "ip:192.168.1.10"
 	// Available prefixes: ip, str/text, hex, u8, u16, u32, bool
 	Options      map[string]string `hcl:"options,optional" json:"options,omitempty"`
-	Reservations []DHCPReservation `hcl:"reservation,block" json:"reservations,omitempty"`
+	Reservations []DHCPReservation `hcl:"reservation,block" json:"reservation,omitempty"`
 
 	// IPv6 Support (SLAAC/DHCPv6)
 	RangeStartV6 string   `hcl:"range_start_v6,optional" json:"range_start_v6,omitempty"` // For Stateful DHCPv6
@@ -67,7 +78,7 @@ type DNSServer struct {
 
 	// Upstream DNS (for forwarding mode)
 	Forwarders            []string             `hcl:"forwarders,optional" json:"forwarders"`
-	ConditionalForwarders []ConditionalForward `hcl:"conditional_forward,block" json:"conditional_forwarders"`
+	ConditionalForwarders []ConditionalForward `hcl:"conditional_forward,block" json:"conditional_forward"`
 	UpstreamTimeout       int                  `hcl:"upstream_timeout,optional" json:"upstream_timeout"` // seconds
 
 	// Encrypted DNS - Upstream (client mode)
@@ -90,7 +101,7 @@ type DNSServer struct {
 	RateLimitPerSec  int  `hcl:"rate_limit_per_sec,optional" json:"rate_limit_per_sec"` // Per-client rate limit
 
 	// Filtering
-	Blocklists     []DNSBlocklist `hcl:"blocklist,block" json:"blocklists"`
+	Blocklists     []DNSBlocklist `hcl:"blocklist,block" json:"blocklist"`
 	Allowlist      []string       `hcl:"allowlist,optional" json:"allowlist"`             // Domains that bypass blocklists
 	BlockedTTL     int            `hcl:"blocked_ttl,optional" json:"blocked_ttl"`         // TTL for blocked responses
 	BlockedAddress string         `hcl:"blocked_address,optional" json:"blocked_address"` // IP to return for blocked (default 0.0.0.0)
@@ -103,8 +114,8 @@ type DNSServer struct {
 	NegativeCacheTTL int  `hcl:"negative_cache_ttl,optional" json:"negative_cache_ttl"` // TTL for NXDOMAIN
 
 	// Static entries and zones
-	Hosts []DNSHostEntry `hcl:"host,block" json:"hosts"` // Static /etc/hosts style entries
-	Zones []DNSZone      `hcl:"zone,block" json:"zones"`
+	Hosts []DNSHostEntry `hcl:"host,block" json:"host"` // Static /etc/hosts style entries
+	Zones []DNSZone      `hcl:"zone,block" json:"zone"`
 }
 
 // DNSOverHTTPS configures a DNS-over-HTTPS upstream server.
@@ -219,7 +230,7 @@ type DNSHostEntry struct {
 // DNSZone configuration for authoritative zones.
 type DNSZone struct {
 	Name    string      `hcl:"name,label" json:"name"`
-	Records []DNSRecord `hcl:"record,block" json:"records"`
+	Records []DNSRecord `hcl:"record,block" json:"record"`
 }
 
 // DNSRecord configuration.
@@ -273,4 +284,11 @@ type NTPConfig struct {
 	Enabled  bool     `hcl:"enabled,optional" json:"enabled"`
 	Servers  []string `hcl:"servers,optional" json:"servers,omitempty"`   // Upstream servers
 	Interval string   `hcl:"interval,optional" json:"interval,omitempty"` // Sync interval (e.g. "4h")
+}
+
+// ScannerConfig configures the integrated network scanner.
+type ScannerConfig struct {
+	// DisableReverseDNS skips reverse DNS lookups during scanning.
+	// HCL: disable_rdns
+	DisableReverseDNS bool `hcl:"disable_rdns,optional" json:"disable_rdns"`
 }

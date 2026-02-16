@@ -5,6 +5,8 @@
 # 2. Creating custom IP sets
 # 3. Using sets in firewall rules
 
+schema_version = "1.0"
+
 # Enable IP forwarding for routing
 ip_forwarding = true
 
@@ -205,13 +207,14 @@ nat "masquerade-wan" {
 # Protection Settings
 # ===========================================
 
-protection {
-  anti_spoofing       = true
-  bogon_filtering     = true
-  invalid_packets     = true
+protection "wan_protection" {
+  interface            = "eth0"
+  anti_spoofing        = true
+  bogon_filtering      = true
+  invalid_packets      = true
   syn_flood_protection = true
-  syn_flood_rate      = 25
-  syn_flood_burst     = 50
-  icmp_rate_limit     = true
-  icmp_rate           = 10
+  syn_flood_rate       = 25
+  syn_flood_burst      = 50
+  icmp_rate_limit      = true
+  icmp_rate            = 10
 }

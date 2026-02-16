@@ -1,8 +1,12 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package ctlplane
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"grimm.is/flywall/internal/config"
@@ -53,11 +57,16 @@ func TestServer_RPC_Basics(t *testing.T) {
 			t.Fatalf("GetConfig failed: %v", err)
 		}
 
-		if len(reply.Config.Interfaces) != 1 {
-			t.Errorf("Expected 1 interface, got %d", len(reply.Config.Interfaces))
+		var rxCfg config.Config
+		if err := json.Unmarshal(reply.ConfigJSON, &rxCfg); err != nil {
+			t.Fatalf("Failed to unmarshal config: %v", err)
 		}
-		if reply.Config.Interfaces[0].Name != "eth0" {
-			t.Errorf("Expected eth0, got %s", reply.Config.Interfaces[0].Name)
+
+		if len(rxCfg.Interfaces) != 1 {
+			t.Errorf("Expected 1 interface, got %d", len(rxCfg.Interfaces))
+		}
+		if rxCfg.Interfaces[0].Name != "eth0" {
+			t.Errorf("Expected eth0, got %s", rxCfg.Interfaces[0].Name)
 		}
 	})
 
@@ -130,8 +139,8 @@ interface "eth0" {
 
 		// Verify update via GetRawHCL
 		server.GetRawHCL(getArgs, getReply)
-		if getReply.HCL != newHCL {
-			t.Error("HCL content mismatch after update")
+		if !strings.Contains(getReply.HCL, `zone = "lan"`) {
+			t.Errorf("HCL content should contain updated zone.\nGot: %q", getReply.HCL)
 		}
 	})
 

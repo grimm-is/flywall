@@ -11,9 +11,12 @@ TEST_TIMEOUT=60
 # Brand mount path (matches flywall-builder)
 # Source common functions
 . "$(dirname "$0")/../common.sh"
+cleanup_on_exit
 
 
 # --- Start Test Suite ---
+
+# Standard port matching zones-single.hcl (provided by common.sh)
 
 plan 14
 
@@ -92,8 +95,14 @@ ip netns exec red ip route add default via 10.3.0.1
 ok $? "Routing configured"
 
 # 7. Start firewall with zone configuration
+# 7. Start firewall with zone configuration
 diag "Starting firewall with zone configuration..."
-start_ctl $MOUNT_PATH/configs/zones-single.hcl
+
+# Create dynamic config with correct API port
+ZONES_CONFIG="/tmp/zones-single_$$.hcl"
+cat "$MOUNT_PATH/configs/zones-single.hcl" | sed "s/8080/$TEST_API_PORT/g" > "$ZONES_CONFIG"
+
+start_ctl "$ZONES_CONFIG"
 
 if ! kill -0 $CTL_PID 2>/dev/null; then
     diag "Firewall failed to start, showing logs:"
@@ -200,12 +209,12 @@ fi
 diag "Testing DNS resolution..."
 
 # Test local DNS resolution first (flywall's internal DNS)
-ip netns exec green dig @10.1.0.1 firewall.home.arpa +short +timeout=2 | grep -q '.'
+ip netns exec green dig @10.1.0.1 firewall.home.arpa +short +timeout=5 +tries=3 | grep -q '.'
 if [ $? -eq 0 ]; then
     ok 0 "Local DNS resolution working from Green zone"
 else
     # Fallback: check if we get any response (even NXDOMAIN is okay for local test)
-    ip netns exec green dig @10.1.0.1 firewall.home.arpa +timeout=2 2>&1 | grep -qE "status: (NOERROR|NXDOMAIN)"
+    ip netns exec green dig @10.1.0.1 firewall.home.arpa +timeout=5 +tries=3 2>&1 | grep -qE "status: (NOERROR|NXDOMAIN)"
     if [ $? -eq 0 ]; then
         ok 0 "Local DNS responding from Green zone"
     else
@@ -215,12 +224,12 @@ fi
 
 # Test external DNS resolution (use QEMU's gateway as upstream, not google.com)
 # This ensures test works offline. We just verify DNS forwarding is functional.
-ip netns exec green dig @10.1.0.1 dns.google +short +timeout=2 2>&1 | grep -qE '[0-9]+\.[0-9]+|SERVFAIL|REFUSED'
+ip netns exec green dig @10.1.0.1 dns.google +short +timeout=5 +tries=3 2>&1 | grep -qE '[0-9]+\.[0-9]+|SERVFAIL|REFUSED'
 DNS_RESULT=$?
 # Any response (even SERVFAIL/REFUSED) means the DNS server is running and forwarding
 if [ $DNS_RESULT -eq 0 ]; then
     # Check it's not a hard SERVFAIL (which indicates config error)
-    ip netns exec green dig @10.1.0.1 dns.google +timeout=2 2>&1 | grep -q "status: SERVFAIL"
+    ip netns exec green dig @10.1.0.1 dns.google +timeout=5 +tries=3 2>&1 | grep -q "status: SERVFAIL"
     if [ $? -ne 0 ]; then
         ok 0 "External DNS resolution working from Green zone"
     else
@@ -233,12 +242,25 @@ fi
 
 # 14. Test firewall API access
 diag "Testing firewall API access..."
-ip netns exec green curl -v --max-time 2 -s http://10.1.0.1:$TEST_API_PORT/api/status > /tmp/api_test.log 2>&1
-if grep "online" /tmp/api_test.log >/dev/null 2>&1; then
+# Wait a moment for API to be fully ready
+# Wait for API to be fully ready (poll for status)
+diag "Waiting for API to be ready..."
+api_ready=0
+for i in $(seq 1 30); do
+    if ip netns exec green curl -s -m 1 http://10.1.0.1:$TEST_API_PORT/api/status | grep "online" >/dev/null 2>&1; then
+        api_ready=1
+        break
+    fi
+    dilated_sleep 1
+done
+
+if [ $api_ready -eq 1 ]; then
     ok 0 "Firewall API accessible from Green zone"
 else
+    # Run one last time with verbose output to capture the error
+    ip netns exec green curl -v --max-time 5 http://10.1.0.1:$TEST_API_PORT/api/status > /tmp/api_test_$$.log 2>&1
     ok 1 "Firewall API not accessible from Green zone. Curl output:"
-    cat /tmp/api_test.log
+    cat /tmp/api_test_$$.log
     diag "API Server Logs:"
     cat "$API_LOG"
 fi

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package monitor
 
 import (
@@ -11,59 +13,133 @@ import (
 	probing "github.com/prometheus-community/pro-bing"
 )
 
-// Start checks monitors in the background.
-func Start(logger *logging.Logger, routes []config.Route, wg *sync.WaitGroup, isTestMode bool) {
+// Result holds the latest monitoring result for a target.
+type Result struct {
+	Target    string        `json:"target"`
+	RouteName string        `json:"route_name"`
+	IsUp      bool          `json:"is_up"`
+	Latency   time.Duration `json:"latency"`
+	LastCheck time.Time     `json:"last_check"`
+	Error     string        `json:"error,omitempty"`
+}
+
+// Service manages background monitoring of routes.
+type Service struct {
+	logger     *logging.Logger
+	routes     []config.Route
+	results    map[string]*Result // Key: RouteName
+	resultsMu  sync.RWMutex
+	stopCh     chan struct{}
+	wg         sync.WaitGroup
+	isTestMode bool
+}
+
+// NewService creates a new monitoring service.
+func NewService(logger *logging.Logger, routes []config.Route) *Service {
 	if logger == nil {
 		logger = logging.New(logging.DefaultConfig())
 	}
-	for _, r := range routes {
+	return &Service{
+		logger:  logger,
+		routes:  routes,
+		results: make(map[string]*Result),
+		stopCh:  make(chan struct{}),
+	}
+}
+
+// Start begins the monitoring loops.
+func (s *Service) Start() {
+	s.logger.Info("Starting monitoring service", "routes", len(s.routes))
+	for _, r := range s.routes {
 		if r.MonitorIP != "" {
-			if isTestMode {
-				wg.Add(1)
-			}
-			go monitorRoute(logger, r, wg, isTestMode)
+			s.wg.Add(1)
+			go s.monitorRoute(r)
 		}
 	}
 }
 
-func monitorRoute(logger *logging.Logger, r config.Route, wg *sync.WaitGroup, isTestMode bool) {
-	if isTestMode {
-		defer wg.Done()
+// Stop stops all monitoring loops.
+func (s *Service) Stop() {
+	close(s.stopCh)
+	s.wg.Wait()
+	s.logger.Info("Monitoring service stopped")
+}
+
+// GetResults returns the latest monitoring results.
+func (s *Service) GetResults() []Result {
+	s.resultsMu.RLock()
+	defer s.resultsMu.RUnlock()
+
+	results := make([]Result, 0, len(s.results))
+	for _, res := range s.results {
+		results = append(results, *res)
 	}
+	return results
+}
 
-	logger.Info("Starting monitoring", "route", r.Name, "target", r.MonitorIP)
+// SetTestMode enables test mode (single check and exit).
+func (s *Service) SetTestMode(enabled bool) {
+	s.isTestMode = enabled
+}
 
-	if isTestMode {
-		// In test mode, perform a single ping and exit
-		err := checkPing(r.MonitorIP)
-		if err != nil {
-			logger.Warn("ALERT: Route is DOWN", "route", r.Name, "target", r.MonitorIP, "error", err)
-		} else {
-			logger.Info("Route is UP (single check in test mode)", "route", r.Name, "target", r.MonitorIP)
-		}
+func (s *Service) monitorRoute(r config.Route) {
+	defer s.wg.Done()
+
+	s.logger.Debug("Starting monitoring", "route", r.Name, "target", r.MonitorIP)
+
+	// Initial check
+	s.check(r)
+
+	if s.isTestMode {
 		return
 	}
 
-	// Normal continuous monitoring
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		err := checkPing(r.MonitorIP)
-		if err != nil {
-			logger.Warn("ALERT: Route is DOWN", "route", r.Name, "target", r.MonitorIP, "error", err)
-		} else {
-			// Optional: Log successful pings only occasionally or on status change to avoid noise.
-			// For this demo/test, we'll stay silent on success or maybe log every Nth time.
-			// fmt.Printf("[Monitor] Route %s is UP\n", r.Name)
+	for {
+		select {
+		case <-ticker.C:
+			s.check(r)
+		case <-s.stopCh:
+			return
 		}
 	}
 }
 
-var CheckPingFunc = func(ip string) error {
+func (s *Service) check(r config.Route) {
+	latency, err := checkPing(r.MonitorIP)
+
+	s.resultsMu.Lock()
+	res := &Result{
+		Target:    r.MonitorIP,
+		RouteName: r.Name,
+		IsUp:      err == nil,
+		Latency:   latency,
+		LastCheck: time.Now(),
+	}
+	if err != nil {
+		res.Error = err.Error()
+		s.logger.Warn("Route is DOWN", "route", r.Name, "target", r.MonitorIP, "error", err)
+	}
+	s.results[r.Name] = res
+	s.resultsMu.Unlock()
+}
+
+// Legacy Start function for backward compatibility during refactor
+func Start(logger *logging.Logger, routes []config.Route, wg *sync.WaitGroup, isTestMode bool) {
+	svc := NewService(logger, routes)
+	svc.SetTestMode(isTestMode)
+	svc.Start()
+	if isTestMode {
+		svc.wg.Wait()
+	}
+}
+
+var CheckPingFunc = func(ip string) (time.Duration, error) {
 	pinger, err := probing.NewPinger(ip)
 	if err != nil {
-		return fmt.Errorf("failed to create pinger: %w", err)
+		return 0, fmt.Errorf("failed to create pinger: %w", err)
 	}
 
 	pinger.Count = 1
@@ -72,15 +148,16 @@ var CheckPingFunc = func(ip string) error {
 
 	err = pinger.Run()
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	if pinger.Statistics().PacketsRecv == 0 {
-		return fmt.Errorf("packet loss")
+	stats := pinger.Statistics()
+	if stats.PacketsRecv == 0 {
+		return 0, fmt.Errorf("packet loss")
 	}
-	return nil
+	return stats.AvgRtt, nil
 }
 
-func checkPing(ip string) error {
+func checkPing(ip string) (time.Duration, error) {
 	return CheckPingFunc(ip)
 }

@@ -1,17 +1,22 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package main
 
 import (
 	"embed"
 	"flag"
 	"os"
+	"path/filepath"
 
 	"grimm.is/flywall/cmd"
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/client"
-	"grimm.is/flywall/internal/toolbox/dhcp"
-	"grimm.is/flywall/internal/toolbox/mcast"
-	"grimm.is/flywall/internal/toolbox/mdns"
 	"grimm.is/flywall/internal/i18n"
+	"grimm.is/flywall/internal/install"
+	"grimm.is/flywall/tools/pkg/toolbox/agent"
+	"grimm.is/flywall/tools/pkg/toolbox/dhcp"
+	"grimm.is/flywall/tools/pkg/toolbox/mcast"
+	"grimm.is/flywall/tools/pkg/toolbox/mdns"
 )
 
 //go:embed all:ui/dist
@@ -27,7 +32,7 @@ func main() {
 		os.Unsetenv("FLYWALL_UPGRADE_STANDBY")
 
 		standbyFlags := flag.NewFlagSet("upgrade-standby", flag.ExitOnError)
-		configFile := standbyFlags.String("config", brand.DefaultConfigDir+"/"+brand.ConfigFileName, "Configuration file")
+		configFile := standbyFlags.String("config", install.DefaultConfigDir+"/"+brand.ConfigFileName, "Configuration file")
 		// Parse args, assuming they might start with --config or be compliant with standard flag parsing
 		// If argv is: [flywall, --config, foo], Parse(os.Args[1:]) should work.
 		// Note check len(os.Args)
@@ -38,31 +43,39 @@ func main() {
 		return
 	}
 
+	// Subcommand dispatch
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
 	}
 
 	switch os.Args[1] {
+	case "agent":
+		// Run as Orca Agent
+		if err := agent.Run(os.Args[2:]); err != nil {
+			printer.Fprintf(os.Stderr, "Agent failed: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "start":
 		// Start the daemon (background by default)
 		startFlags := flag.NewFlagSet("start", flag.ExitOnError)
-		configFile := startFlags.String("config", brand.DefaultConfigDir+"/"+brand.ConfigFileName, "Configuration file")
-		startFlags.StringVar(configFile, "c", brand.DefaultConfigDir+"/"+brand.ConfigFileName, "Configuration file (short)")
-		
+		configFile := startFlags.String("config", install.DefaultConfigDir+"/"+brand.ConfigFileName, "Configuration file")
+		startFlags.StringVar(configFile, "c", install.DefaultConfigDir+"/"+brand.ConfigFileName, "Configuration file (short)")
+
 		foreground := startFlags.Bool("foreground", false, "Run in foreground (don't daemonize)")
 		startFlags.BoolVar(foreground, "f", false, "Run in foreground (short)")
-		
+
 		dryRun := startFlags.Bool("dry-run", false, "Dry run - print rules without applying")
 		startFlags.BoolVar(dryRun, "n", false, "Dry run (short)")
 		// Legacy support (hidden)
 		startFlags.BoolVar(dryRun, "dryrun", false, "Dry run (legacy)")
-		
+
 		startFlags.Parse(os.Args[2:])
 
 		if *foreground {
 			// Foreground mode: run ctl directly
-			if err := cmd.RunCtl(*configFile, false, "", *dryRun, nil); err != nil {
+			if err := cmd.RunCtl(*configFile, false, "", "", "", "", *dryRun, nil); err != nil {
 				printer.Fprintf(os.Stderr, "Start failed: %v\n", err)
 				os.Exit(1)
 			}
@@ -85,20 +98,23 @@ func main() {
 		// Privileged control plane daemon
 		ctlFlags := flag.NewFlagSet("ctl", flag.ExitOnError)
 		stateDir := ctlFlags.String("state-dir", "", "Override state directory")
-		
+		logDir := ctlFlags.String("log-dir", "", "Override log directory")
+		runDir := ctlFlags.String("run-dir", "", "Override run directory")
+		shareDir := ctlFlags.String("share-dir", "", "Override share directory")
+
 		dryRun := ctlFlags.Bool("dry-run", false, "Dry run - print rules without applying")
 		ctlFlags.BoolVar(dryRun, "n", false, "Dry run (short)")
 		// Legacy support
 		ctlFlags.BoolVar(dryRun, "dryrun", false, "Dry run (legacy)")
-		
+
 		ctlFlags.Parse(os.Args[2:])
 
-		configFile := brand.DefaultConfigDir + "/" + brand.ConfigFileName
+		configFile := install.DefaultConfigDir + "/" + brand.ConfigFileName
 		if len(ctlFlags.Args()) > 0 {
 			configFile = ctlFlags.Arg(0)
 		}
 
-		if err := cmd.RunCtl(configFile, false, *stateDir, *dryRun, nil); err != nil {
+		if err := cmd.RunCtl(configFile, false, *stateDir, *logDir, *runDir, *shareDir, *dryRun, nil); err != nil {
 			printer.Fprintf(os.Stderr, "Control plane failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -111,10 +127,10 @@ func main() {
 		applyFlags.BoolVar(dryRun, "n", false, "Dry run (short)")
 		// Legacy support
 		applyFlags.BoolVar(dryRun, "dryrun", false, "Dry run (legacy)")
-		
+
 		applyFlags.Parse(os.Args[2:])
 
-		configFile := brand.DefaultConfigDir + "/" + brand.ConfigFileName
+		configFile := install.DefaultConfigDir + "/" + brand.ConfigFileName
 		if len(applyFlags.Args()) > 0 {
 			configFile = applyFlags.Arg(0)
 		}
@@ -124,7 +140,7 @@ func main() {
 		// Or does "apply" start the daemon?
 		// Given the request "implement runmodes for check, apply, diff", and "Add --dryrun (-n) to apply".
 		// I'll assume apply runs RunCtl (which applies usage).
-		if err := cmd.RunCtl(configFile, false, "", *dryRun, nil); err != nil {
+		if err := cmd.RunCtl(configFile, false, "", "", "", "", *dryRun, nil); err != nil {
 			printer.Fprintf(os.Stderr, "Apply failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -135,7 +151,7 @@ func main() {
 		checkFlags.BoolVar(verbose, "v", false, "Verbose output (short)")
 		checkFlags.Parse(os.Args[2:])
 
-		configFile := brand.DefaultConfigDir + "/" + brand.ConfigFileName
+		configFile := install.DefaultConfigDir + "/" + brand.ConfigFileName
 		if len(checkFlags.Args()) > 0 {
 			configFile = checkFlags.Arg(0)
 		}
@@ -166,13 +182,13 @@ func main() {
 		showFlags := flag.NewFlagSet("show", flag.ExitOnError)
 		summary := showFlags.Bool("summary", false, "Show configuration summary")
 		showFlags.BoolVar(summary, "s", false, "Show configuration summary (short)")
-		
+
 		remote := showFlags.String("remote", "", "Remote Flywall API URL (e.g., https://192.168.1.1:8443)")
 		showFlags.StringVar(remote, "r", "", "Remote Flywall API URL (short)")
-		
+
 		apiKey := showFlags.String("api-key", "", "API key for remote authentication")
 		showFlags.StringVar(apiKey, "k", "", "API key (short)")
-		
+
 		showFlags.Parse(os.Args[2:])
 
 		var configFile string
@@ -197,7 +213,6 @@ func main() {
 	case "_proxy":
 		// Internal: Unprivileged TCP Proxy (spawned by control plane)
 		cmd.RunProxy(os.Args[2:])
-
 
 	case "test-api":
 		// Test mode: Run API server with sandbox disabled for integration testing
@@ -224,7 +239,7 @@ func main() {
 			printer.Println("Usage: " + brand.BinaryName + " test <config-file>")
 			os.Exit(1)
 		}
-		if err := cmd.RunCtl(os.Args[2], true, "", false, nil); err != nil { // Added nil argument
+		if err := cmd.RunCtl(os.Args[2], true, "", "", "", "", false, nil); err != nil { // Added nil argument
 			printer.Fprintf(os.Stderr, "Test run failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -245,9 +260,9 @@ func main() {
 	case "setup":
 		// First-run setup wizard
 		setupFlags := flag.NewFlagSet("setup", flag.ExitOnError)
-		configDir := setupFlags.String("config-dir", brand.DefaultConfigDir, "Configuration directory")
-		setupFlags.StringVar(configDir, "d", brand.DefaultConfigDir, "Configuration directory (short)")
-		
+		configDir := setupFlags.String("config-dir", install.DefaultConfigDir, "Configuration directory")
+		setupFlags.StringVar(configDir, "d", install.DefaultConfigDir, "Configuration directory (short)")
+
 		setupFlags.Parse(os.Args[2:])
 		cmd.RunSetup(*configDir)
 
@@ -256,10 +271,10 @@ func main() {
 		resetFlags := flag.NewFlagSet("reset", flag.ExitOnError)
 		confirm := resetFlags.Bool("confirm", false, "Confirm factory reset")
 		resetFlags.BoolVar(confirm, "y", false, "Confirm factory reset (short)")
-		
-		configDir := resetFlags.String("config-dir", brand.DefaultConfigDir, "Configuration directory")
-		resetFlags.StringVar(configDir, "d", brand.DefaultConfigDir, "Configuration directory (short)")
-		
+
+		configDir := resetFlags.String("config-dir", install.DefaultConfigDir, "Configuration directory")
+		resetFlags.StringVar(configDir, "d", install.DefaultConfigDir, "Configuration directory (short)")
+
 		resetFlags.Parse(os.Args[2:])
 		cmd.RunFactoryReset(*configDir, *confirm)
 
@@ -271,18 +286,30 @@ func main() {
 		insecure := consoleFlags.Bool("insecure", false, "Skip TLS verification")
 		debug := consoleFlags.Bool("debug", false, "Enable debug logging to tui.log")
 		consoleFlags.Parse(os.Args[2:])
-		
+
 		cmd.RunConsole(*remote, *apiKey, *insecure, *debug)
 
 	case "config":
 		// Configuration management commands
 		cmd.RunConfig(os.Args[2:])
 
+	case "tsnet":
+		// Run Tailscale proxy
+		if err := cmd.RunTsNet(os.Args[2:]); err != nil {
+			printer.Fprintf(os.Stderr, "TsNet failed: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "tailscale":
+		// Run Tailscale management
+		if err := cmd.RunTailscale(os.Args[2:]); err != nil {
+			printer.Fprintf(os.Stderr, "Tailscale failed: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "status":
 		// Query daemon status
 		cmd.RunStatus()
-
-
 
 	case "mcast":
 		// Integration test helper: mDNS multicast tool
@@ -312,7 +339,7 @@ func main() {
 			printer.Fprintf(os.Stderr, "Error determining current binary path: %v\n", err)
 			os.Exit(1)
 		}
-		configFile := brand.DefaultConfigDir + "/" + brand.ConfigFileName
+		configFile := install.DefaultConfigDir + "/" + brand.ConfigFileName
 		cmd.RunUpgrade(exe, configFile)
 
 	case "version":
@@ -329,18 +356,18 @@ func main() {
 		upgradeFlags := flag.NewFlagSet("upgrade", flag.ExitOnError)
 		newBinary := upgradeFlags.String("binary", "", "Path to binary (required for remote upgrade)")
 		upgradeFlags.StringVar(newBinary, "b", "", "Path to binary (short)")
-		
+
 		selfUpgrade := upgradeFlags.Bool("self", false, "Restart using the current binary")
-		
-		configFile := upgradeFlags.String("config", brand.DefaultConfigDir+"/"+brand.ConfigFileName, "Configuration file")
-		upgradeFlags.StringVar(configFile, "c", brand.DefaultConfigDir+"/"+brand.ConfigFileName, "Configuration file (short)")
-		
+
+		configFile := upgradeFlags.String("config", install.DefaultConfigDir+"/"+brand.ConfigFileName, "Configuration file")
+		upgradeFlags.StringVar(configFile, "c", install.DefaultConfigDir+"/"+brand.ConfigFileName, "Configuration file (short)")
+
 		remoteURL := upgradeFlags.String("remote", "", "Remote URL to upgrade (e.g., https://192.168.1.1:8443)")
 		upgradeFlags.StringVar(remoteURL, "r", "", "Remote URL (short)")
-		
+
 		apiKey := upgradeFlags.String("api-key", "", "API key for remote authentication")
 		upgradeFlags.StringVar(apiKey, "k", "", "API key (short)")
-		
+
 		upgradeFlags.Parse(os.Args[2:])
 
 		// Remote upgrade mode
@@ -400,7 +427,14 @@ func main() {
 
 		// Auto-detect staged binary if --binary not specified
 		if *newBinary == "" {
-			stagedPath := "/usr/sbin/" + brand.BinaryName + "_new"
+			stagedPath := ""
+			if exe, err := os.Executable(); err == nil {
+				stagedPath = filepath.Join(filepath.Dir(exe), brand.BinaryName+"_new")
+			} else {
+				// Fallback if we can't determine current path
+				stagedPath = "/usr/sbin/" + brand.BinaryName + "_new"
+			}
+
 			if info, err := os.Stat(stagedPath); err == nil && !info.IsDir() {
 				printer.Printf("Detected staged binary: %s\n", stagedPath)
 				*newBinary = stagedPath
@@ -409,7 +443,7 @@ func main() {
 
 		if *newBinary == "" {
 			printer.Println("Usage: " + brand.BinaryName + " upgrade --binary <path-to-new-binary> OR --self")
-			printer.Println("       Or place new binary at /usr/sbin/" + brand.BinaryName + "_new and run without arguments")
+			printer.Println("       Or place new binary at <current-dir>/" + brand.BinaryName + "_new and run without arguments")
 			printer.Println("\nRemote: " + brand.BinaryName + " upgrade --remote <url> --binary <path> --api-key <key>")
 			os.Exit(1)
 		}
@@ -418,7 +452,7 @@ func main() {
 	case "reload":
 		// Reload running daemon
 		reloadFlags := flag.NewFlagSet("reload", flag.ExitOnError)
-		configFile := reloadFlags.String("config", brand.DefaultConfigDir+"/"+brand.ConfigFileName, "Configuration file")
+		configFile := reloadFlags.String("config", install.DefaultConfigDir+"/"+brand.ConfigFileName, "Configuration file")
 		reloadFlags.Parse(os.Args[2:])
 
 		// If user provides a config file argument, use it as override or just validation?
@@ -470,6 +504,8 @@ Core Commands:
             Options: --foreground (-f), --dry-run (-n), --config (-c) <file>
   stop      Stop the running daemon
   reload    Reload configuration (hot reload)
+  apply     Apply configuration (foreground)
+            Options: --dry-run (-n)
   status    Show daemon status
 
 Management Commands:

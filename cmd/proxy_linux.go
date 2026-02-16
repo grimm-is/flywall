@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 
 package cmd
@@ -40,7 +42,7 @@ func setupProxyChroot(jailPath, hostSocketPath string) error {
 	// Bind mount
 	// Ensure we unmount first if re-running
 	_ = syscall.Unmount(jailSocketDir, 0)
-	if err := syscall.Mount(socketDir, jailSocketDir, "", syscall.MS_BIND|syscall.MS_RDONLY, ""); err != nil {
+	if err := syscall.Mount(socketDir, jailSocketDir, "", syscall.MS_BIND, ""); err != nil {
 		return fmt.Errorf("mount socket dir: %w", err)
 	}
 

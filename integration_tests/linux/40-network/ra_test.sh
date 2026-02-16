@@ -69,7 +69,9 @@ interface "veth-ra-test" {
 }
 
 zone "lan" {
-  interfaces = ["veth-ra-test"]
+  match {
+    interface = "veth-ra-test"
+  }
 }
 
 api {

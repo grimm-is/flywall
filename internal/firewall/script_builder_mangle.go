@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package firewall
 
 import (
@@ -32,6 +34,10 @@ func BuildMangleTableScript(cfg *Config, tableName string) (*ScriptBuilder, erro
 	}
 
 	if len(cfg.MarkRules) > 0 {
+		needsMangle = true
+	}
+
+	if len(cfg.QoSPolicies) > 0 {
 		needsMangle = true
 	}
 
@@ -143,6 +149,54 @@ func BuildMangleTableScript(cfg *Config, tableName string) (*ScriptBuilder, erro
 		// Default to Prerouting for now
 		if match != "" || action != "" {
 			sb.AddRule("prerouting", fmt.Sprintf("%s%s", match, action), rule.Name)
+		}
+	}
+
+	// 5. QoS Marking
+	// Mark packets based on QoS rules to be used by traffic shaping (tc)
+	for i, policy := range cfg.QoSPolicies {
+		if !policy.Enabled {
+			continue
+		}
+		for _, rule := range policy.Rules {
+			// Find class index for mark calculation
+			classIdx := -1
+			for idx, class := range policy.Classes {
+				if class.Name == rule.Class {
+					classIdx = idx
+					break
+				}
+			}
+			if classIdx == -1 {
+				continue
+			}
+
+			// Generate a unique mark: 0xQiiCC (Q=F for QoS, ii=policy index, CC=class index)
+			// This ensures marks don't conflict with routing marks (0x01XX, 0x02XX)
+			mark := 0xF000 + (i << 8) + classIdx
+
+			match := ""
+			// Use specific protocol matches for TCP/UDP to allow port matching
+			if (rule.Protocol == "tcp" || rule.Protocol == "udp") && rule.DestPort > 0 {
+				match += fmt.Sprintf("%s dport %d ", rule.Protocol, rule.DestPort)
+			} else {
+				if rule.Protocol != "" && rule.Protocol != "any" {
+					match += fmt.Sprintf("meta l4proto %s ", rule.Protocol)
+				}
+				if rule.DestPort > 0 {
+					match += fmt.Sprintf("th dport %d ", rule.DestPort)
+				}
+			}
+
+			if rule.SrcIP != "" {
+				match += fmt.Sprintf("ip saddr %s ", rule.SrcIP)
+			}
+
+			if match != "" {
+				sb.AddRule("prerouting", fmt.Sprintf("%s meta mark set 0x%x", match, mark), fmt.Sprintf("[qos] %s", rule.Name))
+				// Also mark in output for locally generated traffic?
+				sb.AddRule("output", fmt.Sprintf("%s meta mark set 0x%x", match, mark), fmt.Sprintf("[qos] %s", rule.Name))
+			}
 		}
 	}
 

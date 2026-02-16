@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package auth
 
 import (
@@ -7,118 +9,62 @@ import (
 	"unicode"
 )
 
-// PasswordPolicy defines password requirements
 type PasswordPolicy struct {
 	MinLength  int     // Minimum length (default: 12)
 	MinEntropy float64 // Minimum bits of entropy (default: 60)
 }
 
-// DefaultPasswordPolicy returns the default password policy
-// Focuses on entropy (n^m) where n = charset size, m = length
-// 60 bits of entropy = ~1 quintillion combinations
 func DefaultPasswordPolicy() PasswordPolicy {
 	return PasswordPolicy{
 		MinLength:  12,
-		MinEntropy: 60.0, // ~1 quintillion combinations
+		MinEntropy: 60.0,
 	}
 }
 
-// PasswordStrength represents the calculated strength of a password
 type PasswordStrength struct {
 	Score       int      // 0-4 (very weak to strong)
 	Length      int      // Password length
-	Complexity  int      // Number of character classes used
-	CharsetSize int      // Total number of possible characters (n)
-	Entropy     float64  // Bits of entropy: log2(n^m) = m * log2(n)
+	Entropy     float64  // Bits of entropy
+	CharsetSize int      // Pool size
+	Complexity  int      // Character classes count
 	MeetsPolicy bool     // Does it meet the policy requirements
 	Feedback    []string // Feedback messages for the user
 }
 
-// ValidatePassword validates a password against the policy
+// ValidatePassword against the policy.
 // username is optional - if provided, password cannot contain it
 func ValidatePassword(password string, policy PasswordPolicy, username ...string) error {
-	strength := CalculateStrength(password)
-
-	// Check minimum length
-	if len(password) < policy.MinLength {
-		return fmt.Errorf("password must be at least %d characters", policy.MinLength)
+	// Check minimum length (keep policy enforcement if desired, or rely on score)
+	if len(password) < 1 { // Basic sanity check
+		return fmt.Errorf("password cannot be empty")
 	}
 
-	// Check if password contains username
-	if len(username) > 0 && username[0] != "" {
-		// Case-insensitive check
-		lowerPassword := strings.ToLower(password)
-		lowerUsername := strings.ToLower(username[0])
-		if strings.Contains(lowerPassword, lowerUsername) {
-			return fmt.Errorf("password cannot contain your username")
-		}
-	}
+	strength := CalculateStrength(password, username...)
 
-	// Check for excessive repetition (including long repeated substrings)
-	if hasExcessiveRepetition(password) {
-		return fmt.Errorf("password has too much repetition")
-	}
-
-	// Check entropy (n^m combinations)
-	if strength.Entropy < policy.MinEntropy {
-		return fmt.Errorf("password is not strong enough (%.1f bits of entropy, need %.1f)",
-			strength.Entropy, policy.MinEntropy)
+	// Check strength score
+	// < 2: Weak
+	// >= 2: Medium/Strong
+	if strength.Score < 2 {
+		return fmt.Errorf("password is too weak (score=%d/4)", strength.Score)
 	}
 
 	return nil
 }
 
-// CalculateStrength calculates the strength of a password
-// Uses entropy formula: entropy = length * log2(charset_size)
-// where charset_size (n) depends on character classes used
-func CalculateStrength(password string) PasswordStrength {
+// CalculateStrength calculates the strength of a password using entropy with penalties
+func CalculateStrength(password string, username ...string) PasswordStrength {
 	strength := PasswordStrength{
 		Length:   len(password),
 		Feedback: make([]string, 0),
 	}
 
-	// Count character classes and determine charset size
-	classes := getCharacterClasses(password)
-	strength.Complexity = classes
-	strength.CharsetSize = getCharsetSize(classes)
-
-	// Calculate entropy: log2(n^m) = m * log2(n)
-	// n = charset size, m = length
-	strength.Entropy = float64(strength.Length) * math.Log2(float64(strength.CharsetSize))
-
-	// Calculate score (0-4) based on entropy only
-	strength.Score = calculateScore(strength.Entropy)
-
-	// Generate feedback
-	strength.Feedback = generateFeedback(password, strength.Entropy)
-
-	// Note: MeetsPolicy is NOT calculated here to avoid recursion
-	// Call ValidatePassword() separately to check if password meets policy
-	strength.MeetsPolicy = false
-
-	return strength
-}
-
-// getCharsetSize returns the total number of possible characters based on classes used
-// This is 'n' in the n^m formula
-func getCharsetSize(classes int) int {
-	charsetSizes := map[int]int{
-		1: 26, // Just lowercase (or just one class)
-		2: 62, // lowercase + uppercase (26+26+10) or lowercase + digits
-		3: 72, // lowercase + uppercase + digits (26+26+10+10 symbols subset)
-		4: 95, // All printable ASCII (26+26+10+33 symbols)
-	}
-
-	if size, ok := charsetSizes[classes]; ok {
-		return size
-	}
-	return 26 // Default to lowercase only
-}
-
-// getCharacterClasses counts how many character classes are used
-// Classes: lowercase, uppercase, digits, symbols
-func getCharacterClasses(password string) int {
-	var hasLower, hasUpper, hasDigit, hasSymbol bool
+	// 1. Determine Pool Size & Complexity
+	poolSize := 0
+	complexity := 0
+	hasLower := false
+	hasUpper := false
+	hasDigit := false
+	hasSymbol := false
 
 	for _, char := range password {
 		switch {
@@ -133,133 +79,105 @@ func getCharacterClasses(password string) int {
 		}
 	}
 
-	count := 0
 	if hasLower {
-		count++
+		poolSize += 26
+		complexity++
 	}
 	if hasUpper {
-		count++
+		poolSize += 26
+		complexity++
 	}
 	if hasDigit {
-		count++
+		poolSize += 10
+		complexity++
 	}
 	if hasSymbol {
-		count++
+		poolSize += 33
+		complexity++
+	}
+	if poolSize == 0 {
+		poolSize = 26 // Logic fallback
 	}
 
-	return count
-}
+	strength.Complexity = complexity
+	strength.CharsetSize = poolSize
 
-// calculateScore calculates a 0-4 score based on entropy
-// Entropy thresholds:
-// 0-40 bits: very weak (< ~1 trillion combinations)
-// 40-50 bits: weak
-// 50-60 bits: medium
-// 60-70 bits: strong
-// 70+ bits: very strong
-func calculateScore(entropy float64) int {
-	switch {
-	case entropy >= 70:
-		return 4 // Very strong
-	case entropy >= 60:
-		return 3 // Strong
-	case entropy >= 50:
-		return 2 // Medium
-	case entropy >= 40:
-		return 1 // Weak
-	default:
-		return 0 // Very weak
+	// 2. Calculate Raw Entropy
+	entropy := float64(len(password)) * math.Log2(float64(poolSize))
+
+	// 3. Apply Penalties
+	lower := strings.ToLower(password)
+
+	// Critical Deductions
+	if lower == "password" || password == "12345678" {
+		entropy = 0
+		strength.Feedback = append(strength.Feedback, "Password is too common")
 	}
-}
+	if len(username) > 0 && username[0] != "" {
+		if strings.Contains(strings.ToLower(password), strings.ToLower(username[0])) {
+			entropy = 0
+			strength.Feedback = append(strength.Feedback, "Password contains username")
+		}
+	}
 
-// generateFeedback generates user-friendly feedback messages
-func generateFeedback(password string, entropy float64) []string {
-	feedback := make([]string, 0)
+	// Pattern Deductions
+	// Repetition (3+ identical)
+	if hasRepetition(password) {
+		entropy -= 15
+		strength.Feedback = append(strength.Feedback, "Avoid repeated characters")
+	}
+	// Sequential (3+ sequential)
+	if hasSequential(password) {
+		entropy -= 15
+		strength.Feedback = append(strength.Feedback, "Avoid sequential patterns")
+	}
 
-	length := len(password)
+	if entropy < 0 {
+		entropy = 0
+	}
+	strength.Entropy = entropy
 
-	// Entropy-based feedback
+	// 4. Map to Score
+	// < 40: Weak (1)
+	// 40-70: Medium (2)
+	// >= 70: Strong (4)
 	if entropy < 40 {
-		feedback = append(feedback, fmt.Sprintf("Very weak password (%.0f bits of entropy)", entropy))
-		feedback = append(feedback, "Add more characters or use more character types")
-	} else if entropy < 50 {
-		feedback = append(feedback, fmt.Sprintf("Weak password (%.0f bits of entropy)", entropy))
-		feedback = append(feedback, "Consider making it longer or more diverse")
-	} else if entropy < 60 {
-		feedback = append(feedback, fmt.Sprintf("Medium strength (%.0f bits of entropy)", entropy))
-		feedback = append(feedback, "Good, but could be stronger")
+		strength.Score = 1
 	} else if entropy < 70 {
-		feedback = append(feedback, fmt.Sprintf("Strong password (%.0f bits of entropy)", entropy))
+		strength.Score = 2
 	} else {
-		feedback = append(feedback, fmt.Sprintf("Excellent password (%.0f bits of entropy)", entropy))
+		strength.Score = 4
 	}
 
-	// Specific suggestions
-	if length < 12 {
-		feedback = append(feedback, fmt.Sprintf("Use at least 12 characters (currently %d)", length))
-	}
-
-	classes := getCharacterClasses(password)
-	if classes == 1 && length < 20 {
-		feedback = append(feedback, "Add uppercase, numbers, or symbols for better security")
-	}
-
-	return feedback
+	return strength
 }
 
-// hasExcessiveRepetition checks for repetitive patterns that weaken passwords
-func hasExcessiveRepetition(password string) bool {
-	if len(password) < 3 {
+func hasRepetition(s string) bool {
+	if len(s) < 3 {
 		return false
 	}
-
-	// Check for 3+ consecutive identical characters (e.g., "aaa", "111")
-	// Since Go regexp doesn't support backreferences, check manually
-	for i := 0; i < len(password)-2; i++ {
-		if password[i] == password[i+1] && password[i] == password[i+2] {
+	for i := 0; i < len(s)-2; i++ {
+		if s[i] == s[i+1] && s[i] == s[i+2] {
 			return true
 		}
 	}
+	return false
+}
 
-	// Check for repeating substrings (e.g., "abcabc", "123123", "adminadmin")
-	// Check from longer substrings first (2-20 characters)
-	for length := min(20, len(password)/2); length >= 2; length-- {
-		for i := 0; i <= len(password)-length*2; i++ {
-			substring := password[i : i+length]
-			nextPart := password[i+length : i+length*2]
-			if substring == nextPart {
-				return true
-			}
+func hasSequential(s string) bool {
+	if len(s) < 3 {
+		return false
+	}
+	lower := strings.ToLower(s)
+	seq := "abcdefghijklmnopqrstuvwxyz0123456789"
+	revSeq := "zyxwvutsrqponmlkjihgfedcba9876543210"
+
+	for i := 0; i < len(s)-2; i++ {
+		sub := lower[i : i+3]
+		if strings.Contains(seq, sub) || strings.Contains(revSeq, sub) {
+			return true
 		}
 	}
-
-	// Check for longer substrings appearing anywhere else (e.g., "adminXYZadmin")
-	// Only check substrings of 4+ characters to avoid false positives
-	for length := min(20, len(password)/2); length >= 4; length-- {
-		for i := 0; i <= len(password)-length; i++ {
-			substring := password[i : i+length]
-			// Check if this substring appears anywhere after the current position
-			restOfPassword := password[i+length:]
-			if strings.Contains(restOfPassword, substring) {
-				return true
-			}
-		}
-	}
-
-	// Check for sequential patterns (e.g., "abc", "123", "xyz")
-	// Pattern: 4+ characters in ascending sequence
-	sequentialCount := 0
-	for i := 0; i < len(password)-1; i++ {
-		if password[i+1] == password[i]+1 {
-			sequentialCount++
-			if sequentialCount >= 3 {
-				return true
-			}
-		} else {
-			sequentialCount = 0
-		}
-	}
-
 	return false
 }
 

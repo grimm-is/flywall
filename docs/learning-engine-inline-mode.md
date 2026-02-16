@@ -87,7 +87,7 @@ sequenceDiagram
     participant NQ as NFQueueReader
     participant LE as Learning Engine
     participant Cache as FlowCache (LRU)
-    
+
     FW->>NQ: queue packet (hold)
     NQ->>LE: ProcessPacket()
     LE->>Cache: Get(mac, proto, port)

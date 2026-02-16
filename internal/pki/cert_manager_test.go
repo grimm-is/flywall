@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package pki
 
 import (
@@ -6,25 +8,28 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"grimm.is/flywall/internal/logging"
 )
 
 func TestEnsureCert(t *testing.T) {
 	tmpDir := t.TempDir()
-	cm := NewCertManager(tmpDir)
+	logger := logging.New(logging.DefaultConfig())
+	cm := NewCertManager(tmpDir, logger)
 
 	// 1. First run: Should create certs
 	if err := cm.EnsureCert(); err != nil {
 		t.Fatalf("EnsureCert failed: %v", err)
 	}
 
-	certPath := filepath.Join(tmpDir, "cert.pem")
-	keyPath := filepath.Join(tmpDir, "key.pem")
+	certPath := filepath.Join(tmpDir, "server.crt")
+	keyPath := filepath.Join(tmpDir, "server.key")
 
 	if _, err := os.Stat(certPath); os.IsNotExist(err) {
-		t.Error("cert.pem not created")
+		t.Error("server.crt not created")
 	}
 	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
-		t.Error("key.pem not created")
+		t.Error("server.key not created")
 	}
 
 	// 2. Validate Certificate Content

@@ -1,0 +1,102 @@
+syntax = "proto3";
+package flywall.cloud;
+
+option go_package = "grimm.is/flywall/api/cloud/proto";
+
+service DeviceService {
+  // Enroll a new device to an organization
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+
+  // Bidirectional stream for config push and telemetry
+  rpc Connect(stream AgentMessage) returns (stream CloudMessage);
+
+  // Fallback: poll for config if stream interrupted
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+}
+
+message EnrollRequest {
+  string device_id = 1;
+  string claim_code = 2;
+  bytes csr = 3;  // PKCS#10 CSR
+  string device_info = 4;  // JSON: hostname, version, interfaces
+}
+
+message EnrollResponse {
+  bytes certificate = 1;  // PEM-encoded device cert
+  bytes ca_certificate = 2;  // PEM-encoded CA cert
+  string org_id = 3;
+  string org_name = 4;
+  bytes private_key = 5;
+}
+
+message AgentMessage {
+  oneof payload {
+    Heartbeat heartbeat = 1;
+    TelemetryBatch telemetry = 2;
+    ConfigAck config_ack = 3;
+    Alert alert = 4;
+  }
+}
+
+message CloudMessage {
+  oneof payload {
+    ConfigIntent config = 1;
+    Command command = 2;
+    CertificateRenewal cert_renewal = 3;
+  }
+}
+
+message ConfigIntent {
+  int64 version = 1;
+  bytes config_hcl = 2;  // Full or partial HCL
+  repeated string merge_fields = 3;  // Fields to merge vs replace
+}
+
+message Heartbeat {
+  int64 timestamp = 1;
+  string status = 2;  // "healthy", "degraded", "error"
+  int64 config_version = 3;
+}
+
+message TelemetryBatch {
+  repeated TelemetryEvent events = 1;
+}
+
+message TelemetryEvent {
+  int64 timestamp = 1;
+  string event_type = 2;
+  bytes payload = 3;  // JSON
+}
+
+message ConfigAck {
+  int64 version = 1;
+  bool success = 2;
+  string error = 3;
+}
+
+message Alert {
+  string id = 1;
+  string severity = 2;  // "info", "warning", "critical"
+  string message = 3;
+  int64 timestamp = 4;
+}
+
+message Command {
+  string id = 1;
+  string type = 2;  // "ping", "traceroute", "reboot", "debug"
+  map<string, string> args = 3;
+}
+
+message CertificateRenewal {
+  bytes certificate = 1;
+}
+
+message GetConfigRequest {
+  string device_id = 1;
+  int64 current_version = 2;
+}
+
+message GetConfigResponse {
+  ConfigIntent config = 1;
+  bool up_to_date = 2;
+}

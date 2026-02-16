@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 
 package clock
@@ -8,9 +10,13 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"grimm.is/flywall/internal/install"
+
+	"path/filepath"
 )
 
-const clockAnchorPath = "/var/lib/flywall/clock_anchor"
+var clockAnchorPath = filepath.Join(install.GetStateDir(), "clock_anchor")
 
 // EnsureSaneTime checks if system time is reasonable.
 // If not, it sets the system clock from the saved anchor file.

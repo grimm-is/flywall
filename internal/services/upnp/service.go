@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package upnp
 
 import (
@@ -24,7 +26,6 @@ const (
 	RootDeviceType = "urn:schemas-upnp-org:device:InternetGatewayDevice:1"
 )
 
-// Config holds UPnP configuration
 type Config struct {
 	Enabled       bool
 	ExternalIntf  string
@@ -37,7 +38,7 @@ type FirewallManager interface {
 	AddDynamicNATRule(rule config.NATRule) error
 }
 
-// Service manages the UPnP IGD service
+// Service for managing the UPnP IGD.
 type Service struct {
 	config     Config
 	fwMgr      FirewallManager
@@ -52,7 +53,6 @@ type Service struct {
 	upgradeMgr *upgrade.Manager
 }
 
-// SetUpgradeManager sets the upgrade manager for socket handoff.
 func (s *Service) SetUpgradeManager(mgr *upgrade.Manager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -68,7 +68,6 @@ type PortMapping struct {
 	Expiration     time.Time
 }
 
-// NewService creates a new UPnP service
 func NewService(cfg Config, fwMgr FirewallManager) *Service {
 	return &Service{
 		config:   cfg,
@@ -77,7 +76,6 @@ func NewService(cfg Config, fwMgr FirewallManager) *Service {
 	}
 }
 
-// Start starts the UPnP service
 func (s *Service) Start(ctx context.Context) error {
 	if !s.config.Enabled {
 		return nil
@@ -154,7 +152,6 @@ func (s *Service) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the UPnP service
 func (s *Service) Stop() {
 	if s.cancel != nil {
 		s.cancel()
@@ -167,7 +164,6 @@ func (s *Service) Stop() {
 	s.wg.Wait()
 }
 
-// runSSDP listens for M-SEARCH packets
 func (s *Service) runSSDP(ctx context.Context, ifaceName string) {
 	defer s.wg.Done()
 

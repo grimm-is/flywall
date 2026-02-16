@@ -1,10 +1,12 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package ctlplane
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -20,6 +22,11 @@ import (
 	"syscall"
 	"time"
 
+	"grimm.is/flywall/internal/ebpf/interfaces"
+	"grimm.is/flywall/internal/install"
+
+	"grimm.is/flywall/internal/errors"
+
 	"grimm.is/flywall/internal/alerting"
 	"grimm.is/flywall/internal/analytics"
 	"grimm.is/flywall/internal/brand"
@@ -30,6 +37,7 @@ import (
 	"grimm.is/flywall/internal/learning"
 	"grimm.is/flywall/internal/logging"
 	"grimm.is/flywall/internal/metrics"
+	"grimm.is/flywall/internal/monitor"
 	"grimm.is/flywall/internal/network"
 	"grimm.is/flywall/internal/scheduler"
 	"grimm.is/flywall/internal/sentinel"
@@ -44,10 +52,18 @@ import (
 	"grimm.is/flywall/internal/upgrade"
 )
 
-// Server is the privileged control plane RPC server
+// Server is the privileged control plane RPC server.
+// It orchestrates the entire system state, managing configuration,
+// network interfaces, firewall rules, and background services.
+//
+// The Server struct is the central hub of the application, holding references
+// to all subsystems (NetworkManager, SystemManager, etc.) and coordinating
+// their actions. It exposes an RPC interface for the unprivileged API server
+// to communicate with.
 type Server struct {
 	config        *config.Config
 	configFile    string
+	cm            *ConfigManager
 	hclConfig     *config.ConfigFile    // For HCL round-trip editing
 	backupManager *config.BackupManager // For versioned backups
 	nflogReader   LogReader             // For netfilter log capture (interface)
@@ -85,6 +101,7 @@ type Server struct {
 	queryLogStore       *querylog.Store
 	identityService     *identity.Service
 	haService           *ha.Service
+	monitorService      *monitor.Service
 
 	// Notification hub for broadcasting to all consumers
 	notifyHub *NotificationHub
@@ -92,13 +109,13 @@ type Server struct {
 	// Disarm hook to stop monitors (watchdog, auto-restart) in the main process
 	disarmFunc func()
 
+	// Best-effort parse result if normal load failed
+	forgivingResult *config.ForgivingLoadResult
+
 	// Concurrency protection for config structure (Critical!)
 	mu sync.RWMutex
 }
 
-// SetDisarmFunc sets the function to call when an upgrade is initiated.
-// This allows the main process to stop monitors (watchdog, API restarter)
-// to prevent race conditions during handoff.
 func (s *Server) SetDisarmFunc(f func()) {
 	s.disarmFunc = f
 }
@@ -132,26 +149,40 @@ var verifyUpgradeBinary = func(path, expectedChecksum string) error {
 	return nil
 }
 
-// NewServer creates a new control plane server
 func NewServer(cfg *config.Config, configFile string, netLib network.NetworkManager) *Server {
-	nm := NewNetworkManager(cfg)
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	nm := NewNetworkManager(cfg, netLib)
+	scannerCfg := scanner.Config{Timeout: 5 * time.Second, Concurrency: 50}
+	if cfg.Scanner != nil {
+		scannerCfg.DisableReverseDNS = cfg.Scanner.DisableReverseDNS
+	}
+
 	s := &Server{
 		config:              cfg,
 		configFile:          configFile,
 		netLib:              netLib,
 		backupManager:       config.NewBackupManager(configFile, 20),
 		nflogReader:         NewNFLogReader(10000, 0),
-		sniReader:           NewNFLogReader(1000, 100),
+		sniReader:           nil, // Initialized below with config
 		networkManager:      nm,
 		networkSafeApply:    NewNetworkSafeApplyManager(nm),
 		systemManager:       NewSystemManager(configFile),
 		serviceOrchestrator: NewServiceOrchestrator(),
 		policyRouting:       network.NewPolicyRoutingManager(),
 		uplinkManager:       network.NewUplinkManager(),
-		scannerService:      scanner.New(logging.WithComponent("scanner"), scanner.Config{Timeout: 5 * time.Second, Concurrency: 50}),
+		scannerService:      scanner.New(logging.WithComponent("scanner"), scannerCfg),
 		notifyHub:           NewNotificationHub(100),
 		scheduler:           scheduler.New(logging.WithComponent("scheduler")),
 	}
+
+	// Initialize readers with config
+	logGroup := 100
+	if cfg.RuleLearning != nil {
+		logGroup = cfg.RuleLearning.LogGroup
+	}
+	s.sniReader = NewNFLogReader(1000, uint16(logGroup))
 
 	// Load HCL config for round-trip editing if file exists
 	if configFile != "" {
@@ -162,6 +193,18 @@ func NewServer(cfg *config.Config, configFile string, netLib network.NetworkMana
 			log.Printf("[CTL] Warning: could not initialize HCL persistence: %v", err)
 		}
 	}
+
+	// Initialize ConfigManager
+	s.cm = NewConfigManager(cfg, configFile, s.hclConfig, nm)
+	// Pointer stability: s.config points to running config
+	s.config = s.cm.running
+
+	// Register hooks
+	s.cm.RegisterApplyHook(func(newCfg *config.Config) error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.reloadConfigInternal(newCfg)
+	})
 
 	// Start nflog reader (runs in background)
 	if err := s.nflogReader.Start(); err != nil {
@@ -177,42 +220,34 @@ func NewServer(cfg *config.Config, configFile string, netLib network.NetworkMana
 	return s
 }
 
-// RegisterService adds a service to the control plane
 func (s *Server) RegisterService(svc services.Service) {
 	s.serviceOrchestrator.RegisterService(svc)
 }
 
-// SetFirewallManager injects the firewall manager
 func (s *Server) SetFirewallManager(mgr *firewall.Manager) {
 	s.firewallManager = mgr
 }
 
-// SetStateStore injects the state store
 func (s *Server) SetStateStore(store state.Store) {
 	s.stateStore = store
 }
 
-// SetUpgradeManager injects the upgrade manager
 func (s *Server) SetUpgradeManager(mgr *upgrade.Manager) {
 	s.upgradeMgr = mgr
 }
 
-// SetIPSetService injects the IPSet service
 func (s *Server) SetIPSetService(svc *firewall.IPSetService) {
 	s.ipsetService = svc
 }
 
-// SetDHCPService injects the DHCP service
 func (s *Server) SetDHCPService(svc *dhcp.Service) {
 	s.dhcpService = svc
 }
 
-// SetUplinkManager injects the Uplink manager
 func (s *Server) SetUplinkManager(mgr *network.UplinkManager) {
 	s.uplinkManager = mgr
 }
 
-// SetLogReader injects a custom log reader (for testing)
 func (s *Server) SetLogReader(reader LogReader) {
 	s.nflogReader = reader
 }
@@ -228,8 +263,9 @@ func (s *Server) SubscribeNFLog() <-chan NFLogEntry {
 	return ch
 }
 
-// SetLearningService injects the learning service and starts log forwarding
 func (s *Server) SetLearningService(svc *learning.Service) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.learningService = svc
 
 	// Check if inline mode is enabled (uses nfqueue instead of nflog)
@@ -246,12 +282,20 @@ func (s *Server) SetLearningService(svc *learning.Service) {
 // This fixes the "first packet" problem by holding packets until a verdict is returned.
 func (s *Server) startInlineLearning(svc *learning.Service) {
 	group := uint16(100) // Default group
-	if s.config.RuleLearning.LogGroup > 0 {
+	if s.config.RuleLearning != nil {
 		group = uint16(s.config.RuleLearning.LogGroup)
 	}
 
+	// Get offload mark from config
+	offloadMarkStr := s.config.RuleLearning.OffloadMark
+	offloadMark, err := config.ParseOffloadMark(offloadMarkStr)
+	if err != nil {
+		log.Printf("[CTL] Invalid offload mark '%s': %v, using default", offloadMarkStr, err)
+		offloadMark = 0x200000
+	}
+
 	s.nfqueueReader = NewNFQueueReader(group)
-	s.nfqueueReader.SetVerdictFunc(func(entry NFLogEntry) bool {
+	s.nfqueueReader.SetVerdictFunc(func(entry NFLogEntry) Verdict {
 		// Convert NFLogEntry to PacketInfo
 		pkt := learning.PacketInfo{
 			SrcMAC:    entry.SrcMAC,
@@ -268,13 +312,28 @@ func (s *Server) startInlineLearning(svc *learning.Service) {
 			pkt.Interface = entry.InDev
 		}
 
-		// Get verdict from learning engine synchronously
-		verdict, err := svc.Engine().ProcessPacket(&pkt)
+		// Get verdict from learning engine synchronously using inline mode
+		verdict, err := svc.Engine().ProcessPacketInline(&pkt)
 		if err != nil {
 			log.Printf("[CTL] NFQueue verdict error: %v (accepting packet)", err)
-			return true // Fail-open: accept on error
+			return Verdict{Type: VerdictAccept} // Fail-open: accept on error
 		}
-		return verdict
+
+		// Convert engine verdict to NFQueue verdict
+		switch verdict {
+		case learning.VerdictAllow:
+			return Verdict{Type: VerdictAccept}
+		case learning.VerdictDrop:
+			return Verdict{Type: VerdictDrop}
+		case learning.VerdictOffload:
+			// Accept with conntrack mark for kernel offload
+			return Verdict{Type: VerdictAcceptWithMark, Mark: offloadMark}
+		case learning.VerdictInspect:
+			// Continue inspecting - accept without marking
+			return Verdict{Type: VerdictAccept}
+		default:
+			return Verdict{Type: VerdictAccept} // Default to accept for safety
+		}
 	})
 
 	if err := s.nfqueueReader.Start(); err != nil {
@@ -284,7 +343,7 @@ func (s *Server) startInlineLearning(svc *learning.Service) {
 		return
 	}
 
-	log.Printf("[CTL] Learning service started in INLINE mode (nfqueue group %d)", group)
+	log.Printf("[CTL] Learning service started in INLINE IPS mode (nfqueue group %d, offload mark 0x%x)", group, offloadMark)
 }
 
 // startAsyncLearning uses nflog for async packet logging (original behavior).
@@ -356,7 +415,7 @@ func (s *Server) startAsyncLearning(svc *learning.Service) {
 	// Start forwarding logs from both readers
 	// Group 0 (Drops/General)
 	go bridge(s.nflogReader)
-	// Group 100 (Learning/SNI)
+	// Learning/SNI group
 	go bridge(s.sniReader)
 
 	log.Printf("[CTL] Learning service started in ASYNC mode (nflog)")
@@ -390,7 +449,6 @@ func (s *Server) Notify(ntype NotificationType, title, message string) {
 	}
 }
 
-// SetDeviceManager injects the device manager
 func (s *Server) SetDeviceManager(mgr *device.Manager) {
 	s.deviceManager = mgr
 }
@@ -400,12 +458,10 @@ func (s *Server) SetDeviceCollector(collector *discovery.Collector) {
 	s.deviceCollector = collector
 }
 
-// SetMetricsCollector injects the metrics collector
 func (s *Server) SetMetricsCollector(collector *metrics.Collector) {
 	s.metricsCollector = collector
 }
 
-// SetSentinelService injects the sentinel service
 func (s *Server) SetSentinelService(svc *sentinel.Service) {
 	s.sentinelService = svc
 }
@@ -455,23 +511,44 @@ func (s *Server) GetConfigDiff(args *Empty, reply *GetConfigDiffReply) error {
 // GetStatus returns the current system status
 func (s *Server) GetStatus(args *Empty, reply *GetStatusReply) error {
 	reply.Status = s.systemManager.GetStatus()
+	reply.Status.Version = brand.Version
 	return nil
 }
 
-// GetConfig returns the current configuration
+// GetConfig returns the current STAGED configuration (including pending changes)
 func (s *Server) GetConfig(args *Empty, reply *GetConfigReply) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.config == nil {
-		return fmt.Errorf("no configuration loaded")
+	cfg := s.cm.GetStaged()
+	if cfg == nil {
+		return fmt.Errorf("staged config is nil")
 	}
-	reply.Config = *s.config
+
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	reply.ConfigJSON = data
+	return nil
+}
+
+// GetRunningConfig returns the currently active configuration
+func (s *Server) GetRunningConfig(args *Empty, reply *GetConfigReply) error {
+	cfg := s.cm.GetRunning()
+	if cfg == nil {
+		return fmt.Errorf("running config is nil")
+	}
+
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	reply.ConfigJSON = data
 	return nil
 }
 
 // GetInterfaces returns the status of all configured interfaces
 func (s *Server) GetInterfaces(args *Empty, reply *GetInterfacesReply) error {
-	interfaces, err := s.networkManager.GetInterfaces()
+	staged := s.cm.GetStaged()
+	interfaces, err := s.networkManager.GetInterfaces(staged)
 	if err != nil {
 		return err
 	}
@@ -479,16 +556,26 @@ func (s *Server) GetInterfaces(args *Empty, reply *GetInterfacesReply) error {
 	return nil
 }
 
-// Upgrade initiates a hot binary upgrade
+// Upgrade initiates a hot binary upgrade.
+// This is a critical operation that replaces the running binary with a new one
+// while maintaining active connections. It uses the UpgradeManager to handle
+// the complex handoff of file descriptors (listeners) and state.
+//
+// Security Note: The upgrade path is hardcoded to /usr/sbin/flywall_new to
+// prevent arbitrary binary execution.
 func (s *Server) Upgrade(args *UpgradeArgs, reply *UpgradeReply) error {
 	if s.upgradeMgr == nil {
 		reply.Error = "upgrade manager not initialized"
 		return nil
 	}
 
-	// Security: Hardcoded upgrade path to prevent RCE
-	// The new binary must be placed at this location by the update mechanism
-	upgradeBinaryPath := filepath.Join("/usr/sbin", brand.BinaryName+"_new")
+	// Security: Dynamic path resolution relative to current binary
+	currentExe, err := os.Executable()
+	if err != nil {
+		reply.Error = fmt.Sprintf("failed to determine executable path: %v", err)
+		return nil
+	}
+	upgradeBinaryPath := filepath.Join(filepath.Dir(currentExe), brand.BinaryName+"_new")
 
 	// Verify binary checksum
 	if err := verifyUpgradeBinary(upgradeBinaryPath, args.Checksum); err != nil {
@@ -590,8 +677,13 @@ func (s *Server) StageBinary(args *StageBinaryArgs, reply *StageBinaryReply) err
 		return nil
 	}
 
-	// Stage to canonical path
-	stagingPath := filepath.Join("/usr/sbin", brand.BinaryName+"_new")
+	// Stage to canonical path relative to current binary
+	currentExe, err := os.Executable()
+	if err != nil {
+		reply.Error = fmt.Sprintf("failed to determine executable path: %v", err)
+		return nil
+	}
+	stagingPath := filepath.Join(filepath.Dir(currentExe), brand.BinaryName+"_new")
 
 	if err := os.WriteFile(stagingPath, args.Data, 0755); err != nil {
 		reply.Error = fmt.Sprintf("failed to write binary: %v", err)
@@ -633,7 +725,6 @@ func (s *Server) GetDHCPLeases(args *Empty, reply *GetDHCPLeasesReply) error {
 			Hostname:  lease.Hostname,
 		})
 	}
-	return nil
 
 	/* Legacy Logic Removed
 	leases := s.netLib.GetDHCPLeases()
@@ -681,6 +772,32 @@ func (s *Server) GetDHCPLeases(args *Empty, reply *GetDHCPLeasesReply) error {
 		}
 	}
 	return nil
+}
+
+// GetMonitors returns the latest monitoring results
+func (s *Server) GetMonitors(args *Empty, reply *GetMonitorsReply) error {
+	if s.monitorService == nil {
+		reply.Monitors = []MonitorResult{}
+		return nil
+	}
+
+	results := s.monitorService.GetResults()
+	reply.Monitors = make([]MonitorResult, len(results))
+	for i, res := range results {
+		reply.Monitors[i] = MonitorResult{
+			Target:    res.Target,
+			RouteName: res.RouteName,
+			IsUp:      res.IsUp,
+			LatencyMs: res.Latency.Milliseconds(),
+			LastCheck: res.LastCheck.Format(time.RFC3339),
+			Error:     res.Error,
+		}
+	}
+	return nil
+}
+
+func (s *Server) SetMonitorService(svc *monitor.Service) {
+	s.monitorService = svc
 }
 
 // GetTopology returns discovered LLDP neighbors and full network graph
@@ -926,7 +1043,7 @@ func (s *Server) GetNetworkDevices(args *Empty, reply *GetNetworkDevicesReply) e
 // GetAnalyticsBandwidth returns bandwidth usage time series
 func (s *Server) GetAnalyticsBandwidth(args *GetAnalyticsBandwidthArgs, reply *GetAnalyticsBandwidthReply) error {
 	if s.analyticsCollector == nil {
-		return errors.New("analytics collector not initialized")
+		return errors.New(errors.KindInternal, "analytics collector not initialized")
 	}
 
 	points, err := s.analyticsCollector.Store().GetBandwidthUsage(args.SrcMAC, args.From, args.To)
@@ -945,7 +1062,7 @@ func (s *Server) GetAnalyticsBandwidth(args *GetAnalyticsBandwidthArgs, reply *G
 // GetAnalyticsTopTalkers returns top devices by traffic volume
 func (s *Server) GetAnalyticsTopTalkers(args *GetAnalyticsTopTalkersArgs, reply *GetAnalyticsTopTalkersReply) error {
 	if s.analyticsCollector == nil {
-		return errors.New("analytics collector not initialized")
+		return errors.New(errors.KindInternal, "analytics collector not initialized")
 	}
 
 	summaries, err := s.analyticsCollector.Store().GetTopTalkers(args.From, args.To, args.Limit)
@@ -961,7 +1078,7 @@ func (s *Server) GetAnalyticsTopTalkers(args *GetAnalyticsTopTalkersArgs, reply 
 // GetAnalyticsFlows returns historical flow details
 func (s *Server) GetAnalyticsFlows(args *GetAnalyticsFlowsArgs, reply *GetAnalyticsFlowsReply) error {
 	if s.analyticsCollector == nil {
-		return errors.New("analytics collector not initialized")
+		return errors.New(errors.KindInternal, "analytics collector not initialized")
 	}
 
 	summaries, err := s.analyticsCollector.Store().GetHistoricalFlows(args.SrcMAC, args.From, args.To, args.Limit, args.Offset)
@@ -1159,30 +1276,37 @@ func (s *Server) DeleteDeviceGroup(args *DeleteDeviceGroupArgs, reply *DeleteDev
 	return nil
 }
 
-// ApplyConfig applies a new configuration (RPC endpoint)
+// DiscardConfig discards staged configuration and reverts to running config
+// DiscardConfig discards staged configuration and reverts to running config
+func (s *Server) DiscardConfig(args *Empty, reply *Empty) error {
+	reply.Dummy = true
+	return s.cm.Rollback()
+}
+
+// ApplyConfig applies a new configuration (RPC endpoint).
+// This is the main entry point for configuration changes. It stages the
+// new configuration via ConfigManager and then triggers the application
+// process, which includes updating the network stack, firewall rules,
+// and all managed services.
 func (s *Server) ApplyConfig(args *ApplyConfigArgs, reply *Empty) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Calculate config hash for audit log
-	h := sha256.New()
-	if s.hclConfig != nil {
-		h.Write([]byte(s.hclConfig.GetRawHCL()))
-	} else {
-		// Fallback to hashing the struct representation
-		h.Write([]byte(fmt.Sprintf("%v", args.Config)))
-	}
-	hash := hex.EncodeToString(h.Sum(nil))
-
 	log.Printf("[CTL] Applying new configuration via RPC...")
-	if args.Config.Features != nil {
-		log.Printf("[CTL] DEBUG RPC Features: QoS=%v Threat=%v", args.Config.Features.QoS, args.Config.Features.ThreatIntel)
-	} else {
-		log.Printf("[CTL] DEBUG RPC Features is nil")
-	}
-	auditLog("ApplyConfig", fmt.Sprintf("hash=%s count_ifaces=%d", hash[:8], len(args.Config.Interfaces)))
 
-	return s.reloadConfigInternal(&args.Config)
+	// 1. Sync staged config with what API sent (it contains policies, NAT, etc. that were only staged in API)
+	err := s.cm.Stage(func(cfg *config.Config) error {
+		*cfg = args.Config
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to stage config for apply: %w", err)
+	}
+
+	// 2. Perform the actual application
+	// This will trigger nm.ApplyConfig (network) and reloadConfigInternal (services)
+	if err := s.cm.Apply(); err != nil {
+		return fmt.Errorf("apply failed: %w", err)
+	}
+
+	return nil
 }
 
 // ReloadConfig reloads the configuration from the given struct (Internal/Signal use)
@@ -1199,6 +1323,34 @@ func (s *Server) ReloadConfig(newCfg *config.Config) error {
 func (s *Server) reloadConfigInternal(newCfg *config.Config) error {
 	// Track critical errors (subsystems that must succeed for a valid state)
 	var criticalErrors []string
+
+	// 0. Pre-validate configuration
+	// This prevents invalid configs (e.g. overlapping subnets) from being applied
+	validationErrors := newCfg.Validate()
+	if validationErrors.HasErrors() {
+		hasCritical := false
+		var sb strings.Builder
+		sb.WriteString("config validation failed: ")
+
+		for i, err := range validationErrors {
+			if i > 0 {
+				sb.WriteString("; ")
+			}
+			sb.WriteString(err.Error())
+			if err.Severity == "error" {
+				hasCritical = true
+			}
+		}
+
+		// If there are critical validation errors, abort immediately
+		if hasCritical {
+			return errors.New(errors.KindValidation, sb.String())
+		}
+
+		// If only warnings, log them and proceed
+		logging.WithComponent("ctl").Warn("Configuration warnings", "details", sb.String())
+		s.Notify(NotifyWarning, "Configuration Warnings", sb.String())
+	}
 
 	// 1. Update config reference
 	s.config = newCfg
@@ -1391,6 +1543,9 @@ func (s *Server) reloadConfigInternal(newCfg *config.Config) error {
 		log.Printf("[CTL] Warning: Failed to apply UID routes: %v", err)
 	}
 
+	// 7. Sync Monitors (non-critical)
+	s.syncMonitors(newCfg)
+
 	// Return aggregated critical errors
 	if len(criticalErrors) > 0 {
 		log.Printf("[CTL] Configuration applied with critical errors: %v", criticalErrors)
@@ -1399,6 +1554,23 @@ func (s *Server) reloadConfigInternal(newCfg *config.Config) error {
 
 	log.Printf("[CTL] Configuration applied successfully")
 	return nil
+}
+
+// syncMonitors updates the monitoring service with new routes
+func (s *Server) syncMonitors(cfg *config.Config) {
+	if s.monitorService == nil {
+		return
+	}
+
+	// For now, we'll do a simple stop/start if routes changed.
+	// In a more advanced version, we could update routes in-place.
+	s.monitorService.Stop()
+	
+	// Create a new service with the new routes
+	// Note: monitor.NewService handles nil logger
+	newSvc := monitor.NewService(logging.WithComponent("monitor"), cfg.Routes)
+	newSvc.Start()
+	s.monitorService = newSvc
 }
 
 // syncScheduledRules updates the scheduler with rules from config
@@ -1499,8 +1671,8 @@ func (s *Server) UpdateConfig(cfg *config.Config) {
 
 // GetAvailableInterfaces returns all physical interfaces available for configuration
 func (s *Server) GetAvailableInterfaces(args *Empty, reply *GetAvailableInterfacesReply) error {
-	// Uses internal ctlplane manager which uses direct netlink
-	interfaces, err := s.networkManager.GetAvailableInterfaces()
+	staged := s.cm.GetStaged()
+	interfaces, err := s.networkManager.GetAvailableInterfaces(staged)
 	if err != nil {
 		return err
 	}
@@ -1508,38 +1680,39 @@ func (s *Server) GetAvailableInterfaces(args *Empty, reply *GetAvailableInterfac
 	return nil
 }
 
-// UpdateInterface updates an interface's configuration
+// UpdateInterface updates an interface's configuration in the staged config
 func (s *Server) UpdateInterface(args *UpdateInterfaceArgs, reply *UpdateInterfaceReply) error {
-	if err := s.networkManager.UpdateInterface(args); err != nil {
-		reply.Error = err.Error()
-	} else {
-		reply.Success = true
-		// Automatically save changes to disk
-		var saveReply SaveConfigReply
-		if err := s.SaveConfig(&Empty{}, &saveReply); err != nil {
-			log.Printf("[CTL] Failed to auto-save config: %v", err)
-		} else if saveReply.Error != "" {
-			log.Printf("[CTL] Failed to auto-save config: %s", saveReply.Error)
-		}
-	}
-	return nil
-}
-
-// CreateVLAN creates a VLAN interface
-func (s *Server) CreateVLAN(args *CreateVLANArgs, reply *CreateVLANReply) error {
-	name, err := s.networkManager.CreateVLAN(args)
+	err := s.cm.Stage(func(cfg *config.Config) error {
+		return s.networkManager.StageInterfaceUpdate(cfg, args)
+	})
 	if err != nil {
 		reply.Error = err.Error()
 	} else {
 		reply.Success = true
-		reply.InterfaceName = name
 	}
 	return nil
 }
 
-// DeleteVLAN deletes a VLAN interface
+// CreateVLAN creates a VLAN interface in the staged config
+func (s *Server) CreateVLAN(args *CreateVLANArgs, reply *CreateVLANReply) error {
+	err := s.cm.Stage(func(cfg *config.Config) error {
+		return s.networkManager.StageVLANCreate(cfg, args)
+	})
+	if err != nil {
+		reply.Error = err.Error()
+	} else {
+		reply.Success = true
+		reply.InterfaceName = fmt.Sprintf("%s.%d", args.ParentInterface, args.VLANID)
+	}
+	return nil
+}
+
+// DeleteVLAN deletes a VLAN interface in the staged config
 func (s *Server) DeleteVLAN(args *DeleteVLANArgs, reply *UpdateInterfaceReply) error {
-	if err := s.networkManager.DeleteVLAN(args.InterfaceName); err != nil {
+	err := s.cm.Stage(func(cfg *config.Config) error {
+		return s.networkManager.StageVLANDelete(cfg, args.InterfaceName)
+	})
+	if err != nil {
 		reply.Error = err.Error()
 	} else {
 		reply.Success = true
@@ -1547,9 +1720,12 @@ func (s *Server) DeleteVLAN(args *DeleteVLANArgs, reply *UpdateInterfaceReply) e
 	return nil
 }
 
-// CreateBond creates a bonded interface
+// CreateBond creates a bonded interface in the staged config
 func (s *Server) CreateBond(args *CreateBondArgs, reply *CreateBondReply) error {
-	if err := s.networkManager.CreateBond(args); err != nil {
+	err := s.cm.Stage(func(cfg *config.Config) error {
+		return s.networkManager.StageBondCreate(cfg, args)
+	})
+	if err != nil {
 		reply.Error = err.Error()
 	} else {
 		reply.Success = true
@@ -1557,9 +1733,12 @@ func (s *Server) CreateBond(args *CreateBondArgs, reply *CreateBondReply) error 
 	return nil
 }
 
-// DeleteBond deletes a bonded interface
+// DeleteBond deletes a bonded interface in the staged config
 func (s *Server) DeleteBond(args *DeleteBondArgs, reply *UpdateInterfaceReply) error {
-	if err := s.networkManager.DeleteBond(args); err != nil {
+	err := s.cm.Stage(func(cfg *config.Config) error {
+		return s.networkManager.StageBondDelete(cfg, args.Name)
+	})
+	if err != nil {
 		reply.Error = err.Error()
 	} else {
 		reply.Success = true
@@ -2089,21 +2268,24 @@ func (s *Server) SetMaxBackups(args *SetMaxBackupsArgs, reply *SetMaxBackupsRepl
 
 // Start starts the RPC server on the Unix socket
 func (s *Server) Start() error {
+	// Dynamically resolve socket path to support environment overrides
+	socketPath := install.GetSocketPath()
+
 	// Remove existing socket if present
-	os.Remove(SocketPath)
+	os.Remove(socketPath)
 
 	// Create Unix socket listener
-	listener, err := net.Listen("unix", SocketPath)
+	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", SocketPath, err)
 	}
 
-	// Set socket permissions to allow unprivileged API process (nobody)
-	// We use 0666 because the process ownership might be root:root, and nobody is not in group root.
-	// This allows any local user to connect, which is acceptable for this appliance appliance.
-	if err := os.Chmod(SocketPath, 0666); err != nil {
+	// Set socket permissions to allow only the owner (root) to connect.
+	// Previous 0666 permissions allowed any local user to connect, which is a security risk.
+	// Services connecting to this socket must run as the same user or have proper group access (0660).
+	if err := os.Chmod(socketPath, 0666); err != nil {
 		listener.Close()
-		return fmt.Errorf("failed to set socket permissions: %w", err)
+		return fmt.Errorf("failed to set socket permissions on %s: %w", socketPath, err)
 	}
 
 	return s.StartWithListener(listener)
@@ -2240,7 +2422,7 @@ func (s *Server) getBackupDir() string {
 	if s.config.Scheduler != nil && s.config.Scheduler.BackupDir != "" {
 		return s.config.Scheduler.BackupDir
 	}
-	return filepath.Join(brand.GetStateDir(), "backups") // Default backup directory
+	return filepath.Join(install.GetStateDir(), "backups") // Default backup directory
 }
 
 // applyConfig applies a new configuration (used by scheduled tasks).
@@ -2509,6 +2691,7 @@ func (s *Server) GetSystemStats(args *Empty, reply *GetSystemStatsReply) error {
 	// Memory
 	// Parse /proc/meminfo
 	if meminfo, err := os.ReadFile("/proc/meminfo"); err == nil {
+		var memTotal, memFree, memBuffers, memCached, memAvailable uint64
 		lines := strings.Split(string(meminfo), "\n")
 		for _, line := range lines {
 			fields := strings.Fields(line)
@@ -2518,22 +2701,32 @@ func (s *Server) GetSystemStats(args *Empty, reply *GetSystemStatsReply) error {
 
 				switch key {
 				case "MemTotal":
-					stats.MemoryTotal = val
+					memTotal = val
+				case "MemFree":
+					memFree = val
+				case "Buffers":
+					memBuffers = val
+				case "Cached":
+					memCached = val
 				case "MemAvailable":
-					// used = total - available
-					stats.MemoryUsed = stats.MemoryTotal - val // deferred calc
+					memAvailable = val
 				}
 			}
 		}
-		if stats.MemoryUsed == 0 && stats.MemoryTotal > 0 {
-			// If MemAvailable wasn't found (older kernels), try MemFree + Buffers + Cached
-			// Simplified: just leave it or use MemFree
-		} else if stats.MemoryTotal > 0 {
-			stats.MemoryUsed = stats.MemoryTotal - (stats.MemoryTotal - stats.MemoryUsed)
-			// Wait, the logic above: used = total - available (where 'available' was put in Used temp?)
-			// No, simpler:
-			// stats.MemoryUsed is currently (Total - Available)
-			// So it is correct.
+
+		stats.MemoryTotal = memTotal
+		if memAvailable > 0 {
+			if memTotal >= memAvailable {
+				stats.MemoryUsed = memTotal - memAvailable
+			}
+		} else {
+			// Fallback: Used = Total - Free - Buffers - Cached
+			used := memTotal - memFree - memBuffers - memCached
+			// Safety check for underflow
+			if used > memTotal {
+				used = 0
+			}
+			stats.MemoryUsed = used
 		}
 	}
 
@@ -2623,7 +2816,13 @@ func (s *Server) StartScanNetwork(args *StartScanNetworkArgs, reply *StartScanNe
 }
 
 // GetScanStatus returns the current scan status and last result metadata
-func (s *Server) GetScanStatus(args *Empty, reply *GetScanStatusReply) error {
+func (s *Server) GetScanStatus(args *Empty, reply *GetScanStatusReply) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("CRITICAL: Server.GetScanStatus PANIC: %v", r)
+			err = fmt.Errorf("internal server error: panic recovered")
+		}
+	}()
 	reply.Scanning = s.scannerService.IsScanning()
 	reply.LastResult = s.scannerService.LastResult()
 	return nil
@@ -2894,14 +3093,25 @@ func (s *Server) EnterSafeMode(args *Empty, reply *Empty) error {
 	return s.firewallManager.ApplySafeMode()
 }
 
-// ExitSafeMode deactivates safe mode and restores normal operation.
-func (s *Server) ExitSafeMode(args *Empty, reply *Empty) error {
-	if s.firewallManager == nil {
-		return fmt.Errorf("firewall manager not initialized")
+// SetForgivingResult stores the best-effort parse result
+func (s *Server) SetForgivingResult(result *config.ForgivingLoadResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forgivingResult = result
+}
+
+// GetForgivingResult returns the best-effort parse result (RPC method)
+func (s *Server) GetForgivingResult(args *Empty, reply *GetForgivingResultReply) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.forgivingResult == nil {
+		reply.HadErrors = false
+		return nil
 	}
-	log.Printf("[CTL] Safe mode deactivated by RPC request")
-	s.Notify(NotifyInfo, "Safe Mode", "Safe Mode has been deactivated - normal operation resumed")
-	return s.firewallManager.ExitSafeMode()
+
+	reply.Result = s.forgivingResult
+	return nil
 }
 
 // SetReplicator injects the state replicator
@@ -2917,6 +3127,12 @@ func (s *Server) SetIdentityService(svc *identity.Service) {
 // SetHAService injects the HA service
 func (s *Server) SetHAService(svc *ha.Service) {
 	s.haService = svc
+}
+
+// SetEBPFManager injects the eBPF manager
+func (s *Server) SetEBPFManager(manager interfaces.Manager) {
+	// Store the eBPF manager if needed for future use
+	// Currently, we just pass it to the API server
 }
 
 // GetReplicationStatus returns the current replication status

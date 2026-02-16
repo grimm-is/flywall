@@ -119,8 +119,19 @@
         <label for={id} class="pill-input-label">{label}</label>
     {/if}
 
-    <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-    <div class="pill-input-container" onclick={() => inputRef?.focus()}>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+        class="pill-input-container"
+        onclick={() => inputRef?.focus()}
+        onkeydown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                inputRef?.focus();
+            }
+        }}
+        role="button"
+        tabindex="0"
+    >
         <!-- Selected pills -->
         {#each value as val}
             <span class="pill">

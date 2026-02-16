@@ -1,9 +1,12 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package dns
 
 import (
 	"bufio"
 	"crypto/tls"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"net"
 	"os"
@@ -11,9 +14,13 @@ import (
 	"sync"
 	"time"
 
+	"grimm.is/flywall/internal/install"
+
 	"grimm.is/flywall/internal/clock"
 
 	"context"
+
+	"path/filepath"
 
 	"grimm.is/flywall/internal/config"
 	"grimm.is/flywall/internal/logging"
@@ -24,6 +31,13 @@ import (
 	"github.com/miekg/dns"
 )
 
+// Service implements a recursive DNS resolver.
+// It supports:
+// - Upstream forwarding (UDP, DoT, DoH)
+// - Local records (A, AAAA, PTR, CNAME)
+// - Blocklists (Ads/Malware)
+// - Caching (RFC compliant)
+// - Firewall Integration ("DNS Wall"): Authorizes IPs in the firewall upon successful resolution.
 type Service struct {
 	servers          []*dns.Server
 	config           *config.DNSServer
@@ -31,12 +45,15 @@ type Service struct {
 	dynamicUpstreams []upstream                  // From DHCP/etc
 	records          map[string]config.DNSRecord // FQDN -> Record
 	blockedDomains   map[string]bool             // Blocked domains
-	cache            map[string]cachedResponse
-	mu               sync.RWMutex
-	running          bool
-	stopCleanup      chan struct{}
-	upgradeMgr       *upgrade.Manager
-	fw               ValidatingFirewall
+
+	// Sharded Cache
+	shards [256]*cacheShard
+
+	mu          sync.RWMutex
+	running     bool
+	stopCleanup chan struct{}
+	upgradeMgr  *upgrade.Manager
+	fw          ValidatingFirewall
 
 	// Egress Filter State
 	egressFilterEnabled bool
@@ -63,15 +80,34 @@ type cachedResponse struct {
 	expiresAt time.Time
 }
 
-// NewService creates a new DNS service.
+type cacheShard struct {
+	mu    sync.RWMutex
+	items map[string]cachedResponse
+}
+
 func NewService(cfg *config.Config, logger *logging.Logger) *Service {
-	return &Service{
+	s := &Service{
 		config:         &config.DNSServer{},
 		records:        make(map[string]config.DNSRecord),
 		blockedDomains: make(map[string]bool),
-		cache:          make(map[string]cachedResponse),
 		stopCleanup:    make(chan struct{}),
 	}
+
+	// Initialize cache shards
+	for i := 0; i < 256; i++ {
+		s.shards[i] = &cacheShard{
+			items: make(map[string]cachedResponse),
+		}
+	}
+
+	return s
+}
+
+// getShard returns the cache shard for a given key
+func (s *Service) getShard(key string) *cacheShard {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return s.shards[h.Sum32()%256]
 }
 
 // SetFirewall sets the firewall manager for validation
@@ -95,12 +131,10 @@ func (s *Service) SetQueryLog(store *querylog.Store) {
 	s.queryLog = store
 }
 
-// Name returns the service name.
 func (s *Service) Name() string {
 	return "DNS"
 }
 
-// Start starts the service.
 func (s *Service) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,17 +148,17 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 
-	log.Printf("[DNS] Starting %d servers...", len(s.servers))
+	logging.Debug("[DNS] Starting %d servers...", len(s.servers))
 	for i, srv := range s.servers {
 		go func(srv *dns.Server, index int) {
 			// user ActivateAndServe if generic listener/packetconn is set
 			if srv.Listener != nil || srv.PacketConn != nil {
 				if err := srv.ActivateAndServe(); err != nil {
-					log.Printf("[DNS] Server %d error: %v", index, err)
+					logging.Error("[DNS] Server %d error: %v", index, err)
 				}
 			} else {
 				if err := srv.ListenAndServe(); err != nil {
-					log.Printf("[DNS] Server %d error: %v", index, err)
+					logging.Error("[DNS] Server %d error: %v", index, err)
 				}
 			}
 		}(srv, i+1)
@@ -137,7 +171,6 @@ func (s *Service) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the service.
 func (s *Service) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -146,10 +179,10 @@ func (s *Service) Stop(ctx context.Context) error {
 		return nil
 	}
 
-	log.Printf("[DNS] Stopping %d servers...", len(s.servers))
+	logging.Debug("[DNS] Stopping %d servers...", len(s.servers))
 	for i, srv := range s.servers {
 		if err := srv.Shutdown(); err != nil {
-			log.Printf("[DNS] Failed to stop server %d: %v", i+1, err)
+			logging.Error("[DNS] Failed to stop server %d: %v", i+1, err)
 		}
 	}
 
@@ -194,7 +227,7 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 		state := s.buildServerState(cfg)
 
 		if wasRunning {
-			log.Printf("[DNS] Restarting DNS server (New Config Mode)")
+			logging.Info("[DNS] Restarting DNS server (New Config Mode)")
 			s.Stop(context.Background())
 		}
 
@@ -239,7 +272,7 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 
 	// Copy of original legacy implementation:
 	if dnsCfg.Mode == "external" {
-		log.Println("[DNS] External DNS server configured. Skipping built-in server startup.")
+		logging.Info("[DNS] External DNS server configured. Skipping built-in server startup.")
 		if wasRunning {
 			return true, s.Stop(context.Background())
 		}
@@ -288,7 +321,7 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 	var err error
 	newBlocked, err = loadBlocklistsFromConfig(dnsCfg.Blocklists)
 	if err != nil {
-		log.Printf("[DNS] Warning: errors occurred loading blocklists: %v", err)
+		logging.Warn("[DNS] Warning: errors occurred loading blocklists: %v", err)
 	}
 
 	// Load /etc/hosts
@@ -331,7 +364,7 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 			}
 		}
 		f.Close()
-		log.Printf("[DNS] Loaded %d records from /etc/hosts", count)
+		logging.Info("[DNS] Loaded %d records from /etc/hosts", count)
 	}
 
 	// 2. Check if restart is needed
@@ -363,7 +396,7 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 	// 3. Apply changes (Legacy)
 	if listenersChanged {
 		if wasRunning {
-			log.Printf("[DNS] Restarting DNS server (listener config changed)")
+			logging.Info("[DNS] Restarting DNS server (listener config changed)")
 			s.Stop(context.Background())
 		}
 
@@ -390,7 +423,7 @@ func (s *Service) Reload(cfg *config.Config) (bool, error) {
 		s.records = newRecords
 		s.blockedDomains = newBlocked
 		s.mu.Unlock()
-		log.Printf("[DNS] Hot-reloaded configuration (no restart)")
+		logging.Info("[DNS] Hot-reloaded configuration (no restart)")
 		return true, nil
 	}
 }
@@ -417,7 +450,7 @@ func (s *Service) buildServers(listeners []string) []*dns.Server {
 		if s.upgradeMgr != nil {
 			if existing, ok := s.upgradeMgr.GetPacketConn(udpName); ok {
 				pc = existing
-				log.Printf("[DNS] Inherited UDP socket %s", udpName)
+				logging.Info("[DNS] Inherited UDP socket %s", udpName)
 			}
 		}
 
@@ -425,7 +458,7 @@ func (s *Service) buildServers(listeners []string) []*dns.Server {
 			var err error
 			pc, err = net.ListenPacket("udp", net.JoinHostPort(addr, "53"))
 			if err != nil {
-				log.Printf("[DNS] Failed to bind UDP %s: %v", addr, err)
+				logging.Error("[DNS] Failed to bind UDP %s: %v", addr, err)
 			} else if s.upgradeMgr != nil {
 				s.upgradeMgr.RegisterPacketConn(udpName, pc)
 			}
@@ -442,7 +475,7 @@ func (s *Service) buildServers(listeners []string) []*dns.Server {
 		if s.upgradeMgr != nil {
 			if existing, ok := s.upgradeMgr.GetListener(tcpName); ok {
 				list = existing
-				log.Printf("[DNS] Inherited TCP listener %s", tcpName)
+				logging.Info("[DNS] Inherited TCP listener %s", tcpName)
 			}
 		}
 
@@ -450,7 +483,7 @@ func (s *Service) buildServers(listeners []string) []*dns.Server {
 			var err error
 			list, err = net.Listen("tcp", net.JoinHostPort(addr, "53"))
 			if err != nil {
-				log.Printf("[DNS] Failed to bind TCP %s: %v", addr, err)
+				logging.Error("[DNS] Failed to bind TCP %s: %v", addr, err)
 			} else if s.upgradeMgr != nil {
 				s.upgradeMgr.RegisterListener(tcpName, list)
 			}
@@ -463,14 +496,12 @@ func (s *Service) buildServers(listeners []string) []*dns.Server {
 	return newServers
 }
 
-// IsRunning returns true if the service is running.
 func (s *Service) IsRunning() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.running
 }
 
-// Status returns the current status of the service.
 func (s *Service) Status() services.ServiceStatus {
 	return services.ServiceStatus{
 		Name:    s.Name(),
@@ -482,7 +513,7 @@ func (s *Service) loadHostsFile(path string) {
 	f, err := os.Open(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("[DNS] Failed to open hosts file %s: %v", path, err)
+			logging.Warn("[DNS] Failed to open hosts file %s: %v", path, err)
 		}
 		return
 	}
@@ -533,12 +564,12 @@ func (s *Service) loadHostsFile(path string) {
 			}
 		}
 	}
-	log.Printf("[DNS] Loaded %d records from %s", count, path)
+	logging.Info("[DNS] Loaded %d records from %s", count, path)
 }
 
 func loadBlocklistsFromConfig(blocklists []config.DNSBlocklist) (map[string]bool, error) {
 	blocked := make(map[string]bool)
-	cachePath := "/var/lib/flywall/blocklist_cache"
+	cachePath := filepath.Join(install.GetCacheDir(), "blocklist_cache")
 
 	for _, bl := range blocklists {
 		if !bl.Enabled {
@@ -553,7 +584,7 @@ func loadBlocklistsFromConfig(blocklists []config.DNSBlocklist) (map[string]bool
 			// URL-based blocklist - download with cache fallback
 			domains, err = DownloadBlocklistWithCache(bl.URL, cachePath)
 			if err != nil {
-				log.Printf("[DNS] Failed to load blocklist %s from URL: %v", bl.Name, err)
+				logging.Warn("[DNS] Failed to load blocklist %s from URL: %v", bl.Name, err)
 				continue
 			}
 			source = bl.URL
@@ -561,7 +592,7 @@ func loadBlocklistsFromConfig(blocklists []config.DNSBlocklist) (map[string]bool
 			// File-based blocklist
 			f, err := os.Open(bl.File)
 			if err != nil {
-				log.Printf("[DNS] Failed to open blocklist file %s: %v", bl.File, err)
+				logging.Warn("[DNS] Failed to open blocklist file %s: %v", bl.File, err)
 				continue
 			}
 
@@ -571,12 +602,12 @@ func loadBlocklistsFromConfig(blocklists []config.DNSBlocklist) (map[string]bool
 			f.Close()
 
 			if err != nil {
-				log.Printf("[DNS] Failed to parse blocklist file %s: %v", bl.File, err)
+				logging.Warn("[DNS] Failed to parse blocklist file %s: %v", bl.File, err)
 				continue
 			}
 			source = bl.File
 		} else {
-			log.Printf("[DNS] Blocklist %s has no URL or file specified", bl.Name)
+			logging.Warn("[DNS] Blocklist %s has no URL or file specified", bl.Name)
 			continue
 		}
 
@@ -587,13 +618,13 @@ func loadBlocklistsFromConfig(blocklists []config.DNSBlocklist) (map[string]bool
 			blocked[domain] = true
 			count++
 		}
-		log.Printf("[DNS] Loaded %d domains from blocklist %s (%s)", count, bl.Name, source)
+		logging.Info("[DNS] Loaded %d domains from blocklist %s (%s)", count, bl.Name, source)
 	}
 
 	return blocked, nil
 }
 
-// AddRecord adds or updates a DNS record dynamically
+// AddRecord adds or updates a dynamic DNS record.
 func (s *Service) AddRecord(name string, ip net.IP) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -611,17 +642,41 @@ func (s *Service) AddRecord(name string, ip net.IP) {
 	}
 
 	s.records[strings.ToLower(fqdn)] = rec
-	log.Printf("[DNS] Added dynamic record: %s -> %s", fqdn, ip)
+
+	// Automatic PTR record
+	ptrZone, err := dns.ReverseAddr(ip.String())
+	if err == nil {
+		s.records[strings.ToLower(ptrZone)] = config.DNSRecord{
+			Name:  ptrZone,
+			Type:  "PTR",
+			Value: fqdn,
+			TTL:   300,
+		}
+		logging.Debug("[DNS] Added dynamic PTR record: %s -> %s", ptrZone, fqdn)
+	}
+
+	logging.Debug("[DNS] Added dynamic record: %s -> %s", fqdn, ip)
 }
 
-// RemoveRecord removes a DNS record dynamically
+// RemoveRecord removes a dynamic DNS record.
 func (s *Service) RemoveRecord(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	fqdn := dns.Fqdn(name)
-	delete(s.records, strings.ToLower(fqdn))
-	log.Printf("[DNS] Removed dynamic record: %s", fqdn)
+	lowerName := strings.ToLower(fqdn)
+
+	// If it's an A record, try to find and remove associated PTR
+	if rec, ok := s.records[lowerName]; ok && (rec.Type == "A" || rec.Type == "AAAA") {
+		ptrZone, err := dns.ReverseAddr(rec.Value)
+		if err == nil {
+			delete(s.records, strings.ToLower(ptrZone))
+			logging.Debug("[DNS] Removed dynamic PTR record: %s", ptrZone)
+		}
+	}
+
+	delete(s.records, lowerName)
+	logging.Debug("[DNS] Removed dynamic record: %s", fqdn)
 }
 
 // UpdateBlockedDomains updates the set of blocked domains dynamically
@@ -638,7 +693,7 @@ func (s *Service) UpdateBlockedDomains(domains []string) {
 		}
 	}
 	if count > 0 {
-		log.Printf("[DNS] Added %d domains to blocklist from threat intel", count)
+		logging.Info("[DNS] Added %d domains to blocklist from threat intel", count)
 	}
 }
 
@@ -667,47 +722,51 @@ func (s *Service) UpdateForwarders(forwarders []string) {
 	}
 
 	s.dynamicUpstreams = valid
-	log.Printf("[DNS] Updated dynamic forwarders: %v", s.dynamicUpstreams)
+	logging.Debug("[DNS] Updated dynamic forwarders: %v", s.dynamicUpstreams)
 }
 
 // SyncFirewall re-authorizes all currently cached IPs in the firewall.
 // This ensures that after a firewall reload, valid connections are not dropped.
 func (s *Service) SyncFirewall() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	if s.fw == nil {
 		return
 	}
 
 	count := 0
-	for _, item := range s.cache {
-		// Only sync valid items
-		if time.Now().After(item.expiresAt) {
-			continue
-		}
+	now := time.Now()
 
-		// Extract answers
-		for _, ans := range item.msg.Answer {
-			if a, ok := ans.(*dns.A); ok {
-				ttl := time.Until(item.expiresAt)
-				if ttl > 0 {
-					s.fw.AuthorizeIP(a.A, ttl)
-					count++
-				}
-			} else if aaaa, ok := ans.(*dns.AAAA); ok {
-				ttl := time.Until(item.expiresAt)
-				if ttl > 0 {
-					s.fw.AuthorizeIP(aaaa.AAAA, ttl)
-					count++
+	for _, shard := range s.shards {
+		shard.mu.RLock()
+		for _, item := range shard.items {
+			// Only sync valid items
+			if now.After(item.expiresAt) {
+				continue
+			}
+
+			// Extract answers
+			for _, ans := range item.msg.Answer {
+				if a, ok := ans.(*dns.A); ok {
+					ttl := time.Until(item.expiresAt)
+					if ttl > 0 {
+						s.fw.AuthorizeIP(a.A, ttl)
+						count++
+					}
+				} else if aaaa, ok := ans.(*dns.AAAA); ok {
+					ttl := time.Until(item.expiresAt)
+					if ttl > 0 {
+						s.fw.AuthorizeIP(aaaa.AAAA, ttl)
+						count++
+					}
 				}
 			}
 		}
+		shard.mu.RUnlock()
 	}
-	// Log only if non-zero to avoid spam on empty cache
-	if count > 0 {
-		log.Printf("[DNS] Synced DNS cache to firewall: %d records", count)
-	}
+
+	logging.Debug("[DNS] SyncFirewall invoked (cache_count=%d)", count)
 }
 
 // RemoveBlockedDomains removes domains from the blocklist
@@ -724,8 +783,14 @@ func (s *Service) RemoveBlockedDomains(domains []string) {
 // Old Start/Stop removed
 // Old Start/Stop removed
 
-// Old Start/Stop methods replaced by interface methods
-
+// ServeDNS handles incoming DNS requests.
+// Pipeline:
+// 1. Check Blocklists (if blocked -> NXDOMAIN)
+// 2. Check Cache (if hit -> return cached response)
+// 3. Check Local Records (hosts file, config records)
+// 4. Conditional Forwarding (split-horizon)
+// 5. Upstream Forwarding (UDP/DoT/DoH)
+// 6. Fallback (NXDOMAIN)
 func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	startTime := time.Now()
 	clientIP, _, _ := net.SplitHostPort(w.RemoteAddr().String())
@@ -780,6 +845,7 @@ func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	// Check Blocklists
 	s.mu.RLock()
+	fmt.Fprintf(os.Stderr, "DEBUG: Check blocked\n")
 	isBlocked := s.blockedDomains[name]
 	// Also check without trailing dot
 	if !isBlocked && strings.HasSuffix(name, ".") {
@@ -789,7 +855,7 @@ func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	if isBlocked {
 		blocked = true
-		log.Printf("[DNS] Blocked query for %s", name)
+		logging.Debug("[DNS] Blocked query for %s", name)
 		msg.Rcode = dns.RcodeNameError // NXDOMAIN
 		rcode = dns.RcodeNameError
 		w.WriteMsg(msg)
@@ -798,20 +864,26 @@ func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	// Check Cache
 	cacheKey := fmt.Sprintf("%s:%d", name, q.Qtype)
-	s.mu.RLock()
-	cached, found := s.cache[cacheKey]
-	s.mu.RUnlock()
+	shard := s.getShard(cacheKey)
+
+	shard.mu.RLock()
+	fmt.Fprintf(os.Stderr, "DEBUG: Check cache\n")
+	cached, found := shard.items[cacheKey]
+	shard.mu.RUnlock()
 
 	if found && clock.Now().Before(cached.expiresAt) {
+		fmt.Fprintf(os.Stderr, "DEBUG: Cache hit\n")
 		resp = cached.msg.Copy()
 		resp.SetReply(r)
 		rcode = resp.Rcode
 		w.WriteMsg(resp)
 		return
 	}
+	fmt.Fprintf(os.Stderr, "DEBUG: Cache miss or expired\n")
 
 	// Local Lookup
 	s.mu.RLock()
+	fmt.Fprintf(os.Stderr, "DEBUG: Check local\n")
 	rec, ok := s.records[name]
 	s.mu.RUnlock()
 
@@ -825,6 +897,7 @@ func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 
 	// Conditional Forwarding
+	fmt.Fprintf(os.Stderr, "DEBUG: Check conditional\n")
 	for _, cf := range s.config.ConditionalForwarders {
 		domain := dns.Fqdn(cf.Domain)
 		if strings.HasSuffix(name, strings.ToLower(domain)) {
@@ -850,6 +923,7 @@ func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	// Merge static and dynamic upstreams
 	var allUpstreams []upstream
 	s.mu.RLock()
+	fmt.Fprintf(os.Stderr, "DEBUG: Check forwarding\n")
 	if len(s.upstreams) > 0 {
 		allUpstreams = append(allUpstreams, s.upstreams...)
 	}
@@ -859,6 +933,7 @@ func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	s.mu.RUnlock()
 
 	if len(allUpstreams) > 0 {
+		fmt.Fprintf(os.Stderr, "DEBUG: Forwarding to upstreams\n")
 		resp, upstreamAddr = s.forward(r, allUpstreams)
 		if resp != nil {
 			rcode = resp.Rcode
@@ -871,6 +946,7 @@ func (s *Service) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 
 	// NXDOMAIN
+	fmt.Fprintf(os.Stderr, "DEBUG: NXDOMAIN\n")
 	msg.Rcode = dns.RcodeNameError
 	rcode = dns.RcodeNameError
 	w.WriteMsg(msg)
@@ -992,25 +1068,27 @@ func (s *Service) forward(r *dns.Msg, upstreams []upstream) (*dns.Msg, string) {
 
 // GetCache returns the current DNS cache entries for upgrade state preservation
 func (s *Service) GetCache() []upgrade.DNSCacheEntry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	var entries []upgrade.DNSCacheEntry
-	for _, item := range s.cache {
-		msgBytes, err := item.msg.Pack()
-		if err != nil {
-			log.Printf("Failed to pack DNS message for cache export: %v", err)
-			continue
-		}
 
-		if len(item.msg.Question) > 0 {
-			entries = append(entries, upgrade.DNSCacheEntry{
-				Name:    item.msg.Question[0].Name,
-				Type:    item.msg.Question[0].Qtype,
-				Data:    msgBytes,
-				Expires: item.expiresAt,
-			})
+	for _, shard := range s.shards {
+		shard.mu.RLock()
+		for _, item := range shard.items {
+			msgBytes, err := item.msg.Pack()
+			if err != nil {
+				log.Printf("Failed to pack DNS message for cache export: %v", err)
+				continue
+			}
+
+			if len(item.msg.Question) > 0 {
+				entries = append(entries, upgrade.DNSCacheEntry{
+					Name:    item.msg.Question[0].Name,
+					Type:    item.msg.Question[0].Qtype,
+					Data:    msgBytes,
+					Expires: item.expiresAt,
+				})
+			}
 		}
+		shard.mu.RUnlock()
 	}
 	return entries
 }
@@ -1030,17 +1108,20 @@ func (s *Service) startCacheCleanup() {
 }
 
 func (s *Service) cleanupCache() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	now := clock.Now()
 	cleaned := 0
-	for key, entry := range s.cache {
-		if now.After(entry.expiresAt) {
-			delete(s.cache, key)
-			cleaned++
+
+	for _, shard := range s.shards {
+		shard.mu.Lock()
+		for key, entry := range shard.items {
+			if now.After(entry.expiresAt) {
+				delete(shard.items, key)
+				cleaned++
+			}
 		}
+		shard.mu.Unlock()
 	}
+
 	if cleaned > 0 {
 		log.Printf("[DNS] Cleaned %d expired cache entries", cleaned)
 	}
@@ -1061,28 +1142,34 @@ func (s *Service) cacheResponse(req, resp *dns.Msg) {
 	// Don't cache very short TTLs
 	if minTTL > 5 {
 		cacheKey := fmt.Sprintf("%s:%d", strings.ToLower(req.Question[0].Name), req.Question[0].Qtype)
-		s.mu.Lock()
-		defer s.mu.Unlock()
+		shard := s.getShard(cacheKey)
 
+		shard.mu.Lock()
 		// DOS Protection: Limit cache size with random eviction
-		if len(s.cache) >= 10000 {
-			// Evict a random entry (Go map iteration is random)
-			for k := range s.cache {
-				delete(s.cache, k)
+		if len(shard.items) >= 1000 { // 1000 * 256 = 256k entries total capacity
+			// Evict a random entry
+			for k := range shard.items {
+				delete(shard.items, k)
 				break
 			}
 		}
 
-		s.cache[cacheKey] = cachedResponse{
+		shard.items[cacheKey] = cachedResponse{
 			msg:       resp,
 			expiresAt: clock.Now().Add(time.Duration(minTTL) * time.Second),
 		}
+		shard.mu.Unlock()
 	}
 
 	// Snoop response for firewall authorization
 	s.snoopResponse(resp)
 }
 
+// snoopResponse implements the "DNS Wall" (Egress Filtering) logic.
+// It inspects valid DNS responses and extracts the resolved IP addresses.
+// These IPs are then sent to the firewall manager to be added to a dynamic
+// allowlist (ipset). This allows LAN clients to access only domains they
+// have resolved, preventing direct IP access to malware C2 or unauthorized sites.
 func (s *Service) snoopResponse(resp *dns.Msg) {
 	s.mu.RLock()
 	enabled := s.egressFilterEnabled

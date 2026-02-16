@@ -62,11 +62,15 @@ schema_version = "1.0"
 ip_forwarding = true
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 interface "veth-lan" {
@@ -114,6 +118,7 @@ EOF
 
 # Test 1: Create test topology
 diag "Creating network namespace topology... (Debug Marker 1)"
+teardown_test_topology # Ensure clean slate
 setup_test_topology
 diag "Topology created. (Debug Marker 2)"
 ok $? "Test topology created"
@@ -129,14 +134,14 @@ ok $? "Server can ping router (WAN interface)"
 
 # Test 4: Apply firewall rules using test mode (fire-and-forget)
 diag "Applying firewall rules with test mode..."
-$APP_BIN test "$TEST_CONFIG" > /tmp/packet_flow_test.log 2>&1
+$APP_BIN test "$TEST_CONFIG" > /tmp/packet_flow_test_$$.log 2>&1
 test_exit=$?
 if [ $test_exit -eq 0 ]; then
     ok 0 "Firewall rules applied successfully"
 else
     diag "Failed to apply firewall rules (exit=$test_exit)"
     diag "Log output:"
-    cat /tmp/packet_flow_test.log | head -30
+    cat /tmp/packet_flow_test_$$.log | head -30
     ok 1 "Firewall rules applied"
     exit 1
 fi

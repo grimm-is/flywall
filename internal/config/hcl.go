@@ -1,11 +1,16 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Package config provides HCL configuration handling with comment preservation.
 package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,7 +19,47 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsimple"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
+	"grimm.is/flywall/internal/errors"
 )
+
+// ConfigDiff represents a structured configuration difference
+type ConfigDiff struct {
+	Added    []Change
+	Modified []Change
+	Removed  []Change
+	Moved    []Change // For reordered items
+	Summary  DiffSummary
+}
+
+// Change represents a single configuration change
+type Change struct {
+	Path     string      // e.g., "interfaces[0].ipv4[1]"
+	Old      interface{} // Previous value
+	New      interface{} // New value
+	Type     ChangeType
+	Section  string // Top-level section (interfaces, policies, etc.)
+	Severity string // "critical", "warning", "info"
+}
+
+// ChangeType represents the type of change
+type ChangeType string
+
+const (
+	Added    ChangeType = "added"
+	Modified ChangeType = "modified"
+	Removed  ChangeType = "removed"
+	Moved    ChangeType = "moved"
+)
+
+// DiffSummary provides a high-level summary of changes
+type DiffSummary struct {
+	TotalChanges     int
+	CriticalChanges  int
+	WarningChanges   int
+	AffectedSections []string
+	HasConnectivity  bool // Changes that might affect connectivity
+	HasSecurity      bool // Changes that affect security rules
+}
 
 // ConfigFile represents an HCL configuration file with preserved source.
 // This allows round-trip editing while preserving comments and formatting.
@@ -30,7 +75,7 @@ type ConfigFile struct {
 func LoadConfigFile(path string) (*ConfigFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to read config file")
 	}
 
 	return LoadConfigFromBytes(path, data)
@@ -41,14 +86,14 @@ func LoadConfigFromBytes(filename string, data []byte) (*ConfigFile, error) {
 	// Parse for writing (preserves comments and formatting)
 	hclFile, diags := hclwrite.ParseConfig(data, filename, hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
-		return nil, fmt.Errorf("failed to parse HCL for writing: %s", diags.Error())
+		return nil, errors.Errorf(errors.KindValidation, "failed to parse HCL for writing: %s", diags.Error())
 	}
 
 	// Parse for reading (into Go struct)
 	var cfg Config
 
 	if err := hclsimple.Decode(filename, data, nil, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to decode config: %w", err)
+		return nil, errors.Wrap(err, errors.KindValidation, "failed to decode config")
 	}
 
 	return &ConfigFile{
@@ -72,20 +117,20 @@ func (cf *ConfigFile) SaveTo(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		backupPath := path + ".bak"
 		if err := copyFile(path, backupPath); err != nil {
-			return fmt.Errorf("failed to create backup: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "failed to create backup")
 		}
 	}
 
 	// Ensure directory exists
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to create directory")
 	}
 
 	// Write the HCL file
 	data := cf.hclFile.Bytes()
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
+	if err := SecureWriteFile(path, data); err != nil {
+		return errors.Wrap(err, errors.KindInternal, "failed to write config")
 	}
 
 	cf.Path = path
@@ -106,13 +151,13 @@ func (cf *ConfigFile) SetRawHCL(hclSource string) error {
 	// Validate by parsing
 	newFile, diags := hclwrite.ParseConfig(data, cf.Path, hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
-		return fmt.Errorf("invalid HCL: %s", diags.Error())
+		return errors.Errorf(errors.KindValidation, "invalid HCL: %s", diags.Error())
 	}
 
 	// Also validate it decodes to our config struct
 	var cfg Config
 	if err := hclsimple.Decode(cf.Path, data, nil, &cfg); err != nil {
-		return fmt.Errorf("HCL does not match config schema: %w", err)
+		return errors.Wrap(err, errors.KindValidation, "HCL does not match config schema")
 	}
 
 	cf.hclFile = newFile
@@ -130,7 +175,7 @@ func (cf *ConfigFile) GetSection(sectionType string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("section %q not found", sectionType)
+	return "", errors.Errorf(errors.KindNotFound, "section %q not found", sectionType)
 }
 
 // GetSectionByLabel returns raw HCL for a labeled block (e.g., interface "eth0").
@@ -168,7 +213,7 @@ func (cf *ConfigFile) GetSectionByLabel(sectionType string, labels []string) (st
 		}
 	}
 
-	return "", fmt.Errorf("section %s with labels %v not found", sectionType, labels)
+	return "", errors.Errorf(errors.KindNotFound, "section %s with labels %v not found", sectionType, labels)
 }
 
 // SetSection replaces a section with new HCL content.
@@ -177,11 +222,11 @@ func (cf *ConfigFile) SetSection(sectionType string, sectionHCL string) error {
 	// Parse the new section
 	newBlock, err := parseBlock(sectionHCL, cf.Path)
 	if err != nil {
-		return fmt.Errorf("invalid section HCL: %w", err)
+		return errors.Wrap(err, errors.KindValidation, "invalid section HCL")
 	}
 
 	if newBlock.Type() != sectionType {
-		return fmt.Errorf("section type mismatch: expected %q, got %q", sectionType, newBlock.Type())
+		return errors.Errorf(errors.KindValidation, "section type mismatch: expected %q, got %q", sectionType, newBlock.Type())
 	}
 
 	body := cf.hclFile.Body()
@@ -213,11 +258,11 @@ func (cf *ConfigFile) SetSection(sectionType string, sectionHCL string) error {
 func (cf *ConfigFile) SetSectionByLabel(sectionType string, labels []string, sectionHCL string) error {
 	newBlock, err := parseBlock(sectionHCL, cf.Path)
 	if err != nil {
-		return fmt.Errorf("invalid section HCL: %w", err)
+		return errors.Wrap(err, errors.KindValidation, "invalid section HCL")
 	}
 
 	if newBlock.Type() != sectionType {
-		return fmt.Errorf("section type mismatch: expected %q, got %q", sectionType, newBlock.Type())
+		return errors.Errorf(errors.KindValidation, "section type mismatch: expected %q, got %q", sectionType, newBlock.Type())
 	}
 
 	body := cf.hclFile.Body()
@@ -276,7 +321,7 @@ func (cf *ConfigFile) SetSectionByLabel(sectionType string, labels []string, sec
 func (cf *ConfigFile) AddSection(sectionHCL string) error {
 	newBlock, err := parseBlock(sectionHCL, cf.Path)
 	if err != nil {
-		return fmt.Errorf("invalid section HCL: %w", err)
+		return errors.Wrap(err, errors.KindValidation, "invalid section HCL")
 	}
 
 	body := cf.hclFile.Body()
@@ -297,7 +342,7 @@ func (cf *ConfigFile) RemoveSection(sectionType string) error {
 		}
 	}
 
-	return fmt.Errorf("section %q not found", sectionType)
+	return errors.Errorf(errors.KindNotFound, "section %q not found", sectionType)
 }
 
 // RemoveSectionByLabel removes a labeled section.
@@ -340,7 +385,7 @@ func (cf *ConfigFile) RemoveSectionByLabel(sectionType string, labels []string) 
 		}
 	}
 
-	return fmt.Errorf("section %s with labels %v not found", sectionType, labels)
+	return errors.Errorf(errors.KindNotFound, "section %s with labels %v not found", sectionType, labels)
 }
 
 // ListSections returns all top-level section types and their labels.
@@ -376,13 +421,13 @@ func ValidateHCL(hclSource string) error {
 	// Check syntax
 	_, diags := hclwrite.ParseConfig(data, "validate.hcl", hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
-		return fmt.Errorf("syntax error: %s", diags.Error())
+		return errors.Errorf(errors.KindValidation, "syntax error: %s", diags.Error())
 	}
 
 	// Check schema
 	var cfg Config
 	if err := hclsimple.Decode("validate.hcl", data, nil, &cfg); err != nil {
-		return fmt.Errorf("schema error: %w", err)
+		return errors.Wrap(err, errors.KindValidation, "schema error")
 	}
 
 	return nil
@@ -400,7 +445,7 @@ func FormatHCL(hclSource string) (string, error) {
 
 	file, diags := hclwrite.ParseConfig(data, "format.hcl", hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
-		return "", fmt.Errorf("invalid HCL: %s", diags.Error())
+		return "", errors.Errorf(errors.KindValidation, "invalid HCL: %s", diags.Error())
 	}
 
 	return string(file.Bytes()), nil
@@ -411,7 +456,7 @@ func (cf *ConfigFile) reloadConfig() error {
 	data := cf.hclFile.Bytes()
 	var cfg Config
 	if err := hclsimple.Decode(cf.Path, data, nil, &cfg); err != nil {
-		return fmt.Errorf("failed to reload config: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to reload config")
 	}
 	cf.Config = &cfg
 	return nil
@@ -429,7 +474,7 @@ func (cf *ConfigFile) MigrateToLatest() error {
 func (cf *ConfigFile) MigrateTo(targetVersion SchemaVersion) error {
 	currentVersion, err := ParseVersion(cf.Config.SchemaVersion)
 	if err != nil {
-		return fmt.Errorf("invalid config schema version: %w", err)
+		return errors.Wrap(err, errors.KindValidation, "invalid config schema version")
 	}
 
 	if currentVersion.Compare(targetVersion) >= 0 {
@@ -472,7 +517,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0644)
+	return SecureWriteFile(dst, data)
 }
 
 func formatBlock(block *hclwrite.Block) string {
@@ -486,15 +531,15 @@ func parseBlock(hclSource, filename string) (*hclwrite.Block, error) {
 
 	file, diags := hclwrite.ParseConfig(data, filename, hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
-		return nil, fmt.Errorf("parse error: %s", diags.Error())
+		return nil, errors.Errorf(errors.KindValidation, "parse error: %s", diags.Error())
 	}
 
 	blocks := file.Body().Blocks()
 	if len(blocks) == 0 {
-		return nil, fmt.Errorf("no block found in HCL")
+		return nil, errors.New(errors.KindValidation, "no block found in HCL")
 	}
 	if len(blocks) > 1 {
-		return nil, fmt.Errorf("expected single block, got %d", len(blocks))
+		return nil, errors.Errorf(errors.KindValidation, "expected single block, got %d", len(blocks))
 	}
 
 	return blocks[0], nil
@@ -539,7 +584,7 @@ func (cf *ConfigFile) SetAttribute(name string, value interface{}) error {
 
 	ctyVal, err := toCtyValue(value)
 	if err != nil {
-		return fmt.Errorf("invalid value for %s: %w", name, err)
+		return errors.Wrapf(err, errors.KindValidation, "invalid value for %s", name)
 	}
 
 	body.SetAttributeValue(name, ctyVal)
@@ -569,7 +614,7 @@ func toCtyValue(v interface{}) (cty.Value, error) {
 		}
 		return cty.ListVal(vals), nil
 	default:
-		return cty.NilVal, fmt.Errorf("unsupported type: %T", v)
+		return cty.NilVal, errors.Errorf(errors.KindValidation, "unsupported type: %T", v)
 	}
 }
 
@@ -595,14 +640,29 @@ func (cf *ConfigFile) GetMetadata() ConfigMetadata {
 	return meta
 }
 
-// Diff returns a simple diff between original and current HCL.
-func (cf *ConfigFile) Diff() string {
+// Diff returns a diff between original and current HCL.
+// If structured is true, returns a semantic diff; otherwise returns simple line-by-line diff.
+func (cf *ConfigFile) Diff(structured ...bool) string {
 	current := cf.hclFile.Bytes()
 	if bytes.Equal(cf.original, current) {
 		return ""
 	}
 
-	// Simple line-by-line diff
+	// If structured diff requested and we have parsed configs
+	if len(structured) > 0 && structured[0] && cf.Config != nil {
+		// Load original config
+		originalCfg, err := LoadConfigFromBytes(cf.Path, cf.original)
+		if err == nil {
+			// Perform structured diff
+			diff := DiffConfigs(originalCfg.Config, cf.Config)
+			if diff.HasChanges() {
+				return diff.String()
+			}
+		}
+		// Fall back to simple diff if structured fails
+	}
+
+	// Simple line-by-line diff (original behavior)
 	origLines := strings.Split(string(cf.original), "\n")
 	currLines := strings.Split(string(current), "\n")
 
@@ -637,6 +697,21 @@ func (cf *ConfigFile) Diff() string {
 	}
 
 	return diff.String()
+}
+
+// DiffStructured returns a structured semantic diff between original and current configs
+func (cf *ConfigFile) DiffStructured() (*ConfigDiff, error) {
+	if cf.Config == nil {
+		return nil, fmt.Errorf("no parsed config available")
+	}
+
+	originalCfg, err := LoadConfigFromBytes(cf.Path, cf.original)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse original config: %w", err)
+	}
+
+	diff := DiffConfigs(originalCfg.Config, cf.Config)
+	return diff, nil
 }
 
 // HasChanges returns true if the config has been modified since loading.
@@ -688,7 +763,336 @@ func ParseHCLWithDiagnostics(hclSource string) ([]HCLDiagnostic, error) {
 	}
 
 	if diags.HasErrors() {
-		return result, fmt.Errorf("HCL has errors")
+		return result, errors.New(errors.KindValidation, "HCL has errors")
 	}
 	return result, nil
+}
+
+// DiffConfigs performs a structured diff between two configurations
+func DiffConfigs(oldConfig, newConfig *Config) *ConfigDiff {
+	diff := &ConfigDiff{
+		Added:    make([]Change, 0),
+		Modified: make([]Change, 0),
+		Removed:  make([]Change, 0),
+		Moved:    make([]Change, 0),
+	}
+
+	// Convert to maps for comparison
+	oldMap := configToMap(oldConfig)
+	newMap := configToMap(newConfig)
+
+	// Compare each section
+	compareSections(oldMap, newMap, "", diff)
+
+	// Calculate summary
+	diff.calculateSummary()
+
+	return diff
+}
+
+// configToMap converts a Config to a map for comparison
+func configToMap(cfg *Config) map[string]interface{} {
+	data, _ := json.Marshal(cfg)
+	var result map[string]interface{}
+	json.Unmarshal(data, &result)
+	return result
+}
+
+// compareSections recursively compares configuration sections
+func compareSections(old, new map[string]interface{}, basePath string, diff *ConfigDiff) {
+	// Track all keys
+	allKeys := make(map[string]bool)
+	for k := range old {
+		allKeys[k] = true
+	}
+	for k := range new {
+		allKeys[k] = true
+	}
+
+	for key := range allKeys {
+		currentPath := joinPath(basePath, key)
+		oldValue, oldExists := old[key]
+		newValue, newExists := new[key]
+
+		if !oldExists && newExists {
+			// Added
+			change := Change{
+				Path:    currentPath,
+				New:     newValue,
+				Type:    Added,
+				Section: getSection(currentPath),
+			}
+			change.Severity = assessChangeSeverity(change)
+			diff.Added = append(diff.Added, change)
+		} else if oldExists && !newExists {
+			// Removed
+			change := Change{
+				Path:    currentPath,
+				Old:     oldValue,
+				Type:    Removed,
+				Section: getSection(currentPath),
+			}
+			change.Severity = assessChangeSeverity(change)
+			diff.Removed = append(diff.Removed, change)
+		} else if oldExists && newExists {
+			// Compare values
+			compareValues(oldValue, newValue, currentPath, diff)
+		}
+	}
+}
+
+// compareValues compares two configuration values
+func compareValues(old, new interface{}, path string, diff *ConfigDiff) {
+	oldType := reflect.TypeOf(old)
+	newType := reflect.TypeOf(new)
+
+	if oldType != newType {
+		// Type changed
+		change := Change{
+			Path:    path,
+			Old:     old,
+			New:     new,
+			Type:    Modified,
+			Section: getSection(path),
+		}
+		change.Severity = assessChangeSeverity(change)
+		diff.Modified = append(diff.Modified, change)
+		return
+	}
+
+	switch oldTyped := old.(type) {
+	case map[string]interface{}:
+		if newTyped, ok := new.(map[string]interface{}); ok {
+			compareSections(oldTyped, newTyped, path, diff)
+		}
+	case []interface{}:
+		if newTyped, ok := new.([]interface{}); ok {
+			compareArrays(oldTyped, newTyped, path, diff)
+		}
+	default:
+		if !reflect.DeepEqual(old, new) {
+			change := Change{
+				Path:    path,
+				Old:     old,
+				New:     new,
+				Type:    Modified,
+				Section: getSection(path),
+			}
+			change.Severity = assessChangeSeverity(change)
+			diff.Modified = append(diff.Modified, change)
+		}
+	}
+}
+
+// compareArrays compares arrays with special handling for reordering
+func compareArrays(old, new []interface{}, basePath string, diff *ConfigDiff) {
+	// Try to match items by key if they have one
+	oldByKey := indexArrayByKey(old)
+	newByKey := indexArrayByKey(new)
+
+	// Find added, removed, and modified items
+	for key, oldValue := range oldByKey {
+		if newValue, exists := newByKey[key]; exists {
+			// Compare the items
+			itemPath := fmt.Sprintf("%s[%s]", basePath, key)
+			compareValues(oldValue, newValue, itemPath, diff)
+		} else {
+			// Removed
+			change := Change{
+				Path:    fmt.Sprintf("%s[%s]", basePath, key),
+				Old:     oldValue,
+				Type:    Removed,
+				Section: getSection(basePath),
+			}
+			change.Severity = assessChangeSeverity(change)
+			diff.Removed = append(diff.Removed, change)
+		}
+	}
+
+	for key, newValue := range newByKey {
+		if _, exists := oldByKey[key]; !exists {
+			// Added
+			change := Change{
+				Path:    fmt.Sprintf("%s[%s]", basePath, key),
+				New:     newValue,
+				Type:    Added,
+				Section: getSection(basePath),
+			}
+			change.Severity = assessChangeSeverity(change)
+			diff.Added = append(diff.Added, change)
+		}
+	}
+}
+
+// indexArrayByKey creates a map from array items to their keys
+func indexArrayByKey(arr []interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+
+	for i, item := range arr {
+		if itemMap, ok := item.(map[string]interface{}); ok {
+			// Try to find a unique key
+			if name, ok := itemMap["name"].(string); ok {
+				result[name] = item
+				continue
+			}
+		}
+		// Fallback to index
+		result[fmt.Sprintf("%d", i)] = item
+	}
+
+	return result
+}
+
+// assessChangeSeverity determines the severity of a change
+func assessChangeSeverity(change Change) string {
+	path := strings.ToLower(change.Path)
+
+	// Critical changes
+	if strings.Contains(path, "interfaces") &&
+		(strings.Contains(path, "zone") || strings.Contains(path, "gateway")) {
+		return "critical"
+	}
+	if strings.Contains(path, "policies") && change.Type == Removed {
+		return "critical"
+	}
+	if strings.Contains(path, "schema_version") {
+		return "critical"
+	}
+
+	// Warning changes
+	if strings.Contains(path, "policies") && change.Type == Modified {
+		return "warning"
+	}
+	if strings.Contains(path, "ipset") {
+		return "warning"
+	}
+	if strings.Contains(path, "nat") {
+		return "warning"
+	}
+
+	// Default to info
+	return "info"
+}
+
+// getSection extracts the top-level section from a path
+func getSection(path string) string {
+	parts := strings.SplitN(path, ".", 2)
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return ""
+}
+
+// joinPath joins path parts
+func joinPath(parent, child string) string {
+	if parent == "" {
+		return child
+	}
+	return parent + "." + child
+}
+
+// calculateSummary calculates the diff summary
+func (cd *ConfigDiff) calculateSummary() {
+	sections := make(map[string]bool)
+
+	for _, change := range append(append(cd.Added, cd.Modified...), cd.Removed...) {
+		cd.Summary.TotalChanges++
+
+		sections[change.Section] = true
+
+		switch change.Severity {
+		case "critical":
+			cd.Summary.CriticalChanges++
+		case "warning":
+			cd.Summary.WarningChanges++
+		}
+
+		// Check for connectivity impact
+		if strings.Contains(change.Path, "interfaces") ||
+			strings.Contains(change.Path, "zones") ||
+			strings.Contains(change.Path, "routes") {
+			cd.Summary.HasConnectivity = true
+		}
+
+		// Check for security impact
+		if strings.Contains(change.Path, "policies") ||
+			strings.Contains(change.Path, "ipset") ||
+			strings.Contains(change.Path, "security") {
+			cd.Summary.HasSecurity = true
+		}
+	}
+
+	// Convert sections map to sorted slice
+	for section := range sections {
+		cd.Summary.AffectedSections = append(cd.Summary.AffectedSections, section)
+	}
+	sort.Strings(cd.Summary.AffectedSections)
+}
+
+// HasChanges returns true if there are any changes
+func (cd *ConfigDiff) HasChanges() bool {
+	return len(cd.Added) > 0 || len(cd.Modified) > 0 ||
+		len(cd.Removed) > 0 || len(cd.Moved) > 0
+}
+
+// GetChangesBySection returns changes grouped by section
+func (cd *ConfigDiff) GetChangesBySection() map[string][]Change {
+	sections := make(map[string][]Change)
+
+	for _, change := range cd.Added {
+		sections[change.Section] = append(sections[change.Section], change)
+	}
+	for _, change := range cd.Modified {
+		sections[change.Section] = append(sections[change.Section], change)
+	}
+	for _, change := range cd.Removed {
+		sections[change.Section] = append(sections[change.Section], change)
+	}
+	for _, change := range cd.Moved {
+		sections[change.Section] = append(sections[change.Section], change)
+	}
+
+	return sections
+}
+
+// String returns a human-readable summary of the diff
+func (cd *ConfigDiff) String() string {
+	var parts []string
+
+	if len(cd.Added) > 0 {
+		parts = append(parts, fmt.Sprintf("Added: %d", len(cd.Added)))
+	}
+	if len(cd.Modified) > 0 {
+		parts = append(parts, fmt.Sprintf("Modified: %d", len(cd.Modified)))
+	}
+	if len(cd.Removed) > 0 {
+		parts = append(parts, fmt.Sprintf("Removed: %d", len(cd.Removed)))
+	}
+	if len(cd.Moved) > 0 {
+		parts = append(parts, fmt.Sprintf("Moved: %d", len(cd.Moved)))
+	}
+
+	if cd.Summary.CriticalChanges > 0 {
+		parts = append(parts, fmt.Sprintf("Critical: %d", cd.Summary.CriticalChanges))
+	}
+
+	result := strings.Join(parts, ", ")
+
+	if cd.Summary.HasConnectivity {
+		result += " [Connectivity Impact]"
+	}
+	if cd.Summary.HasSecurity {
+		result += " [Security Impact]"
+	}
+
+	return result
+}
+
+// ToJSON converts the diff to JSON for API responses
+func (cd *ConfigDiff) ToJSON() (string, error) {
+	data, err := json.MarshalIndent(cd, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }

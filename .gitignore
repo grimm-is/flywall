@@ -1,12 +1,14 @@
 # Build artifacts
 build/
 dist/
+bin/
 
 # Binaries in root (should be in build/)
 /flywall
 /flywall-linux
 /vmbuilder
 /initramfs.cpio
+/gen-config-docs
 
 # Test artifacts
 test_mount_*/
@@ -67,3 +69,12 @@ ui/src/locales/keys_found.txt
 flywall-scanner
 *.db
 
+
+# Hugo Docs
+docs-site/public/
+docs-site/resources/
+main
+
+.mordecai
+.mordecai.yaml
+tools/dev/

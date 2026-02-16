@@ -1,14 +1,16 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package dhcp
 
 import (
 	"encoding/binary"
 	"encoding/hex"
-	"fmt"
 	"net"
 	"strconv"
 	"strings"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
+	"grimm.is/flywall/internal/errors"
 )
 
 // parseOption parses a DHCP option from key-value configuration.
@@ -162,13 +164,13 @@ func parseOption(key, value string) (dhcpv4.Option, error) {
 	case "domain_search":
 		// Domain search list (option 119) requires RFC 1035 label encoding.
 		// Not implemented due to encoding complexity; use domain option instead.
-		return dhcpv4.Option{}, fmt.Errorf("domain_search option not implemented; use domain option instead")
+		return dhcpv4.Option{}, errors.New(errors.KindValidation, "domain_search option not implemented; use domain option instead")
 	default:
 		// Try to parse numeric code
 		if c, err := strconv.Atoi(key); err == nil && c > 0 && c <= 255 {
 			code = dhcpv4.GenericOptionCode(c)
 		} else {
-			return dhcpv4.Option{}, fmt.Errorf("unknown DHCP option code: %s", key)
+			return dhcpv4.Option{}, errors.Errorf(errors.KindValidation, "unknown DHCP option code: %s", key)
 		}
 	}
 
@@ -246,6 +248,13 @@ func parseOption(key, value string) (dhcpv4.Option, error) {
 			dhcpv4.GenericOptionCode(121), // Classless Static Route
 			dhcpv4.GenericOptionCode(249): // MS Classless Static Route
 			typePrefix = "hex"
+			// Special handling for classless static routes if not prefixed with hex
+			if !strings.Contains(value, ":") {
+				// If it looks like a list of routes, we could auto-detect, but for now
+				// let's require hex: or manually encode if it's a common format.
+				// For Phase 1, we'll keep it as hex but allow the user to provide
+				// strings like "192.168.10.0/24,192.168.1.1" in a future update.
+			}
 
 		// Client Identifier can be various formats, default to hex
 		case dhcpv4.OptionClientIdentifier,
@@ -264,7 +273,7 @@ func parseOption(key, value string) (dhcpv4.Option, error) {
 	case "ip":
 		ips := parseIPList(val)
 		if len(ips) == 0 {
-			return dhcpv4.Option{}, fmt.Errorf("invalid IP(s): %s", val)
+			return dhcpv4.Option{}, errors.Errorf(errors.KindValidation, "invalid IP(s): %s", val)
 		}
 		// Special handling for NTP (returns explicit OptionNTPServers) vs generic
 		if code == dhcpv4.OptionNTPServers {
@@ -279,7 +288,7 @@ func parseOption(key, value string) (dhcpv4.Option, error) {
 			} else {
 				// DHCPv4 options typically only support IPv4 (4 bytes)
 				// Some might support 16 bytes, but let's stick to IPv4 for safety
-				return dhcpv4.Option{}, fmt.Errorf("DHCPv4 option requires IPv4 address: %s", ip)
+				return dhcpv4.Option{}, errors.Errorf(errors.KindValidation, "DHCPv4 option requires IPv4 address: %s", ip)
 			}
 		}
 		return dhcpv4.OptGeneric(code, b), nil
@@ -290,21 +299,21 @@ func parseOption(key, value string) (dhcpv4.Option, error) {
 	case "hex":
 		b, err := hexDecode(val) // Helper needed
 		if err != nil {
-			return dhcpv4.Option{}, fmt.Errorf("invalid hex string: %w", err)
+			return dhcpv4.Option{}, errors.Wrap(err, errors.KindValidation, "invalid hex string")
 		}
 		return dhcpv4.OptGeneric(code, b), nil
 
 	case "u8":
 		i, err := strconv.ParseUint(val, 10, 8)
 		if err != nil {
-			return dhcpv4.Option{}, fmt.Errorf("invalid u8 value: %v", err)
+			return dhcpv4.Option{}, errors.Errorf(errors.KindValidation, "invalid u8 value: %v", err)
 		}
 		return dhcpv4.OptGeneric(code, []byte{uint8(i)}), nil
 
 	case "u16":
 		i, err := strconv.ParseUint(val, 10, 16)
 		if err != nil {
-			return dhcpv4.Option{}, fmt.Errorf("invalid u16 value: %v", err)
+			return dhcpv4.Option{}, errors.Errorf(errors.KindValidation, "invalid u16 value: %v", err)
 		}
 		b := make([]byte, 2)
 		binary.BigEndian.PutUint16(b, uint16(i))
@@ -313,7 +322,7 @@ func parseOption(key, value string) (dhcpv4.Option, error) {
 	case "u32":
 		i, err := strconv.ParseUint(val, 10, 32)
 		if err != nil {
-			return dhcpv4.Option{}, fmt.Errorf("invalid u32 value: %v", err)
+			return dhcpv4.Option{}, errors.Errorf(errors.KindValidation, "invalid u32 value: %v", err)
 		}
 		b := make([]byte, 4)
 		binary.BigEndian.PutUint32(b, uint32(i))
@@ -322,7 +331,7 @@ func parseOption(key, value string) (dhcpv4.Option, error) {
 	case "bool":
 		bVal, err := strconv.ParseBool(val)
 		if err != nil {
-			return dhcpv4.Option{}, fmt.Errorf("invalid boolean value: %v", err)
+			return dhcpv4.Option{}, errors.Errorf(errors.KindValidation, "invalid boolean value: %v", err)
 		}
 		if bVal {
 			return dhcpv4.OptGeneric(code, []byte{1}), nil
@@ -330,7 +339,7 @@ func parseOption(key, value string) (dhcpv4.Option, error) {
 		return dhcpv4.OptGeneric(code, []byte{0}), nil
 	}
 
-	return dhcpv4.Option{}, fmt.Errorf("parsing logic error for key: %s", key)
+	return dhcpv4.Option{}, errors.Errorf(errors.KindInternal, "parsing logic error for key: %s", key)
 }
 
 // hexDecode decodes a hex string, allowing optional "0x" prefix and skipping spaces/colons

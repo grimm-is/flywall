@@ -5,19 +5,33 @@
     // System data
     let systemStatus = $derived($status || {});
     let uplinks = $derived($config?.uplinks || []);
-    let users = $derived([]); // TODO: Load from API
+    let users = $state([]);
+
+    $effect(() => {
+        api.getUsers().then((u) => {
+            if (Array.isArray(u)) users = u;
+        });
+    });
 
     async function reboot() {
         if (confirm("Reboot the router? Active connections will be dropped.")) {
-            // await api.reboot();
-            alert("Reboot initiated...");
+            try {
+                await api.reboot();
+                alert("Reboot command sent successfully.");
+            } catch (e) {
+                alert("Failed to reboot: " + e.message);
+            }
         }
     }
 
     async function enterSafeMode() {
         if (confirm("Enter Safe Mode? This will disable all firewall rules.")) {
-            // await api.enterSafeMode();
-            alert("Entering safe mode...");
+            try {
+                await api.enterSafeMode();
+                alert("Entering safe mode...");
+            } catch (e) {
+                alert("Failed to enter safe mode: " + e.message);
+            }
         }
     }
 </script>
@@ -61,10 +75,10 @@
                     <span>Users & Access</span>
                 </header>
                 <div class="card-content">
-                    <p class="stat-line">1 Admin configured</p>
-                    <a href="/system/settings" class="btn-link"
-                        >Manage Users →</a
-                    >
+                    <p class="stat-line">
+                        {users.length} User{users.length === 1 ? "" : "s"} configured
+                    </p>
+                    <a href="/system/users" class="btn-link">Manage Users →</a>
                 </div>
             </article>
 
@@ -93,16 +107,22 @@
                     <span>Disaster Recovery</span>
                 </header>
                 <div class="card-content">
-                    <div class="button-group">
-                        <button class="btn-secondary">
-                            <Icon name="download" size={16} />
-                            Backup
-                        </button>
-                        <button class="btn-secondary">
-                            <Icon name="upload" size={16} />
-                            Restore
-                        </button>
-                    </div>
+                    <p class="stat-line">Manage system backups</p>
+                    <a href="/system/backups" class="btn-link"
+                        >Manage Backups →</a
+                    >
+                </div>
+            </article>
+
+            <!-- Audit Log -->
+            <article class="system-card">
+                <header class="card-header">
+                    <Icon name="history" size={20} />
+                    <span>Audit Log</span>
+                </header>
+                <div class="card-content">
+                    <p class="stat-line">View activity history</p>
+                    <a href="/system/audit" class="btn-link">View Logs →</a>
                 </div>
             </article>
 
@@ -113,8 +133,10 @@
                     <span>Power</span>
                 </header>
                 <div class="card-content">
+                    Uptime: {systemStatus.uptime || "Unknown"}
+
                     <p class="stat-line">
-                        Uptime: {systemStatus.uptime || "Unknown"}
+                        Version: {systemStatus.version || "Unknown"}
                     </p>
                     <div class="button-group">
                         <button class="btn-warning" onclick={reboot}>

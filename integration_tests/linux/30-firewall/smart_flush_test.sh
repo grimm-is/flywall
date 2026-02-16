@@ -15,7 +15,7 @@ require_binary
 cleanup_on_exit
 
 # Use a config that enables API (for reload) and Integrity Monitoring
-CONFIG_FILE="/tmp/smart_flush_test.hcl"
+CONFIG_FILE="/tmp/smart_flush_test_$$.hcl"
 cat > "$CONFIG_FILE" <<EOF
 schema_version = "1.0"
 
@@ -35,6 +35,7 @@ api {
     require_auth = false
 }
 
+
 dns {
     # Enable Egress Filter to create the "dns_allowed_v4" set
     egress_filter = true
@@ -44,6 +45,7 @@ EOF
 plan 3
 
 # Start CTL
+export FLYWALL_LOG_LEVEL=debug
 start_ctl "$CONFIG_FILE"
 start_api -listen 127.0.0.1:8092
 dilated_sleep 2
@@ -73,9 +75,9 @@ else
     # We use the SAME config for simplicity, just triggering the reload path
     diag "Triggering config reload..."
     curl -X POST http://127.0.0.1:8092/api/config/apply
-    
+
     dilated_sleep 2 # Wait for reload
-    
+
     if check_ip_in_set "10.0.0.1" "dns_allowed_v4"; then
         pass "Dynamic IP persisted across reload"
     else
@@ -119,33 +121,40 @@ else
         fi
         dilated_sleep 0.5
     done
-    
+
     if [ $restored -eq 0 ]; then
         fail "Integrity monitor failed to restore ruleset"
     else
         diag "Ruleset restored. Checking dynamic set restoration (via callback)..."
         # Since restore happens async, we might need a moment for the callback to fire and populate sets
         dilated_sleep 1
-        
+
         # Check if IPs are back
         # Note: 10.0.0.1 and 10.0.0.2 were manually added via 'nft'.
         # They were NOT added via 'AuthorizeIP' in the DNS service.
         # So they are NOT in the DNS cache.
         # Therefore, 'SyncFirewall' will NOT restore them.
         # This is CORRECT behavior. We only restore what the DNS service knows about.
-        
+
         # To verify callback works, we must inject an IP into the DNS service cache first (or use a real DNS query).
         # But we can't easily injection into running service from here without dig.
         # Wait, we can test that the SET exists at least.
-        
+
         if nft list set inet flywall dns_allowed_v4 >/dev/null 2>&1; then
              pass "Ruleset and dynamic sets restored"
         else
              fail "Dynamic set missing after restore"
         fi
-        
-        # TODO: Ideally we verify 'SyncFirewall' actually ran.
-        # We can check logs.
+
+        # Verify 'SyncFirewall' actually ran by checking logs
+        # We look for the log message indicating synchronization started or completed
+        if grep -q "SyncFirewall" "$CTL_LOG"; then
+             pass "SyncFirewall execution verified in logs"
+        else
+             fail "SyncFirewall execution NOT found in logs"
+             echo "# Last 20 lines of CTL_LOG:"
+             tail -n 20 "$CTL_LOG"
+        fi
     fi
 fi
 

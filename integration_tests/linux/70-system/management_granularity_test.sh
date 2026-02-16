@@ -130,15 +130,21 @@ cleanup_test() {
     ip netns del client_lan1 2>/dev/null
     ip netns del client_admin 2>/dev/null
     ip netns del client_guest 2>/dev/null
+    ip netns del client_wan 2>/dev/null
     ip link del veth_eth1 2>/dev/null
     ip link del veth_eth2 2>/dev/null
     ip link del veth_eth3 2>/dev/null
-    ip link del veth_eth1 2>/dev/null
-    ip link del veth_eth2 2>/dev/null
-    ip link del veth_eth3 2>/dev/null
-
-    # Restore config if needed (handled by runner usually)
+    ip link del veth_eth0 2>/dev/null
 }
+
+custom_cleanup() {
+    cleanup_test
+    # Run generic cleanup from common.sh if available
+    if command -v _perform_leak_check_and_cleanup >/dev/null; then
+        _perform_leak_check_and_cleanup
+    fi
+}
+trap 'custom_cleanup' EXIT INT TERM
 
 # 3. Run Flywall and Tests
 setup_custom_topology
@@ -187,11 +193,11 @@ check_rule '"veth_eth2" \. (80|443)' "Override: HTTP Port 80/443 allowed (concat
 # Test 3: Implicit Zone (veth_eth3)
 diag "Testing Implicit Zone (veth_eth3)..."
 # Check chain existence
-echo "$NFT_RULES" | grep 'chain policy_veth_eth3_WAN' >/dev/null
-ok $? "Implicit Zone chain 'policy_veth_eth3_WAN' created"
+echo "$NFT_RULES" | grep 'chain policy_veth_eth3_wan' >/dev/null
+ok $? "Implicit Zone chain 'policy_veth_eth3_wan' created"
 
-# Check jump rule (vmap syntax: "veth_eth3" . "veth_eth0" : jump policy_veth_eth3_WAN)
-check_rule '"veth_eth3" .* : jump policy_veth_eth3_WAN' "Jump rule for Implicit Zone created (vmap)"
+# Check jump rule (vmap syntax: "veth_eth3" . "veth_eth0" : jump policy_veth_eth3_wan)
+check_rule '"veth_eth3" .* : jump policy_veth_eth3_wan' "Jump rule for Implicit Zone created (vmap)"
 
 cleanup_test
 exit 0

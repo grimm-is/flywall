@@ -3,7 +3,7 @@
 name="flywall-ctl"
 description="Flywall Firewall Control Plane"
 command="/usr/local/bin/flywall"
-command_args="ctl /etc/flywall/flywall.hcl"
+command_args="ctl /opt/flywall/etc/flywall.hcl"
 command_background=true
 pidfile="/run/flywall-ctl.pid"
 

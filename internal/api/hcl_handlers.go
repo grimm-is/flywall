@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -81,17 +83,22 @@ type SystemSettingsRequest struct {
 
 // handleSystemSettings handles global system settings updates
 func (s *Server) handleSystemSettings(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("DEBUG: Entering handleSystemSettings")
 	if !s.RequireControlPlane(w, r) {
 		return
 	}
 
 	var req SystemSettingsRequest
 	if !BindJSON(w, r, &req) {
+		s.logger.Info("DEBUG: BindJSON failed")
 		return
 	}
+	s.logger.Info("DEBUG: BindJSON success")
 
 	// 1. Get current Config
+	s.logger.Info("DEBUG: Calling GetConfig")
 	cfg, err := s.client.GetConfig()
+	s.logger.Info("DEBUG: GetConfig returned", "error", err)
 	if err != nil {
 		WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to get config: "+err.Error())
 		return

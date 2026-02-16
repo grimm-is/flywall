@@ -43,25 +43,27 @@ interface "lo" {
 }
 
 zone "local" {
-  interfaces = ["lo"]
+  match {
+    interface = "lo"
+  }
 }
 
 api {
   enabled = true
-  listen = "0.0.0.0:8080"
+  listen = "0.0.0.0:$TEST_API_PORT"
   require_auth = false
 }
 EOF
 
 # Test 1: Start system
 start_ctl "$TEST_CONFIG"
-start_api -listen :8080
+start_api -listen :$TEST_API_PORT
 ok 0 "System started with API"
-dilated_sleep 2
+wait_for_port $TEST_API_PORT 10
 
 # Test 2: GET QoS config (should return empty or default)
 diag "Test 2: GET QoS config"
-HTTP_CODE=$(curl -s -o /tmp/qos.json -w "%{http_code}" "http://127.0.0.1:8080/api/config/qos")
+HTTP_CODE=$(curl -s -o /tmp/qos_$$.json -w "%{http_code}" "http://127.0.0.1:$TEST_API_PORT/api/config/qos")
 if [ "$HTTP_CODE" -eq 200 ]; then
     ok 0 "GET /api/config/qos returns 200"
 else
@@ -70,7 +72,7 @@ fi
 
 # Test 3: POST QoS config (create policy)
 diag "Test 3: Create QoS policy"
-RESPONSE=$(curl -s -X POST "http://127.0.0.1:8080/api/config/qos" \
+RESPONSE=$(curl -s -X POST "http://127.0.0.1:$TEST_API_PORT/api/config/qos" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: test-bypass" \
   -d '{
@@ -92,7 +94,7 @@ fi
 
 # Test 4: Verify policy persisted
 diag "Test 4: Verify QoS policy persisted"
-GET_RESPONSE=$(curl -s "http://127.0.0.1:8080/api/config/qos")
+GET_RESPONSE=$(curl -s "http://127.0.0.1:$TEST_API_PORT/api/config/qos")
 if echo "$GET_RESPONSE" | grep -q "test-qos"; then
     ok 0 "QoS policy persisted"
 else
@@ -102,7 +104,7 @@ fi
 
 # Test 5: Sad path - invalid policy (negative bandwidth)
 diag "Test 5: Invalid bandwidth (sad path)"
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:8080/api/config/qos" \
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:$TEST_API_PORT/api/config/qos" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: test-bypass" \
   -d '{
@@ -117,7 +119,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:808
 if [ "$HTTP_CODE" -eq 400 ]; then
     ok 0 "Invalid bandwidth returns 400"
 else
-    ok 0 "Invalid bandwidth returns $HTTP_CODE (validation varies)" severity skip
+    ok 1 "Invalid bandwidth returns $HTTP_CODE (validation varies)" severity fail expected "400" actual "$HTTP_CODE"
 fi
 
 diag "QoS API test completed"

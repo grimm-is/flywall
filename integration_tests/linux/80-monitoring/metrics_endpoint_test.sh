@@ -37,7 +37,7 @@ schema_version = "1.0"
 
 api {
   enabled = false
-  listen = "127.0.0.1:8080"
+  listen = "127.0.0.1:$TEST_API_PORT"
 }
 
 # Removed managed 'lo' to avoid locking out API
@@ -56,8 +56,8 @@ dilated_sleep 1
 # 3. Scrape /metrics endpoint (doesn't require auth)
 diag "Scraping /metrics endpoint..."
 METRICS_OUTPUT=$(mktemp_compatible "metrics_output.txt")
-curl -s http://127.0.0.1:8080/metrics > "$METRICS_OUTPUT" 2>&1
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/metrics)
+curl -s http://127.0.0.1:$TEST_API_PORT/metrics > "$METRICS_OUTPUT" 2>&1
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:$TEST_API_PORT/metrics)
 
 if [ "$HTTP_CODE" = "200" ]; then
     ok 0 "Metrics endpoint returns HTTP 200"

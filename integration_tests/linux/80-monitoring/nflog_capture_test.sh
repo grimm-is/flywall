@@ -16,12 +16,12 @@ diag "Starting NFLog Capture Test..."
 # Cleanup trap
 cleanup() {
     pkill -f "flywall ctl" 2>/dev/null || true
-    rm -f /tmp/nflog.hcl /tmp/flywall.log
+    rm -f /tmp/nflog_$$.hcl /tmp/flywall_$$.log
 }
 trap cleanup EXIT
 
 # 1. Create config with learning enabled
-cat > /tmp/nflog.hcl <<EOF
+cat > /tmp/nflog_$$.hcl <<EOF
 schema_version = "1.1"
 
 
@@ -34,7 +34,7 @@ rule_learning {
 
 api {
     enabled = true
-    listen = "0.0.0.0:8080"
+  listen = "0.0.0.0:$TEST_API_PORT"
 }
 
 features {
@@ -46,7 +46,7 @@ EOF
 ok 0 "Config created with learning enabled"
 
 # 2. Start control plane
-start_ctl /tmp/nflog.hcl
+start_ctl /tmp/nflog_$$.hcl
 ok 0 "Control plane started"
 
 # 3. Start API
@@ -66,7 +66,7 @@ fi
 
 # 5. Check learning stats via API
 diag "Checking learning service stats..."
-STATS=$(curl -s http://127.0.0.1:8080/api/learning/stats 2>/dev/null)
+STATS=$(curl -s http://127.0.0.1:$TEST_API_PORT/api/learning/stats 2>/dev/null)
 if echo "$STATS" | grep -q "service_running"; then
     diag "Learning stats: $STATS"
     ok 0 "Learning service stats available"
@@ -74,7 +74,7 @@ else
     diag "Stats response: $STATS"
     # May need auth - check logs
     diag "Log tail:"
-    tail -10 /tmp/flywall.log
+    tail -10 /tmp/flywall_$$.log
     ok 0 "Learning stats endpoint exists (auth may be required)"
 fi
 

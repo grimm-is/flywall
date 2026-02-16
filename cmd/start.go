@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
@@ -11,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"grimm.is/flywall/internal/install"
+
 	"grimm.is/flywall/internal/brand"
 	"grimm.is/flywall/internal/config"
 )
@@ -20,15 +24,16 @@ func RunStart(configFile string) error {
 	// 0. Pre-flight check: verify config file exists before forking
 	// This gives immediate feedback rather than failing in background
 	if configFile == "" {
-		configFile = filepath.Join(brand.DefaultConfigDir, brand.ConfigFileName)
+		configFile = filepath.Join(install.DefaultConfigDir, brand.ConfigFileName)
 	}
 	if _, err := os.Stat(configFile); os.IsNotExist(err) {
 		return fmt.Errorf("configuration file not found: %s\n\n"+
 			"To create a configuration file, run:\n"+
 			"  %s setup\n\n"+
 			"Or create a minimal config manually:\n"+
-			"  mkdir -p /etc/flywall\n"+
-			"  echo 'schema_version = \"1.0\"' > /etc/flywall/flywall.hcl",
+			"Or create a minimal config manually:\n"+
+			"  mkdir -p "+install.DefaultConfigDir+"\n"+
+			"  echo 'schema_version = \"1.0\"' > "+filepath.Join(install.DefaultConfigDir, brand.ConfigFileName),
 			configFile, brand.BinaryName)
 	}
 
@@ -39,7 +44,7 @@ func RunStart(configFile string) error {
 	}
 
 	// 1. Check for existing PID file
-	runDir := brand.GetRunDir()
+	runDir := install.GetRunDir()
 	pidFile := filepath.Join(runDir, brand.LowerName+".pid")
 
 	if _, err := os.Stat(pidFile); err == nil {
@@ -68,16 +73,32 @@ func RunStart(configFile string) error {
 		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
+	// Parse config to check for custom log_dir and state_dir
+	var logDir = install.GetLogDir()
+	var stateDirOverride string
+
+	if configFile != "" {
+		if res, err := config.LoadFileWithOptions(configFile, config.DefaultLoadOptions()); err == nil {
+			if res.Config.LogDir != "" {
+				logDir = res.Config.LogDir
+			}
+			if res.Config.StateDir != "" {
+				stateDirOverride = res.Config.StateDir
+			}
+		}
+	}
+
 	// We start 'ctl' command. 'ctl' will handle spawning 'api'.
 	args := []string{"ctl"}
+	if stateDirOverride != "" {
+		args = append(args, "-state-dir", stateDirOverride)
+	}
 	if configFile != "" {
 		args = append(args, configFile)
 	}
 
 	cmd := exec.Command(exe, args...)
 
-	// 3. Setup logging
-	logDir := brand.GetLogDir()
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return fmt.Errorf("failed to create log directory: %w", err)
 	}
@@ -132,6 +153,12 @@ func RunStart(configFile string) error {
 				}
 			}
 		}
+		// The provided change was syntactically incorrect and could not be applied as-is.
+		// It seems to be attempting to introduce a 'foreground' flag and a call to 'RunCtl'.
+		// Since 'RunCtl' is not defined in this file and the snippet was malformed,
+		// I'm preserving the original logic here.
+		// If you intended to add a new 'RunCtl' call or modify the flow based on a 'foreground' flag,
+		// please provide a complete and syntactically correct code block.
 		if err != nil {
 			return fmt.Errorf("daemon failed to start: %w", err)
 		}

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package firewall
 
 import "grimm.is/flywall/internal/config"
@@ -26,6 +28,7 @@ type Config struct {
 	UPnP              *config.UPnPConfig
 	System            *config.SystemConfig
 	Replication       *config.ReplicationConfig
+	QoSPolicies       []config.QoSPolicy
 }
 
 // FromGlobalConfig extracts the firewall configuration from the global config.
@@ -60,5 +63,6 @@ func FromGlobalConfig(g *config.Config) *Config {
 		UPnP:              g.UPnP,
 		System:            g.System,
 		Replication:       g.Replication,
+		QoSPolicies:       g.QoSPolicies,
 	}
 }

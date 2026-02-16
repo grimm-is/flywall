@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package monitor
 
 import (
@@ -14,22 +16,26 @@ func TestMonitor(t *testing.T) {
 	originalPing := CheckPingFunc
 	defer func() { CheckPingFunc = originalPing }()
 
-	mockPing := func(ip string) error {
+	mockPing := func(ip string) (time.Duration, error) {
 		if ip == "8.8.8.8" {
-			return nil // Success
+			return 10 * time.Millisecond, nil // Success
 		}
 		if ip == "1.1.1.1" {
-			return errors.New("timeout") // Failure
+			return 0, errors.New("timeout") // Failure
 		}
-		return errors.New("unknown host")
+		return 0, errors.New("unknown host")
 	}
 	CheckPingFunc = mockPing
 
 	// Test directly calling checkPing
-	if err := checkPing("8.8.8.8"); err != nil {
+	lat, err := checkPing("8.8.8.8")
+	if err != nil {
 		t.Errorf("expected success for 8.8.8.8, got %v", err)
 	}
-	if err := checkPing("1.1.1.1"); err == nil {
+	if lat != 10*time.Millisecond {
+		t.Errorf("expected 10ms latency, got %v", lat)
+	}
+	if _, err := checkPing("1.1.1.1"); err == nil {
 		t.Error("expected failure for 1.1.1.1")
 	}
 
@@ -69,7 +75,7 @@ func TestMonitor(t *testing.T) {
 
 func TestCheckPingReal(t *testing.T) {
 	// Call the real function to cover its lines, even if it fails due to permissions
-	err := CheckPingFunc("127.0.0.1")
+	_, err := CheckPingFunc("127.0.0.1")
 	if err != nil {
 		t.Logf("Real ping failed (expected in unprivileged test): %v", err)
 	}

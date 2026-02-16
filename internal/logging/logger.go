@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package logging
 
 import (
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"grimm.is/flywall/internal/clock"
+	"grimm.is/flywall/internal/errors"
 )
 
 // Level represents log severity levels.
@@ -130,6 +133,31 @@ func (l *Logger) WithFields(fields map[string]any) *Logger {
 	}
 }
 
+// WithError returns a logger with error context (kind and attributes).
+func (l *Logger) WithError(err error) *Logger {
+	if err == nil {
+		return l
+	}
+
+	args := []any{"error", err.Error()}
+
+	kind := errors.GetKind(err)
+	if kind != errors.KindUnknown {
+		args = append(args, "kind", kind.String())
+	}
+
+	attrs := errors.GetAttributes(err)
+	for k, v := range attrs {
+		args = append(args, k, v)
+	}
+
+	return &Logger{
+		Logger: l.Logger.With(args...),
+		level:  l.level,
+		output: l.output,
+	}
+}
+
 // Audit logs an audit event (always logged regardless of level).
 func (l *Logger) Audit(action, resource string, details map[string]any) {
 	args := []any{
@@ -192,4 +220,9 @@ func Audit(action, resource string, details map[string]any) {
 // WithComponent returns a component-scoped logger.
 func WithComponent(name string) *Logger {
 	return Default().WithComponent(name)
+}
+
+// WithError returns a logger with error context.
+func WithError(err error) *Logger {
+	return Default().WithError(err)
 }

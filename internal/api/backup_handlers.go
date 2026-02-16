@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -9,22 +11,7 @@ import (
 	"grimm.is/flywall/internal/config"
 )
 
-// --- Backup/Restore and Reboot Handlers ---
-
-// handleReboot handles system reboot request
-func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
-	if s.client == nil {
-		WriteErrorCtx(w, r, http.StatusServiceUnavailable, "Control plane not connected")
-		return
-	}
-
-	if err := s.client.Reboot(); err != nil {
-		WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
-}
+// --- Backup Handlers ---
 
 // handleBackup exports the current configuration as JSON
 func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
@@ -47,31 +34,6 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 		WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
-}
-
-// handleRestore imports a configuration from JSON
-func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
-	// Parse the uploaded config
-	var cfg config.Config
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		WriteErrorCtx(w, r, http.StatusBadRequest, "Invalid configuration: "+err.Error())
-		return
-	}
-
-	// Apply the config
-	if s.client != nil {
-		if err := s.client.ApplyConfig(&cfg); err != nil {
-			WriteErrorCtx(w, r, http.StatusInternalServerError, "Failed to apply config: "+err.Error())
-			return
-		}
-	} else {
-		// Update in-memory config
-		s.configMu.Lock()
-		*s.Config = cfg
-		s.configMu.Unlock()
-	}
-
-	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
 // --- Scheduler Handlers ---

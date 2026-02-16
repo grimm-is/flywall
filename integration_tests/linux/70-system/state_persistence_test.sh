@@ -27,7 +27,7 @@ fi
 
 cleanup_persist() {
     ip netns del client 2>/dev/null || true
-    ip link del veth-lan 2>/dev/null || true
+    ip link del $V_LAN 2>/dev/null || true
     rm -f "$TEST_CONFIG"
     stop_ctl
 }
@@ -38,35 +38,43 @@ plan 4
 
 diag "Setting up test topology..."
 ip netns add client
-ip link add veth-lan type veth peer name veth-client
-ip link set veth-client netns client
-ip link set veth-lan up
-ip addr add 10.99.99.1/24 dev veth-lan
+# Use short fixed names - tests run serially in isolated VMs
+V_LAN="veth-lan"
+V_CLIENT="veth-cli"
+ip link add $V_LAN type veth peer name $V_CLIENT
+ip link set $V_CLIENT netns client
+ip link set $V_LAN up
+ip addr add 10.99.99.1/24 dev $V_LAN
 
 # Configure Flywall
 TEST_CONFIG=$(mktemp_compatible state_persist.hcl)
+# Pick random port
+API_PORT=$TEST_API_PORT
+
 cat > "$TEST_CONFIG" <<EOF
 schema_version = "1.0"
 
-interface "veth-lan" {
+interface "$V_LAN" {
   zone = "lan"
   ipv4 = ["10.99.99.1/24"]
 }
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "$V_LAN"
+  }
 }
 
 api {
   enabled = true
-  listen  = "0.0.0.0:8080"
+  listen  = "0.0.0.0:$API_PORT"
   require_auth = false
 }
 
 dhcp {
   enabled = true
   scope "test" {
-    interface = "veth-lan"
+    interface = "$V_LAN"
     range_start = "10.99.99.100"
     range_end = "10.99.99.200"
     router = "10.99.99.1"
@@ -98,21 +106,21 @@ wait_for_log "Control plane listening" "$CTL_LOG"
 
 # Start API server explicitly
 export FLYWALL_NO_SANDBOX=1
-start_api -listen :8080
+start_api -listen :$API_PORT
 
 ok 0 "Control plane and API started"
 
 # 2. Request Lease via Client
 diag "Requesting DHCP lease..."
 ip netns exec client ip link set lo up
-ip netns exec client ip link set veth-client up
+ip netns exec client ip link set $V_CLIENT up
 
 # Start DHCP client
 if [ "$DHCP_CLIENT" = "udhcpc" ]; then
-    ip netns exec client udhcpc -i veth-client -n -q -f &
+    ip netns exec client udhcpc -i $V_CLIENT -n -q -f &
     CLIENT_PID=$!
 else
-    ip netns exec client dhclient -v veth-client &
+    ip netns exec client dhclient -v $V_CLIENT &
     CLIENT_PID=$!
 fi
 
@@ -120,7 +128,7 @@ fi
 diag "Waiting for IP assignment..."
 count=0
 while [ $count -lt 30 ]; do
-    CLIENT_IP=$(ip netns exec client ip addr show veth-client | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+    CLIENT_IP=$(ip netns exec client ip addr show $V_CLIENT | grep "inet " | awk '{print $2}' | cut -d/ -f1)
     [ -n "$CLIENT_IP" ] && break
     sleep 1
     count=$((count+1))
@@ -135,7 +143,7 @@ fi
 
 # 3. Verify Lease in API (Before Restart)
 dilated_sleep 1
-LEASES_JSON_1=$(curl -s http://127.0.0.1:8080/api/leases)
+LEASES_JSON_1=$(curl -s http://127.0.0.1:$API_PORT/api/leases)
 if echo "$LEASES_JSON_1" | grep -q "$CLIENT_IP"; then
     ok 0 "Lease visible via API (Pre-Restart)"
 else
@@ -145,6 +153,7 @@ fi
 
 # 4. Restart Control Plane
 diag "Restarting control plane..."
+dilated_sleep 3
 stop_ctl
 cleanup_processes
 
@@ -157,14 +166,16 @@ wait_for_log "Control plane listening" "$CTL_LOG"
 
 # Restart API server
 export FLYWALL_NO_SANDBOX=1
-start_api -listen :8080
+start_api -listen :$API_PORT
+
+# Wait a moment for services to be fully ready
+dilated_sleep 2
 
 # 5. Verify Lease in API (After Restart)
-LEASES_JSON_2=$(curl -s http://127.0.0.1:8080/api/leases)
+LEASES_JSON_2=$(curl -s http://127.0.0.1:$API_PORT/api/leases)
 if echo "$LEASES_JSON_2" | grep -q "$CLIENT_IP"; then
     pass "Lease persisted via API (Post-Restart)"
 else
     diag "API Response: $LEASES_JSON_2"
     fail "Lease lost after restart"
 fi
-

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package setup
 
 import (
@@ -8,14 +10,16 @@ import (
 	"strings"
 	"text/template"
 
+	"grimm.is/flywall/internal/install"
+
 	"grimm.is/flywall/internal/logging"
 )
 
 // DefaultConfigDir is the default configuration directory
-const DefaultConfigDir = "/etc/flywall"
+var DefaultConfigDir = install.DefaultConfigDir
 
 // DefaultConfigFile is the default config file path
-const DefaultConfigFile = "/etc/flywall/flywall.hcl"
+var DefaultConfigFile = filepath.Join(install.DefaultConfigDir, "flywall.hcl")
 
 // InterfaceInfo contains detected information about a network interface
 type InterfaceInfo struct {
@@ -49,6 +53,7 @@ type WizardResult struct {
 	LANIP          string            `json:"lan_ip"`
 	LANSubnet      string            `json:"lan_subnet"`
 	ConfigPath     string            `json:"config_path"`
+	StateDir       string            `json:"state_dir"`
 }
 
 // Wizard handles the setup process
@@ -88,6 +93,8 @@ func (w *Wizard) GenerateConfig(result *WizardResult) error {
 	if err := os.MkdirAll(w.configDir, 0755); err != nil {
 		return fmt.Errorf("failed to create config dir: %w", err)
 	}
+
+	result.StateDir = install.GetStateDir()
 
 	// Generate config from template with custom functions
 	funcMap := template.FuncMap{
@@ -325,13 +332,13 @@ zone "LAN{{$lanIndex}}" {
 {{- end}}
 
 # API Server Configuration
-# TLS certificates are auto-generated in /var/lib/flywall/certs/
+# TLS certificates are auto-generated in {{.StateDir}}/certs/
 api {
   enabled    = true
   listen     = ":8080"
   tls_listen = ":8443"
-  tls_cert   = "/var/lib/flywall/certs/server.crt"
-  tls_key    = "/var/lib/flywall/certs/server.key"
+  tls_cert   = "{{.StateDir}}/certs/server.crt"
+  tls_key    = "{{.StateDir}}/certs/server.key"
 }
 {{- if .LANInterface}}
 

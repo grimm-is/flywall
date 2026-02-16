@@ -72,7 +72,9 @@ interface "veth-host" {
 }
 
 zone "wan" {
-    interfaces = ["veth-host"]
+    match {
+        interface = "veth-host"
+    }
 }
 
 # The trick: Flywall by default protects the box.

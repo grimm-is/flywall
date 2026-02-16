@@ -11,7 +11,7 @@ require_root
 require_binary
 cleanup_on_exit
 
-CONFIG_FILE="/tmp/learning_api.hcl"
+CONFIG_FILE="/tmp/learning_api_$$.hcl"
 
 cat > "$CONFIG_FILE" <<EOF
 schema_version = "1.0"

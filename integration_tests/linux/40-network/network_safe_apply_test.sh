@@ -23,8 +23,8 @@ interface "eth0" {
 }
 
 api {
-  enabled = false
-  tls_listen  = "0.0.0.0:8443"
+  enabled = true
+  listen  = "0.0.0.0:8443"
   require_auth = true
 
   key "test-key" {
@@ -45,7 +45,19 @@ start_api -listen :8443
 
 echo "1. Get current config"
 dilated_sleep 2
-ORIG_CONFIG=$(curl -s -H "X-API-Key: secret123" http://127.0.0.1:8443/api/config)
+set +e
+ORIG_CONFIG=$(curl -v -s -H "X-API-Key: secret123" http://127.0.0.1:8443/api/config)
+CURL_RES=$?
+set -e
+if [ $CURL_RES -ne 0 ]; then
+    echo "FAILURE: Failed to get current config. Curl exit code: $CURL_RES"
+    echo "Curl output: $ORIG_CONFIG"
+    echo "--- API LOG ---"
+    cat "$API_LOG"
+    echo "--- CTL LOG ---"
+    cat "$CTL_LOG"
+    exit 1
+fi
 echo "Original config captured"
 
 echo "2. Attempt Safe Apply with unreachable ping target (should fail and rollback)"
@@ -58,7 +70,7 @@ RESPONSE=$(curl -v -s -X POST http://127.0.0.1:8443/api/config/safe-apply \
     -d '{
     "config": {
         "schema_version": "1.0",
-        "interfaces": [{
+        "interface": [{
             "name": "eth0",
             "zone": "lan",
             "description": "bad-config",

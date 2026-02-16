@@ -16,25 +16,11 @@
     Spinner,
     Icon,
   } from "$lib/components";
+  import NatCreateCard from "$lib/components/NatCreateCard.svelte";
   import { t } from "svelte-i18n";
 
   let loading = $state(false);
-  let showAddRuleModal = $state(false);
-
-  // Rule form
-  let ruleType = $state<"dnat" | "masquerade" | "snat">("dnat");
-  let ruleProtocol = $state("tcp");
-  let ruleDestPort = $state("");
-  let ruleToAddress = $state("");
-  let ruleToPort = $state("");
-
-  // Advanced fields
-  let ruleSrcIP = $state("");
-  let ruleSNATIP = $state("");
-  let ruleMark = $state("");
-
-  let ruleDescription = $state("");
-  let ruleInterface = $state("");
+  let isAddingRule = $state(false);
 
   const natRules = $derived($config?.nat || []);
   const interfaces = $derived($config?.interfaces || []);
@@ -48,102 +34,44 @@
     { key: "description", label: $t("common.description") },
   ];
 
-  function openAddRule() {
-    ruleType = "dnat";
-    ruleProtocol = "tcp";
-    ruleDestPort = "";
-    ruleToAddress = "";
-    ruleToPort = "";
-    ruleSrcIP = "";
-    ruleSNATIP = "";
-    ruleMark = "";
-    ruleDescription = "";
-    try {
-      const wanIface = interfaces.find((i: any) => i.Zone === "WAN");
-      ruleInterface = wanIface?.Name || interfaces[0]?.Name || "";
-    } catch (e) {
-      console.warn("Error selecting default interface", e);
-      ruleInterface = "";
-    }
-    showAddRuleModal = true;
+  function toggleAddRule() {
+    isAddingRule = !isAddingRule;
   }
 
-  // Validation error state
-  let validationError = $state("");
-
-  function validateIPv4(ip: string): boolean {
-    if (!ip) return false;
-    const parts = ip.split(".");
-    if (parts.length !== 4) return false;
-    return parts.every((p) => {
-      const n = parseInt(p, 10);
-      return !isNaN(n) && n >= 0 && n <= 255;
-    });
-  }
-
-  function validatePort(port: string): boolean {
-    if (!port) return false;
-    const n = parseInt(port, 10);
-    return !isNaN(n) && n >= 1 && n <= 65535;
-  }
-
-  async function saveRule() {
-    validationError = "";
-
-    // Validation
-    if (ruleType === "dnat") {
-      if (!validatePort(ruleDestPort)) {
-        validationError = "Invalid port number (1-65535 required)";
-        return;
-      }
-      if (!validateIPv4(ruleToAddress)) {
-        validationError = "Invalid IP address format (e.g., 192.168.1.10)";
-        return;
-      }
-      if (ruleToPort && !validatePort(ruleToPort)) {
-        validationError = "Invalid forward port number";
-        return;
-      }
-    } else if (ruleType === "snat") {
-      if (!validateIPv4(ruleSNATIP)) {
-        validationError = "Invalid SNAT IP address";
-        return;
-      }
-    }
-
+  async function handleCreateRule(event: CustomEvent) {
+    const data = event.detail;
     loading = true;
     try {
       let newRule: any;
 
-      if (ruleType === "masquerade") {
+      if (data.type === "masquerade") {
         newRule = {
           type: "masquerade",
-          out_interface: ruleInterface,
+          out_interface: data.outInterface,
         };
-      } else if (ruleType === "snat") {
+      } else if (data.type === "snat") {
         newRule = {
           type: "snat",
-          out_interface: ruleInterface,
-          src_ip: ruleSrcIP,
-          mark: parseInt(ruleMark) || 0,
-          snat_ip: ruleSNATIP,
-          description: ruleDescription,
+          out_interface: data.outInterface,
+          src_ip: data.srcIP,
+          mark: data.mark ? parseInt(data.mark) : 0,
+          snat_ip: data.snatIP,
+          description: data.description,
         };
       } else {
         newRule = {
           type: "dnat",
-          proto: ruleProtocol,
-          dest_port: String(ruleDestPort),
-          to_ip: ruleToAddress,
-          to_port: ruleToPort ? String(ruleToPort) : String(ruleDestPort),
-          description: ruleDescription,
+          proto: data.proto,
+          dest_port: String(data.destPort),
+          to_ip: data.toIP,
+          to_port: data.toPort ? String(data.toPort) : String(data.destPort),
+          description: data.description,
         };
       }
 
       await api.updateNAT([...natRules, newRule]);
-      showAddRuleModal = false;
+      isAddingRule = false;
     } catch (e: any) {
-      validationError = `Failed to add rule: ${e.message || e}`;
       console.error("Failed to add NAT rule:", e);
     } finally {
       loading = false;
@@ -165,10 +93,23 @@
 
 <div class="nat-page">
   <div class="page-header">
-    <Button onclick={openAddRule}
-      >+ {$t("common.add_item", { values: { item: $t("item.rule") } })}</Button
+    <Button onclick={toggleAddRule}
+      >{isAddingRule
+        ? $t("common.cancel")
+        : `+ ${$t("common.add_item", { values: { item: $t("item.rule") } })}`}</Button
     >
   </div>
+
+  {#if isAddingRule}
+    <div class="mb-4">
+      <NatCreateCard
+        {loading}
+        {interfaces}
+        on:save={handleCreateRule}
+        on:cancel={toggleAddRule}
+      />
+    </div>
+  {/if}
 
   {#if natRules.length === 0}
     <Card>
@@ -178,7 +119,7 @@
         <p>
           {$t("nat.port_forwarding_desc")}
         </p>
-        <Button onclick={openAddRule}>
+        <Button onclick={toggleAddRule}>
           <Icon name="plus" size="sm" />
           {$t("common.create_item", { values: { item: $t("item.rule") } })}
         </Button>
@@ -225,120 +166,6 @@
     </Card>
   {/if}
 </div>
-
-<!-- Add Rule Modal -->
-<Modal
-  bind:open={showAddRuleModal}
-  title={$t("common.add_item", { values: { item: $t("item.rule") } })}
->
-  <div class="form-stack">
-    <Select
-      id="rule-type"
-      label="Rule Type"
-      bind:value={ruleType}
-      options={[
-        { value: "dnat", label: "Port Forward (DNAT)" },
-        { value: "masquerade", label: "Masquerade (Auto SNAT)" },
-        { value: "snat", label: "Static SNAT" },
-      ]}
-    />
-
-    {#if ruleType === "masquerade" || ruleType === "snat"}
-      <Select
-        id="rule-interface"
-        label="Outbound Interface"
-        bind:value={ruleInterface}
-        options={interfaces.map((i: any) => ({
-          value: i.Name,
-          label: `${i.Name} (${i.Zone})`,
-        }))}
-      />
-
-      {#if ruleType === "snat"}
-        <Input
-          id="rule-snat-ip"
-          label="SNAT IP Address"
-          bind:value={ruleSNATIP}
-          placeholder="e.g. 1.2.3.4"
-          required
-        />
-
-        <Input
-          id="rule-src-ip"
-          label="Source IP Match (Optional)"
-          bind:value={ruleSrcIP}
-          placeholder="e.g. 10.0.0.0/24"
-        />
-
-        <Input
-          id="rule-mark"
-          label="Firewall Mark Match (Optional)"
-          bind:value={ruleMark}
-          type="number"
-          placeholder="e.g. 10"
-        />
-      {/if}
-    {:else}
-      <Select
-        id="rule-protocol"
-        label={$t("common.protocol")}
-        bind:value={ruleProtocol}
-        options={[
-          { value: "tcp", label: "TCP" },
-          { value: "udp", label: "UDP" },
-        ]}
-      />
-
-      <Input
-        id="rule-dest"
-        label="External Port"
-        bind:value={ruleDestPort}
-        placeholder="e.g., 443"
-        type="number"
-        required
-      />
-
-      <Input
-        id="rule-to-addr"
-        label="Forward to Address"
-        bind:value={ruleToAddress}
-        placeholder="e.g., 192.168.1.10"
-        required
-      />
-
-      <Input
-        id="rule-to-port"
-        label="Forward to Port (optional)"
-        bind:value={ruleToPort}
-        placeholder="Same as external if blank"
-        type="number"
-      />
-
-      <Input
-        id="rule-desc"
-        label="Description"
-        bind:value={ruleDescription}
-        placeholder="e.g., Web Server"
-      />
-    {/if}
-
-    {#if validationError}
-      <div class="validation-error" role="alert" aria-live="polite">
-        {validationError}
-      </div>
-    {/if}
-
-    <div class="modal-actions">
-      <Button variant="ghost" onclick={() => (showAddRuleModal = false)}
-        >{$t("common.cancel")}</Button
-      >
-      <Button onclick={saveRule} disabled={loading}>
-        {#if loading}<Spinner size="sm" />{/if}
-        {$t("nat.add_rule")}
-      </Button>
-    </div>
-  </div>
-</Modal>
 
 <style>
   .nat-page {

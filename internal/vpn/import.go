@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package vpn
 
 import (
@@ -6,13 +8,15 @@ import (
 	"io"
 	"strconv"
 	"strings"
+
+	"grimm.is/flywall/internal/config"
 )
 
 // ParseWireGuardConfig parses a standard WireGuard configuration file (INI format).
 // It accepts a reader and returns a WireGuardConfig and an error.
 func ParseWireGuardConfig(r io.Reader) (*WireGuardConfig, error) {
 	scanner := bufio.NewScanner(r)
-	config := &WireGuardConfig{
+	configObj := &WireGuardConfig{
 		Enabled: true,
 		MTU:     1420, // Default
 	}
@@ -31,7 +35,7 @@ func ParseWireGuardConfig(r io.Reader) (*WireGuardConfig, error) {
 			// Actually, for multiple peers, we need to handle them.
 			// Let's create a new peer struct when we hit [Peer]
 			if currentSection == "peer" {
-				config.Peers = append(config.Peers, WireGuardPeer{})
+				configObj.Peers = append(configObj.Peers, WireGuardPeer{})
 			}
 			continue
 		}
@@ -47,53 +51,53 @@ func ParseWireGuardConfig(r io.Reader) (*WireGuardConfig, error) {
 		case "interface":
 			switch key {
 			case "privatekey":
-				config.PrivateKey = value
+				configObj.PrivateKey = config.SecureString(value)
 			case "listenport":
 				if port, err := strconv.Atoi(value); err == nil {
-					config.ListenPort = port
+					configObj.ListenPort = port
 				}
 			case "address":
 				// Handle comma-separated addresses
 				addrs := strings.Split(value, ",")
 				for _, addr := range addrs {
-					config.Address = append(config.Address, strings.TrimSpace(addr))
+					configObj.Address = append(configObj.Address, strings.TrimSpace(addr))
 				}
 			case "dns":
 				// Handle comma-separated DNS
 				servers := strings.Split(value, ",")
 				for _, server := range servers {
-					config.DNS = append(config.DNS, strings.TrimSpace(server))
+					configObj.DNS = append(configObj.DNS, strings.TrimSpace(server))
 				}
 			case "mtu":
 				if mtu, err := strconv.Atoi(value); err == nil {
-					config.MTU = mtu
+					configObj.MTU = mtu
 				}
 			case "fwmark":
 				if mark, err := strconv.Atoi(value); err == nil {
-					config.FWMark = mark
+					configObj.FWMark = mark
 				}
 			case "table":
-				config.Table = value
+				configObj.Table = value
 			case "postup", "post_up":
-				config.PostUp = append(config.PostUp, value)
+				configObj.PostUp = append(configObj.PostUp, value)
 			case "postdown", "post_down":
-				config.PostDown = append(config.PostDown, value)
+				configObj.PostDown = append(configObj.PostDown, value)
 			}
 
 		case "peer":
-			if len(config.Peers) == 0 {
+			if len(configObj.Peers) == 0 {
 				// Should have hit [Peer] section header first
 				continue
 			}
 			// Modify the last peer added
-			peerIdx := len(config.Peers) - 1
-			peer := &config.Peers[peerIdx]
+			peerIdx := len(configObj.Peers) - 1
+			peer := &configObj.Peers[peerIdx]
 
 			switch key {
 			case "publickey":
 				peer.PublicKey = value
 			case "presharedkey":
-				peer.PresharedKey = value
+				peer.PresharedKey = config.SecureString(value)
 			case "endpoint":
 				peer.Endpoint = value
 			case "allowedips":
@@ -114,11 +118,11 @@ func ParseWireGuardConfig(r io.Reader) (*WireGuardConfig, error) {
 	}
 
 	// Validation
-	if config.PrivateKey == "" {
+	if configObj.PrivateKey == "" {
 		return nil, fmt.Errorf("interface private key is required")
 	}
 
-	return config, nil
+	return configObj, nil
 }
 
 // ConvertToFlywallConfig converts a parsed WireGuardConfig to a Flywall WireGuardConfig.

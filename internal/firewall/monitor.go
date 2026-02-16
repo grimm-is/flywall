@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 
 package firewall
@@ -104,7 +106,7 @@ func (m *Manager) MonitorIntegrity(ctx context.Context, cfg *config.Config) {
 				} else {
 					log.Printf("[Firewall] Integrity restored.")
 					// ApplyConfig updated expectedGenID.
-					
+
 					// Call restore callback if set, to sync other services (e.g. DNS dynamic sets)
 					m.mu.RLock()
 					callback := m.restoreCallback

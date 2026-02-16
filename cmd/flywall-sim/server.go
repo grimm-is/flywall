@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package main
 
 import (
@@ -59,7 +61,7 @@ func StartServer(cfg *config.Config, k *kernel.SimKernel, e *learning.Engine, cl
 		Logger:     logger,
 		// LearningService: ... // Optional if we don't use it directly in API yet, or wrap engine
 	}
-	
+
 	server, err := api.NewServer(apiOpts)
 	if err != nil {
 		return fmt.Errorf("failed to create API server: %w", err)
@@ -67,7 +69,7 @@ func StartServer(cfg *config.Config, k *kernel.SimKernel, e *learning.Engine, cl
 
 	// 4. Wrap Handler to add Sim endpoints
 	mux := http.NewServeMux()
-	
+
 	// API routes
 	mux.Handle("/api/", server.Handler())
 
@@ -87,7 +89,7 @@ func StartServer(cfg *config.Config, k *kernel.SimKernel, e *learning.Engine, cl
 		}
 
 		log.Printf("Starting replay of %s", req.PCAPPath)
-		
+
 		replayer := NewReplayer(k, e, clk)
 		if err := replayer.Replay(req.PCAPPath); err != nil {
 			log.Printf("Replay failed: %v", err)
@@ -98,7 +100,7 @@ func StartServer(cfg *config.Config, k *kernel.SimKernel, e *learning.Engine, cl
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "success",
-			"stats": replayer.DiscoveryStats(),
+			"stats":  replayer.DiscoveryStats(),
 		})
 	})
 
@@ -109,7 +111,7 @@ func StartServer(cfg *config.Config, k *kernel.SimKernel, e *learning.Engine, cl
 
 	// 5. Run Server
 	log.Printf("Simulator Server listening on :8080 (MGMT interface)")
-	
+
 	// Use a channel to block until interrupt
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)

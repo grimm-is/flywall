@@ -94,6 +94,7 @@ export interface RuleWithStats {
     dest_ipset?: string;
     dest_port?: number;
     services?: string[];
+    service?: string;
     disabled?: boolean;
     group?: string;
     tags?: string[];
@@ -103,6 +104,7 @@ export interface RuleWithStats {
     nft_syntax?: string;
     policy_from?: string;
     policy_to?: string;
+    origin?: string;
 }
 
 export interface PolicyWithStats {
@@ -412,12 +414,16 @@ export const rulesApi = {
      * Save policies to backend API
      */
     async savePolicies(rules: RuleWithStats[]) {
+        // Filter out implicit rules to prevent duplication
+        const explicitRules = rules.filter(r => r.origin !== 'implicit_zone_config');
+
         // Convert RuleWithStats to config.Policy format
-        const policies = rules.map(r => ({
+        const policies = explicitRules.map(r => ({
             name: r.name || r.id,
             description: r.description,
             action: r.action,
             protocol: r.protocol,
+            service: r.service,
             source_ip: r.src_ip,
             source_ipset: r.src_ipset,
             destination_ip: r.dest_ip,

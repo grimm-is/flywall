@@ -14,7 +14,7 @@ NC='\033[0m'
 
 # Verifies rule import functionality
 # SKIP=false
-cleanup_processes
+
 TEST_TIMEOUT=60
 . "$(dirname "$0")/../common.sh"
 SAMPLE_FILE="$(mktemp_compatible pfsense_sample.xml)"
@@ -76,7 +76,15 @@ cat > "$SAMPLE_FILE" <<EOF
 EOF
 
 # Cleanup on exit
+# Cleanup on exit
 cleanup_on_exit
+
+# Override cleanup to handle flywall-api leak
+custom_cleanup() {
+    ip netns delete flywall-api 2>/dev/null || true
+    _full_cleanup_handler
+}
+trap 'custom_cleanup' EXIT INT TERM
 
 # 1. Start Firewall
 # Kill any existing instance
@@ -172,7 +180,7 @@ if [ -z "$PREVIEW_RESP" ] || [ "$PREVIEW_RESP" = "null" ]; then
     fail "Preview generation returned empty or null response"
 fi
 
-if ! echo "$PREVIEW_RESP" | jq -e '.interfaces // empty' >/dev/null 2>&1; then
+if ! echo "$PREVIEW_RESP" | jq -e '.interface // empty' >/dev/null 2>&1; then
     echo "$PREVIEW_RESP"
     fail "Preview generation failed or invalid response (no interfaces field)"
 fi
@@ -181,16 +189,16 @@ fi
 diag "Step 3: Verifying generated configuration..."
 
 # Check Interface Mapping (use .interfaces[]? to safely handle null)
-WAN_IF=$(echo "$PREVIEW_RESP" | jq -r '.interfaces[]? | select(.name=="eth0")')
+WAN_IF=$(echo "$PREVIEW_RESP" | jq -r '.interface[]? | select(.name=="eth0")')
 if [ -z "$WAN_IF" ]; then
     diag "Mappings sent: $MAPPINGS"
     diag "Preview Response: $PREVIEW_RESP"
     diag "Upload Response: $UPLOAD_RESP"
-    diag "All Interfaces: $(echo "$PREVIEW_RESP" | jq -r '.interfaces[]?.name // "none"')"
+    diag "All Interfaces: $(echo "$PREVIEW_RESP" | jq -r '.interface[]?.name // "none"')"
     fail "eth0 (WAN) not found in generated config"
 fi
 
-LAN_IF=$(echo "$PREVIEW_RESP" | jq -r '.interfaces[]? | select(.name=="eth1")')
+LAN_IF=$(echo "$PREVIEW_RESP" | jq -r '.interface[]? | select(.name=="eth1")')
 if [ -z "$LAN_IF" ]; then fail "eth1 (LAN) not found in generated config"; fi
 
 # Check IP Address migration
@@ -201,17 +209,17 @@ if [ "$LAN_IP" != "192.168.1.1/24" ]; then
 fi
 
 # Check DHCP Server (use .scopes[]? to safely handle null)
-DHCP_SCOPE=$(echo "$PREVIEW_RESP" | jq -r '.dhcp.scopes[]? | select(.interface=="eth1")')
+DHCP_SCOPE=$(echo "$PREVIEW_RESP" | jq -r '.dhcp.scope[]? | select(.interface=="eth1")')
 if [ -z "$DHCP_SCOPE" ]; then
     diag "DHCP Scope missing for eth1"
-    diag "Available Scopes: $(echo "$PREVIEW_RESP" | jq -r '.dhcp.scopes[]?')"
+    diag "Available Scopes: $(echo "$PREVIEW_RESP" | jq -r '.dhcp.scope[]?')"
     fail "DHCP Scope for LAN (eth1) not found"
 fi
 DHCP_START=$(echo "$DHCP_SCOPE" | jq -r '.range_start')
 if [ "$DHCP_START" != "192.168.1.100" ]; then fail "DHCP Start mismatch: $DHCP_START"; fi
 
 # Check Aliases (IPSet) - use .ipsets[]? to safely handle null
-IPSET=$(echo "$PREVIEW_RESP" | jq -r '.ipsets[]? | select(.name=="WebServers")')
+IPSET=$(echo "$PREVIEW_RESP" | jq -r '.ipset[]? | select(.name=="WebServers")')
 if [ -z "$IPSET" ]; then fail "IPSet 'WebServers' not found"; fi
 
 # Check NAT Port Forward

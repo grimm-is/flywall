@@ -8,7 +8,7 @@ set -x
 . "$(dirname "$0")/../common.sh"
 export FLYWALL_LOG_FILE=stdout
 
-QOS_CONFIG="/tmp/qos.hcl"
+QOS_CONFIG="/tmp/qos_$$.hcl"
 
 # Create config file
 cat > "$QOS_CONFIG" <<EOF
@@ -130,7 +130,7 @@ modprobe nf_tables 2>/dev/null
 rm -f $CTL_SOCKET
 tc qdisc del dev lo root 2>/dev/null
 
-$APP_BIN ctl "$QOS_CONFIG" > /tmp/firewall_qos.log 2>&1 &
+$APP_BIN ctl "$QOS_CONFIG" > /tmp/firewall_qos_$$.log 2>&1 &
 CTL_PID=$!
 
 diag "Waiting for startup..."
@@ -140,7 +140,7 @@ if kill -0 $CTL_PID 2>/dev/null; then
     ok 0 "Control plane started (PID $CTL_PID)"
 else
     ok 1 "Failed to start control plane"
-    cat /tmp/firewall_qos.log | sed 's/^/# /'
+    cat /tmp/firewall_qos_$$.log | sed 's/^/# /'
     exit 1
 fi
 
@@ -151,20 +151,25 @@ if [ $? -ne 0 ]; then
     diag "Skipping functional verification, checking for attempt in logs..."
 
     # Check if log contains the specific error indicating attempt was made
-    if grep -q "failed to add root HTB qdisc" /tmp/firewall_qos.log; then
+    if grep -q "failed to add root HTB qdisc" /tmp/firewall_qos_$$.log; then
          ok 0 "QoS Manager attempted to apply configuration (confirmed by error log)"
     else
          # Check for success just in case
-         if grep -q "QoS policies applied" /tmp/firewall_qos.log; then
+         if grep -q "QoS policies applied" /tmp/firewall_qos_$$.log; then
             ok 0 "QoS policies applied successfully"
          else
              ok 1 "QoS Manager did not attempt application or failed unexpectedly"
              echo "# Debug: Log file status:"
-             ls -l /tmp/firewall_qos.log
+             ls -l /tmp/firewall_qos_$$.log
              echo "# Debug: Log file content:"
-             cat /tmp/firewall_qos.log | sed 's/^/# /'
+             cat /tmp/firewall_qos_$$.log | sed 's/^/# /'
          fi
     fi
+    # Cleanup before early exit
+    kill $CTL_PID 2>/dev/null
+    wait $CTL_PID 2>/dev/null || kill -9 $CTL_PID 2>/dev/null
+    rm -f $CTL_SOCKET
+    rm -f "$QOS_CONFIG"
     exit 0
 else
     # HTB works, proceed with full test
@@ -207,11 +212,13 @@ else
 fi
 
 # 8. Check log for QoS Success
-grep -q "QoS policies applied" /tmp/firewall_qos.log
+grep -q "QoS policies applied" /tmp/firewall_qos_$$.log
 ok $? "Log confirms QoS application"
 
 # Cleanup
 kill $CTL_PID 2>/dev/null
+# Kill children too (tc commands etc)
+pkill -P $CTL_PID 2>/dev/null
 rm -f $CTL_SOCKET
 rm -f "$QOS_CONFIG"
 

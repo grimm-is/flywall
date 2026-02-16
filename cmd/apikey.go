@@ -1,6 +1,9 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package cmd
 
 import (
+	"grimm.is/flywall/internal/install"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -23,8 +26,8 @@ type APIKeyCommand struct {
 // Uses persistent state store so keys survive restarts.
 func NewAPIKeyCommand() (*APIKeyCommand, error) {
 	// Initialize state store - MUST match the path used by the API server
-	// API server uses: brand.GetStateDir() + "/api_state.db"
-	stateDir := brand.GetStateDir()
+	// API server uses: install.GetStateDir() + "/api_state.db"
+	stateDir := install.GetStateDir()
 	dbPath := stateDir + "/api_state.db"
 	stateStore, err := state.NewSQLiteStore(state.Options{Path: dbPath})
 	if err != nil {

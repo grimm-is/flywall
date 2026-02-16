@@ -80,7 +80,7 @@ build_firewall() {
 
     if [[ ! -f "build/${BRAND_BINARY_NAME}" ]] || [[ "build/${BRAND_BINARY_NAME}" -ot "main.go" ]]; then
         echo "Building ${BRAND_BINARY_NAME}..."
-        make build-go
+        ./flywall.sh build native
     else
         echo "${BRAND_BINARY_NAME} is up to date"
     fi

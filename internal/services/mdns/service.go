@@ -1,9 +1,12 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package mdns
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"net"
 	"strings"
@@ -58,6 +61,10 @@ type Reflector struct {
 	shutdown     chan struct{}
 	upgradeMgr   *upgrade.Manager
 	firstAttempt bool
+
+	// Loop prevention
+	historyMu sync.Mutex
+	history   map[uint64]time.Time
 }
 
 // NewReflector creates a new mDNS reflector.
@@ -69,6 +76,7 @@ func NewReflector(cfg Config, logger *logging.Logger) *Reflector {
 		logger:        logger,
 		shutdown:      make(chan struct{}),
 		firstAttempt:  true,
+		history:       make(map[uint64]time.Time),
 	}
 }
 
@@ -122,7 +130,34 @@ func (r *Reflector) Start(ctx context.Context) error {
 	r.wg.Add(1)
 	go r.retryStartLoop(ctx)
 
+	// Launch history cleanup
+	r.wg.Add(1)
+	go r.runCleanup(ctx)
+
 	return nil
+}
+
+func (r *Reflector) runCleanup(ctx context.Context) {
+	defer r.wg.Done()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.historyMu.Lock()
+			now := clock.Now()
+			for k, t := range r.history {
+				// Keep history for 5 seconds (sufficient for network loops)
+				if now.Sub(t) > 5*time.Second {
+					delete(r.history, k)
+				}
+			}
+			r.historyMu.Unlock()
+		}
+	}
 }
 
 func (r *Reflector) retryStartLoop(ctx context.Context) {
@@ -230,7 +265,6 @@ func (r *Reflector) attemptStart(ctx context.Context) error {
 	}
 
 	// Open IPv6 socket
-	// Open IPv6 socket (Soft fail)
 	r.logger.Info("Attempting to bind udp6 [::]:5353")
 	conn6, err = getOrCreatePacketConn("udp6", "[::]:5353", "mdns-udp6-5353")
 	if err != nil {
@@ -276,16 +310,27 @@ func (r *Reflector) Stop() {
 	log.Printf("[mDNS] Stopped")
 }
 
+func (r *Reflector) shouldProcess(data []byte) bool {
+	// Simple FNV hash
+	h := fnv.New64a()
+	h.Write(data)
+	sum := h.Sum64()
+
+	r.historyMu.Lock()
+	defer r.historyMu.Unlock()
+
+	if _, exists := r.history[sum]; exists {
+		return false
+	}
+	r.history[sum] = clock.Now()
+	return true
+}
+
 func (r *Reflector) runIPv4(ctx context.Context, pc *ipv4.PacketConn) {
 	defer r.wg.Done()
 	defer pc.Close()
 
 	buf := make([]byte, MaxPacketSize)
-
-	// Filter own packets to avoid loops
-	// However, since we write to socket, we might receive our own multicast?
-	// Usually IP_MULTICAST_LOOP defaults to 1. We should probably set it to 0 or 1.
-	// We'll rely on checking source IP vs interface IPs? Or just Interface ID.
 
 	// Enable loopback? If we disable loopback, we won't see our own packets.
 	pc.SetMulticastLoopback(false)
@@ -307,6 +352,10 @@ func (r *Reflector) runIPv4(ctx context.Context, pc *ipv4.PacketConn) {
 				continue
 			}
 
+			if n > 0 {
+				log.Printf("[mDNS] Received packet bytes=%d", n)
+			}
+
 			if cm == nil {
 				continue // Need control message to know source interface
 			}
@@ -324,6 +373,11 @@ func (r *Reflector) runIPv4(ctx context.Context, pc *ipv4.PacketConn) {
 
 			if srcIfaceName == "" {
 				// Packet from unknown interface, ignore
+				continue
+			}
+
+			// Deduplicate
+			if !r.shouldProcess(buf[:n]) {
 				continue
 			}
 
@@ -369,6 +423,11 @@ func (r *Reflector) runIPv6(ctx context.Context, pc *ipv6.PacketConn) {
 				continue
 			}
 
+			// Deduplicate
+			if !r.shouldProcess(buf[:n]) {
+				continue
+			}
+
 			// Simple forward logic
 			// NOTE: We need to set HopLimit to 255 for mDNS compliance on egress?
 			// RFC 6762 says IP TTL must be 255.
@@ -396,10 +455,12 @@ func (r *Reflector) forwardIPv4(pc *ipv4.PacketConn, data []byte, srcIndex int, 
 		// Set TTL 255
 		pc.SetMulticastTTL(255)
 
-		// Write
 		if _, err := pc.WriteTo(data, cm, dst); err != nil {
 			// Log error but don't spam
-			// log.Printf("[mDNS] Failed to write to %s: %v", name, err)
+			log.Printf("[mDNS] Failed to write to %s: %v", iface.Name, err)
+		} else {
+			// Verbose logging for debug
+			log.Printf("[mDNS] Reflected on %s", iface.Name)
 		}
 	}
 }

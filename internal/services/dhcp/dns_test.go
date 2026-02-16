@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package dhcp
 
 import (
@@ -54,7 +56,7 @@ func TestHandleRequest_DNSIntegration(t *testing.T) {
 	req.UpdateOption(dhcpv4.OptHostName("test-client"))
 
 	// Call handleRequest
-	resp, err := handleRequest(req, store, scope, routerIP, dnsUpdater, nil)
+	resp, err := handleRequest(req, store, scope, routerIP, dnsUpdater, nil, nil)
 	if err != nil {
 		t.Fatalf("handleRequest failed: %v", err)
 	}
@@ -111,7 +113,7 @@ func TestHandleRequest_StaticLeaseDNS(t *testing.T) {
 	req.UpdateOption(dhcpv4.OptMessageType(dhcpv4.MessageTypeRequest))
 
 	// Call handleRequest
-	resp, err := handleRequest(req, store, scope, routerIP, dnsUpdater, nil)
+	resp, err := handleRequest(req, store, scope, routerIP, dnsUpdater, nil, nil)
 	if err != nil {
 		t.Fatalf("handleRequest failed: %v", err)
 	}

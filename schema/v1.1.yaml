@@ -1,0 +1,4023 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://flywall.dev/schemas/config.json
+title: Flywall Configuration
+description: |-
+    Config is the top-level structure for the firewall configuration.
+    It defines all aspects of the firewall including interfaces, zones, policies,
+    NAT rules, services (DHCP, DNS), VPN integrations, and security features.
+type: object
+properties:
+    anomaly_detection:
+        title: AnomalyConfig
+        description: AnomalyConfig configures traffic anomaly detection.
+        type: object
+        properties:
+            alert_cooldown:
+                description: e.g., "15m"
+                type: string
+            baseline_window:
+                description: e.g., "7d"
+                type: string
+            drop_stddev:
+                description: Alert if < N stddev
+                type: number
+            enabled:
+                type: boolean
+            min_samples:
+                description: Min hits before alerting
+                type: number
+            port_scan_threshold:
+                description: Ports hit before alert
+                type: number
+            spike_stddev:
+                description: Alert if > N stddev
+                type: number
+    api:
+        title: API
+        description: API configuration
+        type: object
+        properties:
+            bootstrap_key:
+                description: Bootstrap key (for initial setup, should be removed after creating real keys)
+                type: string
+            cors_origins:
+                description: CORS settings
+                type: array
+                items:
+                    type: string
+            disable_http_redirect:
+                description: 'Deprecated: use web.disable_redirect'
+                type: boolean
+            disable_sandbox:
+                description: 'Default: false (Sandbox Enabled)'
+                type: boolean
+            enabled:
+                type: boolean
+            key:
+                description: Predefined API keys (for config-based key management)
+                type: array
+                items:
+                    title: Keys
+                    description: Predefined API keys (for config-based key management)
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        allowed_ips:
+                            type: array
+                            items:
+                                type: string
+                        allowed_paths:
+                            type: array
+                            items:
+                                type: string
+                        description:
+                            type: string
+                        enabled:
+                            type: boolean
+                        key:
+                            description: The actual key value
+                            type: string
+                        permissions:
+                            description: Permission strings
+                            type: array
+                            items:
+                                type: string
+                        rate_limit:
+                            type: number
+                    required:
+                        - _label_name
+                        - key
+                        - permissions
+            key_store_path:
+                description: API key storage Path to key store file
+                type: string
+            letsencrypt:
+                title: LetsEncrypt
+                description: Let's Encrypt automatic TLS
+                type: object
+                properties:
+                    cache_dir:
+                        description: Certificate cache directory
+                        type: string
+                    domain:
+                        description: Domain name for certificate
+                        type: string
+                    email:
+                        description: Contact email for certificate
+                        type: string
+                    enabled:
+                        type: boolean
+                    staging:
+                        description: Use staging server for testing
+                        type: boolean
+                required:
+                    - email
+                    - domain
+            listen:
+                description: 'Deprecated: use web.listen'
+                type: string
+            require_auth:
+                description: Require API key auth
+                type: boolean
+            tls_cert:
+                description: 'Deprecated: use web.tls_cert'
+                type: string
+            tls_key:
+                description: 'Deprecated: use web.tls_key'
+                type: string
+            tls_listen:
+                description: 'Deprecated: use web.tls_listen'
+                type: string
+            tsnet:
+                title: TsNet
+                description: Tailscale/tsnet configuration
+                type: object
+                properties:
+                    auth_key:
+                        description: Auth key (tskey-auth-...)
+                        type: string
+                    enabled:
+                        type: boolean
+                    ephemeral:
+                        description: Delete node on exit
+                        type: boolean
+                    hostname:
+                        description: Node name
+                        type: string
+                    log_web_ui:
+                        type: boolean
+    audit:
+        title: Audit
+        description: Audit logging configuration
+        type: object
+        properties:
+            database_path:
+                description: DatabasePath overrides the default audit database location.
+                type: string
+            enabled:
+                description: Enabled activates audit logging to SQLite.
+                type: boolean
+            kernel_audit:
+                description: |-
+                    KernelAudit enables writing to the Linux kernel audit log (auditd).
+                    Useful for compliance with SOC2, HIPAA, etc.
+                    Requires appropriate capabilities (CAP_AUDIT_WRITE).
+                type: boolean
+            retention_days:
+                description: |-
+                    RetentionDays is the number of days to retain audit events.
+                    Default: 90 days.
+                type: number
+    cloud:
+        title: Cloud
+        description: Cloud Management
+        type: object
+        properties:
+            ca_file:
+                type: string
+            cert_file:
+                description: Certificate paths (override defaults)
+                type: string
+            device_id:
+                type: string
+            enabled:
+                type: boolean
+            hub_address:
+                type: string
+            key_file:
+                type: string
+            local_priority:
+                description: Local config priority field
+                type: array
+                items:
+                    type: string
+    ddns:
+        title: DDNS
+        description: Dynamic DNS
+        type: object
+        properties:
+            enabled:
+                type: boolean
+            hostname:
+                description: Hostname to update
+                type: string
+            interface:
+                description: Interface to get IP from
+                type: string
+            interval:
+                description: 'Update interval in minutes (default: 5)'
+                type: number
+            provider:
+                description: duckdns, cloudflare, noip
+                type: string
+            record_id:
+                description: For Cloudflare
+                type: string
+            token:
+                description: API token/password
+                type: string
+            username:
+                description: For providers requiring username
+                type: string
+            zone_id:
+                description: For Cloudflare
+                type: string
+        required:
+            - provider
+            - hostname
+    dhcp:
+        title: DHCP
+        description: DHCPServer configuration.
+        type: object
+        properties:
+            enabled:
+                type: boolean
+            external_lease_file:
+                description: ExternalLeaseFile is the path to external DHCP server's lease file (for import mode)
+                type: string
+            mode:
+                description: |-
+                    Mode specifies how DHCP server is managed:
+                      - "builtin" (default): Use Flywall's built-in DHCP server
+                      - "external": External DHCP server (dnsmasq, isc-dhcp, kea) is in use
+                      - "import": Import leases from external server for visibility
+                type: string
+            scope:
+                description: DHCPScope defines a DHCP pool.
+                type: array
+                items:
+                    title: Scopes
+                    description: DHCPScope defines a DHCP pool.
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        dns:
+                            type: array
+                            items:
+                                type: string
+                        dns_v6:
+                            type: array
+                            items:
+                                type: string
+                        domain:
+                            type: string
+                        interface:
+                            type: string
+                        lease_time:
+                            description: e.g. "24h"
+                            type: string
+                        options:
+                            description: |-
+                                Custom DHCP options using named options or numeric codes (1-255)
+                                Named options: dns_server = "8.8.8.8", tftp_server = "tftp.boot", mtu = "1500"
+                                Numeric codes MUST have type prefix: "66" = "str:tftp.boot", "150" = "ip:192.168.1.10"
+                                Available prefixes: ip, str/text, hex, u8, u16, u32, bool
+                            type: object
+                        range_end:
+                            type: string
+                        range_end_v6:
+                            type: string
+                        range_start:
+                            type: string
+                        range_start_v6:
+                            description: IPv6 Support (SLAAC/DHCPv6) For Stateful DHCPv6
+                            type: string
+                        reservation:
+                            description: DHCPReservation defines a static IP assignment for a MAC address.
+                            type: array
+                            items:
+                                title: Reservations
+                                description: DHCPReservation defines a static IP assignment for a MAC address.
+                                type: object
+                                properties:
+                                    _label_mac:
+                                        description: 'Block label: '
+                                        type: string
+                                    description:
+                                        type: string
+                                    hostname:
+                                        type: string
+                                    ip:
+                                        type: string
+                                    options:
+                                        description: Per-host custom DHCP options (same format as scope options)
+                                        type: object
+                                    register_dns:
+                                        description: DNS integration Auto-register in DNS
+                                        type: boolean
+                                required:
+                                    - _label_mac
+                                    - ip
+                        router:
+                            type: string
+                    required:
+                        - _label_name
+                        - interface
+                        - range_start
+                        - range_end
+                        - router
+            vendor_class:
+                description: DHCPVendorClass defines options to be sent to clients matching a specific vendor class identifier (Option 60).
+                type: array
+                items:
+                    title: VendorClasses
+                    description: DHCPVendorClass defines options to be sent to clients matching a specific vendor class identifier (Option 60).
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        identifier:
+                            description: Match string in option 60
+                            type: string
+                        options:
+                            type: object
+                    required:
+                        - _label_name
+                        - identifier
+    dns:
+        title: DNS
+        description: New consolidated DNS config
+        type: object
+        properties:
+            conditional_forward:
+                description: ConditionalForward routes specific domains to specific DNS servers.
+                type: array
+                items:
+                    title: ConditionalForwarders
+                    description: ConditionalForward routes specific domains to specific DNS servers.
+                    type: object
+                    properties:
+                        _label_domain:
+                            description: 'Block label: e.g., "corp.example.com"'
+                            type: string
+                        servers:
+                            description: DNS servers for this domain
+                            type: array
+                            items:
+                                type: string
+                    required:
+                        - _label_domain
+                        - servers
+            dnssec:
+                description: DNSSEC validation for upstream queries
+                type: boolean
+            egress_filter:
+                description: |-
+                    Egress Filter (DNS Wall)
+                    If enabled, firewall blocks outbound traffic to IPs not recently resolved by this DNS server.
+                type: boolean
+            egress_filter_ttl:
+                description: 'Seconds (default: matches record TTL)'
+                type: number
+            forwarders:
+                description: Upstream DNS servers for forwarding mode
+                type: array
+                items:
+                    type: string
+            inspect:
+                description: |-
+                    DNSInspect configures DNS traffic inspection for a zone.
+                    Used for transparent interception or passive visibility.
+                type: array
+                items:
+                    title: Inspect
+                    description: |-
+                        DNSInspect configures DNS traffic inspection for a zone.
+                        Used for transparent interception or passive visibility.
+                    type: object
+                    properties:
+                        _label_zone:
+                            description: 'Block label: Zone name (label) - can use wildcards'
+                            type: string
+                        exclude_router:
+                            description: ExcludeRouter prevents redirecting the router's own DNS traffic
+                            type: boolean
+                        mode:
+                            description: |-
+                                Mode determines what happens to intercepted traffic:
+                                  - "redirect": DNAT to local DNS server (requires serve block)
+                                  - "passive": Decode & log queries for visibility (like SNI inspection) Default: "redirect"
+                            type: string
+                    required:
+                        - _label_zone
+            mode:
+                description: |-
+                    Resolution mode for upstream queries:
+                      - "forward" (default): Forward queries to upstream DNS servers
+                      - "recursive": Full recursive resolver with root hints
+                type: string
+            recursive:
+                title: Recursive
+                description: Recursive resolver settings (when mode = "recursive")
+                type: object
+                properties:
+                    aggressive_nsec:
+                        description: RFC 8198
+                        type: boolean
+                    auto_update_root_hints:
+                        type: boolean
+                    harden_below_nxdomain:
+                        description: RFC 8020 compliance
+                        type: boolean
+                    harden_dnssec_stripped:
+                        description: Require DNSSEC if expected
+                        type: boolean
+                    harden_glue:
+                        description: Hardening Validate glue records
+                        type: boolean
+                    harden_referral_path:
+                        description: Validate referral path
+                        type: boolean
+                    max_concurrent:
+                        description: Max concurrent outbound queries
+                        type: number
+                    max_depth:
+                        description: Query settings Max recursion depth (default 30)
+                        type: number
+                    prefetch:
+                        description: Prefetching Prefetch expiring entries
+                        type: boolean
+                    prefetch_key:
+                        description: Prefetch DNSKEY records
+                        type: boolean
+                    qname_minimisation:
+                        description: Privacy RFC 7816
+                        type: boolean
+                    query_timeout:
+                        description: Per-query timeout in ms
+                        type: number
+                    root_hints_file:
+                        description: Root hints for recursive resolution Path to root hints file
+                        type: string
+            serve:
+                description: Zone-based serving and inspection
+                type: array
+                items:
+                    title: Serve
+                    description: Zone-based serving and inspection
+                    type: object
+                    properties:
+                        _label_zone:
+                            description: 'Block label: Zone name (label) - can use wildcards'
+                            type: string
+                        allowlist:
+                            type: array
+                            items:
+                                type: string
+                        authoritative_for:
+                            type: string
+                        blocked_address:
+                            type: string
+                        blocked_ttl:
+                            type: number
+                        blocklist:
+                            description: Filtering
+                            type: array
+                            items:
+                                title: Blocklists
+                                description: Filtering
+                                type: object
+                                properties:
+                                    _label_name:
+                                        description: 'Block label: '
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    file:
+                                        description: Local file path
+                                        type: string
+                                    format:
+                                        description: hosts, domains, adblock
+                                        type: string
+                                    refresh_hours:
+                                        type: number
+                                    url:
+                                        description: URL to fetch blocklist
+                                        type: string
+                                required:
+                                    - _label_name
+                        cache_enabled:
+                            description: Caching
+                            type: boolean
+                        cache_max_ttl:
+                            type: number
+                        cache_min_ttl:
+                            type: number
+                        cache_size:
+                            type: number
+                        dhcp_integration:
+                            type: boolean
+                        dnscrypt_server:
+                            title: DNSCryptServer
+                            description: DNSCryptServerConfig configures the DNSCrypt server (serve DNSCrypt to clients).
+                            type: object
+                            properties:
+                                cert_file:
+                                    description: DNSCrypt certificate
+                                    type: string
+                                cert_ttl:
+                                    description: Certificate TTL in hours
+                                    type: number
+                                enabled:
+                                    type: boolean
+                                es_version:
+                                    description: 'Encryption suite: 1=XSalsa20Poly1305, 2=XChacha20Poly1305'
+                                    type: number
+                                listen_addr:
+                                    description: 'Default: :5443'
+                                    type: string
+                                provider_name:
+                                    description: e.g., "2.dnscrypt-cert.example.com"
+                                    type: string
+                                public_key_file:
+                                    type: string
+                                secret_key_file:
+                                    type: string
+                        doh_server:
+                            title: DoHServer
+                            description: Encrypted DNS servers (serve DoH/DoT to clients in this zone)
+                            type: object
+                            properties:
+                                cert_file:
+                                    type: string
+                                domain:
+                                    description: For Let's Encrypt
+                                    type: string
+                                enabled:
+                                    type: boolean
+                                key_file:
+                                    type: string
+                                listen_addr:
+                                    description: 'Default: :443'
+                                    type: string
+                                path:
+                                    description: 'Default: /dns-query'
+                                    type: string
+                                use_letsencrypt:
+                                    type: boolean
+                        dot_server:
+                            title: DoTServer
+                            description: DoTServerConfig configures the DNS-over-TLS server.
+                            type: object
+                            properties:
+                                cert_file:
+                                    type: string
+                                enabled:
+                                    type: boolean
+                                key_file:
+                                    type: string
+                                listen_addr:
+                                    description: 'Default: :853'
+                                    type: string
+                        expand_hosts:
+                            type: boolean
+                        host:
+                            description: Static entries and zones
+                            type: array
+                            items:
+                                title: Hosts
+                                description: Static entries and zones
+                                type: object
+                                properties:
+                                    _label_ip:
+                                        description: 'Block label: '
+                                        type: string
+                                    hostnames:
+                                        type: array
+                                        items:
+                                            type: string
+                                required:
+                                    - _label_ip
+                                    - hostnames
+                        listen_port:
+                            description: Listen configuration Default 53
+                            type: number
+                        local_domain:
+                            description: Local domain configuration
+                            type: string
+                        negative_cache_ttl:
+                            type: number
+                        query_logging:
+                            type: boolean
+                        rate_limit_per_sec:
+                            type: number
+                        rebind_protection:
+                            description: Security
+                            type: boolean
+                        zone:
+                            description: DNSZone configuration for authoritative zones.
+                            type: array
+                            items:
+                                title: Zones
+                                description: DNSZone configuration for authoritative zones.
+                                type: object
+                                properties:
+                                    _label_name:
+                                        description: 'Block label: '
+                                        type: string
+                                    record:
+                                        description: DNSRecord configuration.
+                                        type: array
+                                        items:
+                                            title: Records
+                                            description: DNSRecord configuration.
+                                            type: object
+                                            properties:
+                                                _label_name:
+                                                    description: 'Block label: '
+                                                    type: string
+                                                priority:
+                                                    description: For MX, SRV
+                                                    type: number
+                                                ttl:
+                                                    type: number
+                                                type:
+                                                    description: A, AAAA, CNAME, MX, TXT, PTR, SRV
+                                                    type: string
+                                                value:
+                                                    description: IP or target
+                                                    type: string
+                                            required:
+                                                - _label_name
+                                                - type
+                                                - value
+                                required:
+                                    - _label_name
+                    required:
+                        - _label_zone
+            upstream_dnscrypt:
+                description: DNSCryptUpstream configures a DNSCrypt upstream server.
+                type: array
+                items:
+                    title: UpstreamDNSCrypt
+                    description: DNSCryptUpstream configures a DNSCrypt upstream server.
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        enabled:
+                            type: boolean
+                        priority:
+                            type: number
+                        provider_name:
+                            description: Provider name for manual config
+                            type: string
+                        public_key:
+                            description: Server public key (hex)
+                            type: string
+                        server_addr:
+                            description: Server address (IP:port)
+                            type: string
+                        stamp:
+                            description: DNS stamp (sdns://...)
+                            type: string
+                    required:
+                        - _label_name
+            upstream_doh:
+                description: Encrypted DNS upstreams
+                type: array
+                items:
+                    title: UpstreamDoH
+                    description: Encrypted DNS upstreams
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        bootstrap:
+                            description: IP to use for initial connection
+                            type: string
+                        enabled:
+                            type: boolean
+                        priority:
+                            description: Lower = preferred
+                            type: number
+                        server_name:
+                            description: SNI override
+                            type: string
+                        url:
+                            description: e.g., "https://cloudflare-dns.com/dns-query"
+                            type: string
+                    required:
+                        - _label_name
+                        - url
+            upstream_dot:
+                description: DNSOverTLS configures a DNS-over-TLS upstream server.
+                type: array
+                items:
+                    title: UpstreamDoT
+                    description: DNSOverTLS configures a DNS-over-TLS upstream server.
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        enabled:
+                            type: boolean
+                        priority:
+                            type: number
+                        server:
+                            description: IP:port or hostname:port
+                            type: string
+                        server_name:
+                            description: For TLS verification
+                            type: string
+                    required:
+                        - _label_name
+                        - server
+            upstream_timeout:
+                description: seconds
+                type: number
+    dns_server:
+        title: DNSServer
+        description: 'Deprecated: use DNS'
+        type: object
+        properties:
+            allowlist:
+                description: Domains that bypass blocklists
+                type: array
+                items:
+                    type: string
+            authoritative_for:
+                description: Return NXDOMAIN for unknown local hosts
+                type: string
+            blocked_address:
+                description: IP to return for blocked (default 0.0.0.0)
+                type: string
+            blocked_ttl:
+                description: TTL for blocked responses
+                type: number
+            blocklist:
+                description: Filtering
+                type: array
+                items:
+                    title: Blocklists
+                    description: Filtering
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        enabled:
+                            type: boolean
+                        file:
+                            description: Local file path
+                            type: string
+                        format:
+                            description: hosts, domains, adblock
+                            type: string
+                        refresh_hours:
+                            type: number
+                        url:
+                            description: URL to fetch blocklist
+                            type: string
+                    required:
+                        - _label_name
+            cache_enabled:
+                description: Caching
+                type: boolean
+            cache_max_ttl:
+                description: Maximum TTL to cache
+                type: number
+            cache_min_ttl:
+                description: Minimum TTL to cache
+                type: number
+            cache_size:
+                description: Max entries
+                type: number
+            conditional_forward:
+                description: ConditionalForward routes specific domains to specific DNS servers.
+                type: array
+                items:
+                    title: ConditionalForwarders
+                    description: ConditionalForward routes specific domains to specific DNS servers.
+                    type: object
+                    properties:
+                        _label_domain:
+                            description: 'Block label: e.g., "corp.example.com"'
+                            type: string
+                        servers:
+                            description: DNS servers for this domain
+                            type: array
+                            items:
+                                type: string
+                    required:
+                        - _label_domain
+                        - servers
+            dhcp_integration:
+                description: Auto-register DHCP hostnames
+                type: boolean
+            dnscrypt_server:
+                title: DNSCryptServer
+                description: Serve DNSCrypt
+                type: object
+                properties:
+                    cert_file:
+                        description: DNSCrypt certificate
+                        type: string
+                    cert_ttl:
+                        description: Certificate TTL in hours
+                        type: number
+                    enabled:
+                        type: boolean
+                    es_version:
+                        description: 'Encryption suite: 1=XSalsa20Poly1305, 2=XChacha20Poly1305'
+                        type: number
+                    listen_addr:
+                        description: 'Default: :5443'
+                        type: string
+                    provider_name:
+                        description: e.g., "2.dnscrypt-cert.example.com"
+                        type: string
+                    public_key_file:
+                        type: string
+                    secret_key_file:
+                        type: string
+            dnssec:
+                description: Security Validate DNSSEC
+                type: boolean
+            doh_server:
+                title: DoHServer
+                description: Encrypted DNS - Server (serve DoH/DoT/DNSCrypt to clients) Serve DNS-over-HTTPS
+                type: object
+                properties:
+                    cert_file:
+                        type: string
+                    domain:
+                        description: For Let's Encrypt
+                        type: string
+                    enabled:
+                        type: boolean
+                    key_file:
+                        type: string
+                    listen_addr:
+                        description: 'Default: :443'
+                        type: string
+                    path:
+                        description: 'Default: /dns-query'
+                        type: string
+                    use_letsencrypt:
+                        type: boolean
+            dot_server:
+                title: DoTServer
+                description: Serve DNS-over-TLS
+                type: object
+                properties:
+                    cert_file:
+                        type: string
+                    enabled:
+                        type: boolean
+                    key_file:
+                        type: string
+                    listen_addr:
+                        description: 'Default: :853'
+                        type: string
+            enabled:
+                type: boolean
+            expand_hosts:
+                description: Append local domain to simple hostnames
+                type: boolean
+            forwarders:
+                description: Upstream DNS (for forwarding mode)
+                type: array
+                items:
+                    type: string
+            host:
+                description: Static entries and zones Static /etc/hosts style entries
+                type: array
+                items:
+                    title: Hosts
+                    description: Static entries and zones Static /etc/hosts style entries
+                    type: object
+                    properties:
+                        _label_ip:
+                            description: 'Block label: '
+                            type: string
+                        hostnames:
+                            type: array
+                            items:
+                                type: string
+                    required:
+                        - _label_ip
+                        - hostnames
+            listen_on:
+                type: array
+                items:
+                    type: string
+            listen_port:
+                description: Default 53
+                type: number
+            local_domain:
+                description: Local domain configuration e.g., "lan", "home.arpa"
+                type: string
+                enum:
+                    - lan
+                    - home.arpa
+            mode:
+                description: |-
+                    Resolution mode:
+                      - "forward" (default): Forward queries to upstream DNS servers
+                      - "recursive": Full recursive resolver with root hints
+                      - "external": External DNS server (dnsmasq, bind, unbound) is in use
+                type: string
+            negative_cache_ttl:
+                description: TTL for NXDOMAIN
+                type: number
+            query_logging:
+                type: boolean
+            rate_limit_per_sec:
+                description: Per-client rate limit
+                type: number
+            rebind_protection:
+                description: Block private IPs in public responses
+                type: boolean
+            recursive:
+                title: Recursive
+                description: Recursive resolver settings (when mode = "recursive")
+                type: object
+                properties:
+                    aggressive_nsec:
+                        description: RFC 8198
+                        type: boolean
+                    auto_update_root_hints:
+                        type: boolean
+                    harden_below_nxdomain:
+                        description: RFC 8020 compliance
+                        type: boolean
+                    harden_dnssec_stripped:
+                        description: Require DNSSEC if expected
+                        type: boolean
+                    harden_glue:
+                        description: Hardening Validate glue records
+                        type: boolean
+                    harden_referral_path:
+                        description: Validate referral path
+                        type: boolean
+                    max_concurrent:
+                        description: Max concurrent outbound queries
+                        type: number
+                    max_depth:
+                        description: Query settings Max recursion depth (default 30)
+                        type: number
+                    prefetch:
+                        description: Prefetching Prefetch expiring entries
+                        type: boolean
+                    prefetch_key:
+                        description: Prefetch DNSKEY records
+                        type: boolean
+                    qname_minimisation:
+                        description: Privacy RFC 7816
+                        type: boolean
+                    query_timeout:
+                        description: Per-query timeout in ms
+                        type: number
+                    root_hints_file:
+                        description: Root hints for recursive resolution Path to root hints file
+                        type: string
+            upstream_dnscrypt:
+                description: DNSCrypt upstreams
+                type: array
+                items:
+                    title: UpstreamDNSCrypt
+                    description: DNSCrypt upstreams
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        enabled:
+                            type: boolean
+                        priority:
+                            type: number
+                        provider_name:
+                            description: Provider name for manual config
+                            type: string
+                        public_key:
+                            description: Server public key (hex)
+                            type: string
+                        server_addr:
+                            description: Server address (IP:port)
+                            type: string
+                        stamp:
+                            description: DNS stamp (sdns://...)
+                            type: string
+                    required:
+                        - _label_name
+            upstream_doh:
+                description: Encrypted DNS - Upstream (client mode) DNS-over-HTTPS upstreams
+                type: array
+                items:
+                    title: UpstreamDoH
+                    description: Encrypted DNS - Upstream (client mode) DNS-over-HTTPS upstreams
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        bootstrap:
+                            description: IP to use for initial connection
+                            type: string
+                        enabled:
+                            type: boolean
+                        priority:
+                            description: Lower = preferred
+                            type: number
+                        server_name:
+                            description: SNI override
+                            type: string
+                        url:
+                            description: e.g., "https://cloudflare-dns.com/dns-query"
+                            type: string
+                    required:
+                        - _label_name
+                        - url
+            upstream_dot:
+                description: DNS-over-TLS upstreams
+                type: array
+                items:
+                    title: UpstreamDoT
+                    description: DNS-over-TLS upstreams
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        enabled:
+                            type: boolean
+                        priority:
+                            type: number
+                        server:
+                            description: IP:port or hostname:port
+                            type: string
+                        server_name:
+                            description: For TLS verification
+                            type: string
+                    required:
+                        - _label_name
+                        - server
+            upstream_timeout:
+                description: seconds
+                type: number
+            zone:
+                description: DNSZone configuration for authoritative zones.
+                type: array
+                items:
+                    title: Zones
+                    description: DNSZone configuration for authoritative zones.
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        record:
+                            description: DNSRecord configuration.
+                            type: array
+                            items:
+                                title: Records
+                                description: DNSRecord configuration.
+                                type: object
+                                properties:
+                                    _label_name:
+                                        description: 'Block label: '
+                                        type: string
+                                    priority:
+                                        description: For MX, SRV
+                                        type: number
+                                    ttl:
+                                        type: number
+                                    type:
+                                        description: A, AAAA, CNAME, MX, TXT, PTR, SRV
+                                        type: string
+                                    value:
+                                        description: IP or target
+                                        type: string
+                                required:
+                                    - _label_name
+                                    - type
+                                    - value
+                    required:
+                        - _label_name
+    ebpf:
+        title: EBPF
+        description: eBPF configuration for high-performance packet processing
+        type: object
+        properties:
+            adaptive:
+                title: Adaptive
+                description: Adaptive performance management
+                type: object
+                properties:
+                    enabled:
+                        description: Enable adaptive performance management
+                        type: boolean
+                        default: false
+                    minimum_features:
+                        description: Minimum features to keep active
+                        type: array
+                        items:
+                            type: string
+                        default: '["ddos_protection", "flow_monitoring"]'
+                    sampling:
+                        title: Sampling
+                        description: Sampling configuration
+                        type: object
+                        properties:
+                            adaptive_rate:
+                                description: Enable adaptive rate adjustment
+                                type: boolean
+                                default: true
+                            enabled:
+                                description: Enable adaptive sampling
+                                type: boolean
+                                default: false
+                            max_sample_rate:
+                                description: Maximum sampling rate
+                                type: number
+                                default: 1
+                            min_sample_rate:
+                                description: Minimum sampling rate
+                                type: number
+                                default: 0.1
+                    scale_back_rate:
+                        description: Scale-back rate (0.0-1.0)
+                        type: number
+                        default: 0.1
+                    scale_back_threshold:
+                        description: CPU usage threshold to trigger scale-back
+                        type: number
+                        default: 80
+            enabled:
+                description: Enable eBPF subsystem
+                type: boolean
+                default: false
+            fallback:
+                title: Fallback
+                description: Fallback configuration
+                type: object
+                properties:
+                    enable_nfqueue:
+                        description: Enable NFQUEUE fallback when eBPF fails
+                        type: boolean
+                        default: true
+                    on_hook_failure:
+                        description: Action on hook attachment failure
+                        type: string
+                        enum:
+                            - try_alternative
+                            - use_fallback
+                            - fail
+                        default: try_alternative
+                    on_load_failure:
+                        description: Action on program load failure
+                        type: string
+                        enum:
+                            - disable_feature
+                            - use_fallback
+                            - fail
+                        default: disable_feature
+                    on_map_failure:
+                        description: Action on map creation failure
+                        type: string
+                        enum:
+                            - reduce_capacity
+                            - use_fallback
+                            - fail
+                        default: reduce_capacity
+                    on_verifier_failure:
+                        description: Action on verifier rejection
+                        type: string
+                        enum:
+                            - use_simpler_version
+                            - use_fallback
+                            - fail
+                        default: use_simpler_version
+                    partial_support:
+                        description: Enable partial eBPF support
+                        type: boolean
+                        default: true
+                    recovery_interval:
+                        description: Recovery interval for complete failures
+                        type: string
+                        default: 30s
+            feature:
+                description: Feature-specific configurations
+                type: array
+                items:
+                    title: Features
+                    description: Feature-specific configurations
+                    type: object
+            maps:
+                title: Maps
+                description: Map configuration
+                type: object
+                properties:
+                    cache_size:
+                        description: Map cache size
+                        type: number
+                        default: 1000
+                    max_map_entries:
+                        description: Maximum entries per map
+                        type: number
+                        default: 1e+06
+                    max_map_memory:
+                        description: Maximum map memory in MB
+                        type: number
+                        default: 100
+                    max_maps:
+                        description: Maximum number of maps
+                        type: number
+                        default: 100
+            performance:
+                title: Performance
+                description: Performance settings
+                type: object
+                properties:
+                    max_cpu_percent:
+                        description: Maximum CPU usage percentage
+                        type: number
+                        default: 80
+                    max_events_per_sec:
+                        description: Maximum events per second
+                        type: number
+                        default: 10000
+                    max_memory_mb:
+                        description: Maximum memory usage in MB
+                        type: number
+                        default: 500
+                    max_pps:
+                        description: Maximum packets per second
+                        type: number
+                        default: 1e+07
+            programs:
+                title: Programs
+                description: Program configuration
+                type: object
+                properties:
+                    socket_dhcp:
+                        description: DHCP socket filter program
+                        type: string
+                    socket_dns:
+                        description: DNS socket filter program
+                        type: string
+                    socket_tls:
+                        description: TLS socket filter program
+                        type: string
+                    tc_classifier:
+                        description: TC classifier program
+                        type: string
+                    xdp_blocklist:
+                        description: XDP blocklist program
+                        type: string
+            stats_export:
+                title: StatsExport
+                description: Statistics export configuration
+                type: object
+                properties:
+                    enable_json:
+                        type: boolean
+                    enable_prometheus:
+                        type: boolean
+                    json_endpoint:
+                        type: string
+                    prometheus_port:
+                        type: number
+    enable_flow_offload:
+        description: Enable hardware flow offloading for improved performance.
+        type: boolean
+        default: false
+    features:
+        title: Features
+        description: Feature Flags
+        type: object
+        properties:
+            integrity_monitoring:
+                description: Detect and revert external changes
+                type: boolean
+            network_learning:
+                description: Automated rule learning
+                type: boolean
+            qos:
+                description: Traffic Shaping
+                type: boolean
+            threat_intel:
+                description: 'Phase 5: Threat Intelligence'
+                type: boolean
+    frr:
+        title: FRR
+        description: FRRConfig holds configuration for Free Range Routing (FRR).
+        type: object
+        properties:
+            bgp:
+                title: BGP
+                description: BGP configuration.
+                type: object
+                properties:
+                    asn:
+                        type: number
+                    neighbor:
+                        description: Neighbor BGP peer configuration.
+                        type: array
+                        items:
+                            title: Neighbors
+                            description: Neighbor BGP peer configuration.
+                            type: object
+                            properties:
+                                _label_ip:
+                                    description: 'Block label: '
+                                    type: string
+                                remote_asn:
+                                    type: number
+                            required:
+                                - _label_ip
+                    networks:
+                        type: array
+                        items:
+                            type: string
+                    router_id:
+                        type: string
+            enabled:
+                type: boolean
+            ospf:
+                title: OSPF
+                description: OSPF configuration.
+                type: object
+                properties:
+                    area:
+                        description: OSPFArea configuration.
+                        type: array
+                        items:
+                            title: Areas
+                            description: OSPFArea configuration.
+                            type: object
+                            properties:
+                                _label_id:
+                                    description: 'Block label: '
+                                    type: string
+                                networks:
+                                    type: array
+                                    items:
+                                        type: string
+                            required:
+                                - _label_id
+                    networks:
+                        description: List of CIDRs to advertise
+                        type: array
+                        items:
+                            type: string
+                    router_id:
+                        type: string
+    geoip:
+        title: GeoIP
+        description: GeoIP configuration for country-based filtering
+        type: object
+        properties:
+            auto_update:
+                description: AutoUpdate enables automatic database updates (future feature).
+                type: boolean
+            database_path:
+                description: |-
+                    DatabasePath is the path to the MMDB file (MaxMind or DB-IP format).
+                    Default: /opt/flywall/share/geoip/GeoLite2-Country.mmdb (or distro path)
+                    For DB-IP: /opt/flywall/share/geoip/dbip-country-lite.mmdb
+                type: string
+            enabled:
+                description: Enabled activates GeoIP matching in firewall rules.
+                type: boolean
+            license_key:
+                description: |-
+                    LicenseKey for premium MaxMind database updates (future feature).
+                    Not required for DB-IP or GeoLite2 (free tier).
+                type: string
+    interface:
+        description: |-
+            Interface represents a physical or virtual network interface configuration.
+            Each interface can be assigned to a security zone and configured with
+            static IPs, DHCP, VLANs, and other network settings.
+        type: array
+        items:
+            title: Interfaces
+            description: |-
+                Interface represents a physical or virtual network interface configuration.
+                Each interface can be assigned to a security zone and configured with
+                static IPs, DHCP, VLANs, and other network settings.
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: Name is the system interface name.'
+                    type: string
+                access_web_ui:
+                    description: |-
+                        Web UI / API Access
+                        Deprecated: Use Management block instead
+                    type: boolean
+                bond:
+                    title: Bond
+                    description: Bond represents the configuration for a bonding interface.
+                    type: object
+                    properties:
+                        interfaces:
+                            type: array
+                            items:
+                                type: string
+                        mode:
+                            type: string
+                description:
+                    description: Human-readable description for this interface.
+                    type: string
+                dhcp:
+                    description: Enable DHCP client on this interface.
+                    type: boolean
+                    default: false
+                dhcp_client:
+                    description: |-
+                        DHCPClient specifies how DHCP client is managed:
+                          - "builtin" (default): Use Flywall's built-in DHCP client
+                          - "external": External DHCP client (udhcpc, dhclient, etc.) manages this interface
+                          - "monitor": Don't manage DHCP, but monitor interface for IP changes
+                    type: string
+                dhcp_v6:
+                    description: Enable DHCPv6 client for IPv6 address assignment.
+                    type: boolean
+                    default: false
+                disable_anti_lockout:
+                    description: |-
+                        Anti-Lockout protection (sandbox mode only)
+                        When true, implicit accept rules are created for this interface in the
+                        high-priority flywall-lockout table. This ensures control plane access
+                        is preserved even if the main firewall ruleset is broken/flushed.
+                        Defaults to false (protection enabled by default if AccessWebUI is true)
+                    type: boolean
+                disabled:
+                    description: Temporarily disable this interface (brings it down).
+                    type: boolean
+                    default: false
+                gateway:
+                    description: Default gateway for static IPv4 configuration.
+                    type: string
+                gateway_v6:
+                    description: Default gateway for static IPv6 configuration.
+                    type: string
+                ipv4:
+                    description: Static IPv4 addresses in CIDR notation.
+                    type: array
+                    items:
+                        type: string
+                ipv6:
+                    description: Static IPv6 addresses in CIDR notation.
+                    type: array
+                    items:
+                        type: string
+                management:
+                    title: Management
+                    description: Management Access (Interface specific overrides)
+                    type: object
+                    properties:
+                        api:
+                            description: Allow API access (used for L7 filtering, implies HTTPS access)
+                            type: boolean
+                        icmp:
+                            description: Allow ping to firewall
+                            type: boolean
+                        snmp:
+                            description: Allow SNMP queries (udp/161)
+                            type: boolean
+                        ssh:
+                            description: Allow SSH access (tcp/22)
+                            type: boolean
+                        syslog:
+                            description: Allow syslog sending (udp/514)
+                            type: boolean
+                        web:
+                            description: Allow Web UI access (tcp/80, tcp/443)
+                            type: boolean
+                        web_ui:
+                            description: 'Legacy: Allow Web UI access (tcp/80, tcp/443) -> Use Web'
+                            type: boolean
+                mtu:
+                    description: Maximum Transmission Unit size in bytes.
+                    type: number
+                    default: 1500
+                    minimum: 576
+                    maximum: 9000
+                new_zone:
+                    title: NewZone
+                    description: Create and assign a new zone inline.
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        action:
+                            description: |-
+                                Zone behavior
+                                Action for intra-zone traffic: "accept", "drop", "reject" (default: accept)
+                            type: string
+                            enum:
+                                - accept
+                                - reject
+                        color:
+                            type: string
+                        description:
+                            type: string
+                        dhcp:
+                            description: Use DHCP client on this interface
+                            type: boolean
+                        dst:
+                            description: Destination IP/network
+                            type: string
+                        external:
+                            description: |-
+                                External marks this as an external/WAN zone (used for auto-masquerade detection)
+                                If not set, detected from: DHCP client enabled, non-RFC1918 address, or "wan"/"external" in name
+                            type: boolean
+                        interface:
+                            description: |-
+                                Simple match criteria (use for single-interface zones)
+                                These are effectively a single implicit match rule
+                                Interface can be exact ("eth0") or prefix with + or * suffix ("wg+" or "wg*" matches wg0, wg1...)
+                            type: string
+                        ipsets:
+                            description: Legacy fields (kept for backwards compat) IPSet names for IP-based membership
+                            type: array
+                            items:
+                                type: string
+                        ipv4:
+                            description: IP assignment for simple zones (shorthand - assigns to the interface)
+                            type: array
+                            items:
+                                type: string
+                        ipv6:
+                            type: array
+                            items:
+                                type: string
+                        management:
+                            title: Management
+                            description: Management access FROM this zone to the firewall
+                            type: object
+                            properties:
+                                api:
+                                    description: Allow API access (used for L7 filtering, implies HTTPS access)
+                                    type: boolean
+                                icmp:
+                                    description: Allow ping to firewall
+                                    type: boolean
+                                snmp:
+                                    description: Allow SNMP queries (udp/161)
+                                    type: boolean
+                                ssh:
+                                    description: Allow SSH access (tcp/22)
+                                    type: boolean
+                                syslog:
+                                    description: Allow syslog sending (udp/514)
+                                    type: boolean
+                                web:
+                                    description: Allow Web UI access (tcp/80, tcp/443)
+                                    type: boolean
+                                web_ui:
+                                    description: 'Legacy: Allow Web UI access (tcp/80, tcp/443) -> Use Web'
+                                    type: boolean
+                        match:
+                            description: |-
+                                Complex match criteria (OR logic between matches, AND logic within each match)
+                                Global fields above apply to ALL matches as defaults
+                            type: array
+                            items:
+                                title: Matches
+                                description: |-
+                                    Complex match criteria (OR logic between matches, AND logic within each match)
+                                    Global fields above apply to ALL matches as defaults
+                                type: object
+                                properties:
+                                    dscp:
+                                        description: value, class, or classid
+                                        type: string
+                                    dst:
+                                        type: string
+                                    interface:
+                                        description: Interface can be exact ("eth0") or prefix with + or * suffix ("wg+" matches wg0, wg1...)
+                                        type: string
+                                    mac:
+                                        type: string
+                                    mark:
+                                        type: string
+                                    out_interface:
+                                        type: string
+                                    phys_in:
+                                        type: string
+                                    phys_out:
+                                        type: string
+                                    protocol:
+                                        description: Advanced matching
+                                        type: string
+                                    src:
+                                        type: string
+                                    tos:
+                                        type: number
+                                    vlan:
+                                        type: number
+                        networks:
+                            description: Direct CIDR ranges
+                            type: array
+                            items:
+                                type: string
+                        services:
+                            title: Services
+                            description: |-
+                                Services provided TO this zone (firewall auto-generates rules)
+                                These define what the firewall offers to clients in this zone
+                            type: object
+                            properties:
+                                captive_portal:
+                                    description: Captive portal / guest access Redirect HTTP to portal
+                                    type: boolean
+                                dhcp:
+                                    description: Network services Allow DHCP requests (udp/67-68)
+                                    type: boolean
+                                dns:
+                                    description: Allow DNS queries (udp/53, tcp/53)
+                                    type: boolean
+                                ntp:
+                                    description: Allow NTP sync (udp/123)
+                                    type: boolean
+                                port:
+                                    description: Custom service ports (auto-allow)
+                                    type: array
+                                    items:
+                                        title: CustomPorts
+                                        description: Custom service ports (auto-allow)
+                                        type: object
+                                        properties:
+                                            _label_name:
+                                                description: 'Block label: '
+                                                type: string
+                                            port:
+                                                description: Port number
+                                                type: number
+                                            port_end:
+                                                description: For port ranges
+                                                type: number
+                                            protocol:
+                                                description: tcp, udp
+                                                type: string
+                                        required:
+                                            - _label_name
+                                            - protocol
+                                            - port
+                        src:
+                            description: Source IP/network (e.g., "192.168.1.0/24")
+                            type: string
+                        vlan:
+                            description: VLAN tag
+                            type: number
+                    required:
+                        - _label_name
+                ra:
+                    description: Enable Router Advertisements (for IPv6 server mode).
+                    type: boolean
+                    default: false
+                table:
+                    description: |-
+                        Table specifies the routing table ID for this interface.
+                        If set to > 0 (and not 254/main), Flywall will enable split routing:
+                        - A separate routing table (ID=Table) is created with a default route via Gateway.
+                        - Incoming connections are marked with the table ID.
+                        - Reply packets are restored with the mark and routed via the table.
+                        - Locally initiated traffic marked for this table (e.g. via specific IP) uses the table.
+                    type: number
+                tls:
+                    title: TLS
+                    description: TLS/Certificate configuration for this interface
+                    type: object
+                    properties:
+                        cert_file:
+                            description: Manual certificate (bring your own)
+                            type: string
+                        domains:
+                            type: array
+                            items:
+                                type: string
+                        email:
+                            description: ACME (Let's Encrypt) settings
+                            type: string
+                        hostname:
+                            description: For Tailscale mode
+                            type: string
+                        key_file:
+                            type: string
+                        mode:
+                            description: '"self-signed", "acme", "tailscale", "manual"'
+                            type: string
+                            enum:
+                                - self-signed
+                                - manual
+                vlan:
+                    description: VLAN represents a VLAN configuration nested within an interface.
+                    type: array
+                    items:
+                        title: VLANs
+                        description: VLAN represents a VLAN configuration nested within an interface.
+                        type: object
+                        properties:
+                            _label_id:
+                                description: 'Block label: '
+                                type: string
+                            description:
+                                type: string
+                            ipv4:
+                                type: array
+                                items:
+                                    type: string
+                            ipv6:
+                                type: array
+                                items:
+                                    type: string
+                            new_zone:
+                                title: NewZone
+                                description: Create zone inline
+                                type: object
+                                properties:
+                                    _label_name:
+                                        description: 'Block label: '
+                                        type: string
+                                    action:
+                                        description: |-
+                                            Zone behavior
+                                            Action for intra-zone traffic: "accept", "drop", "reject" (default: accept)
+                                        type: string
+                                        enum:
+                                            - accept
+                                            - reject
+                                    color:
+                                        type: string
+                                    description:
+                                        type: string
+                                    dhcp:
+                                        description: Use DHCP client on this interface
+                                        type: boolean
+                                    dst:
+                                        description: Destination IP/network
+                                        type: string
+                                    external:
+                                        description: |-
+                                            External marks this as an external/WAN zone (used for auto-masquerade detection)
+                                            If not set, detected from: DHCP client enabled, non-RFC1918 address, or "wan"/"external" in name
+                                        type: boolean
+                                    interface:
+                                        description: |-
+                                            Simple match criteria (use for single-interface zones)
+                                            These are effectively a single implicit match rule
+                                            Interface can be exact ("eth0") or prefix with + or * suffix ("wg+" or "wg*" matches wg0, wg1...)
+                                        type: string
+                                    ipsets:
+                                        description: Legacy fields (kept for backwards compat) IPSet names for IP-based membership
+                                        type: array
+                                        items:
+                                            type: string
+                                    ipv4:
+                                        description: IP assignment for simple zones (shorthand - assigns to the interface)
+                                        type: array
+                                        items:
+                                            type: string
+                                    ipv6:
+                                        type: array
+                                        items:
+                                            type: string
+                                    management:
+                                        title: Management
+                                        description: Management access FROM this zone to the firewall
+                                        type: object
+                                        properties:
+                                            api:
+                                                description: Allow API access (used for L7 filtering, implies HTTPS access)
+                                                type: boolean
+                                            icmp:
+                                                description: Allow ping to firewall
+                                                type: boolean
+                                            snmp:
+                                                description: Allow SNMP queries (udp/161)
+                                                type: boolean
+                                            ssh:
+                                                description: Allow SSH access (tcp/22)
+                                                type: boolean
+                                            syslog:
+                                                description: Allow syslog sending (udp/514)
+                                                type: boolean
+                                            web:
+                                                description: Allow Web UI access (tcp/80, tcp/443)
+                                                type: boolean
+                                            web_ui:
+                                                description: 'Legacy: Allow Web UI access (tcp/80, tcp/443) -> Use Web'
+                                                type: boolean
+                                    match:
+                                        description: |-
+                                            Complex match criteria (OR logic between matches, AND logic within each match)
+                                            Global fields above apply to ALL matches as defaults
+                                        type: array
+                                        items:
+                                            title: Matches
+                                            description: |-
+                                                Complex match criteria (OR logic between matches, AND logic within each match)
+                                                Global fields above apply to ALL matches as defaults
+                                            type: object
+                                            properties:
+                                                dscp:
+                                                    description: value, class, or classid
+                                                    type: string
+                                                dst:
+                                                    type: string
+                                                interface:
+                                                    description: Interface can be exact ("eth0") or prefix with + or * suffix ("wg+" matches wg0, wg1...)
+                                                    type: string
+                                                mac:
+                                                    type: string
+                                                mark:
+                                                    type: string
+                                                out_interface:
+                                                    type: string
+                                                phys_in:
+                                                    type: string
+                                                phys_out:
+                                                    type: string
+                                                protocol:
+                                                    description: Advanced matching
+                                                    type: string
+                                                src:
+                                                    type: string
+                                                tos:
+                                                    type: number
+                                                vlan:
+                                                    type: number
+                                    networks:
+                                        description: Direct CIDR ranges
+                                        type: array
+                                        items:
+                                            type: string
+                                    services:
+                                        title: Services
+                                        description: |-
+                                            Services provided TO this zone (firewall auto-generates rules)
+                                            These define what the firewall offers to clients in this zone
+                                        type: object
+                                        properties:
+                                            captive_portal:
+                                                description: Captive portal / guest access Redirect HTTP to portal
+                                                type: boolean
+                                            dhcp:
+                                                description: Network services Allow DHCP requests (udp/67-68)
+                                                type: boolean
+                                            dns:
+                                                description: Allow DNS queries (udp/53, tcp/53)
+                                                type: boolean
+                                            ntp:
+                                                description: Allow NTP sync (udp/123)
+                                                type: boolean
+                                            port:
+                                                description: Custom service ports (auto-allow)
+                                                type: array
+                                                items:
+                                                    title: CustomPorts
+                                                    description: Custom service ports (auto-allow)
+                                                    type: object
+                                                    properties:
+                                                        _label_name:
+                                                            description: 'Block label: '
+                                                            type: string
+                                                        port:
+                                                            description: Port number
+                                                            type: number
+                                                        port_end:
+                                                            description: For port ranges
+                                                            type: number
+                                                        protocol:
+                                                            description: tcp, udp
+                                                            type: string
+                                                    required:
+                                                        - _label_name
+                                                        - protocol
+                                                        - port
+                                    src:
+                                        description: Source IP/network (e.g., "192.168.1.0/24")
+                                        type: string
+                                    vlan:
+                                        description: VLAN tag
+                                        type: number
+                                required:
+                                    - _label_name
+                            zone:
+                                type: string
+                        required:
+                            - _label_id
+                vrf:
+                    description: Assign this interface to a VRF (L3 domain).
+                    type: string
+                web_ui_port:
+                    description: 'Deprecated: Use Management block instead Port to map (external)'
+                    type: number
+                zone:
+                    description: Assign this interface to a security zone.
+                    type: string
+            required:
+                - _label_name
+    ip_forwarding:
+        description: Enable IP forwarding between interfaces (required for routing).
+        type: boolean
+        default: false
+    ipset:
+        description: IPSet defines a named set of IPs/networks for use in firewall rules.
+        type: array
+        items:
+            title: IPSets
+            description: IPSet defines a named set of IPs/networks for use in firewall rules.
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                action:
+                    description: drop, reject, log (for auto-generated rules)
+                    type: string
+                apply_to:
+                    description: input, forward, both (for auto-generated rules)
+                    type: string
+                auto_update:
+                    description: Enable automatic updates
+                    type: boolean
+                description:
+                    type: string
+                domains:
+                    description: Domains for dynamic resolution (only for type="dns")
+                    type: array
+                    items:
+                        type: string
+                entries:
+                    type: array
+                    items:
+                        type: string
+                firehol_list:
+                    description: 'Deprecated: Use ManagedList instead'
+                    type: string
+                managed_list:
+                    description: Managed List (replaces FireHOLList) e.g., "firehol_level1"
+                    type: string
+                match_on_dest:
+                    description: Match destination IP
+                    type: boolean
+                match_on_source:
+                    description: 'Match source IP (default: true)'
+                    type: boolean
+                refresh_hours:
+                    description: 'How often to refresh (default: 24)'
+                    type: number
+                refresh_interval:
+                    description: Refresh interval for DNS resolution (e.g., "5m", "1h") - only for type="dns"
+                    type: string
+                    enum:
+                        - 5m
+                        - 1h
+                size:
+                    description: 'Optimization: Pre-allocated size for dynamic sets to prevent resizing (suggested: 65535)'
+                    type: number
+                type:
+                    description: ipv4_addr (default), ipv6_addr, inet_service, or dns
+                    type: string
+                url:
+                    description: Custom URL for IP list
+                    type: string
+            required:
+                - _label_name
+    log_dir:
+        description: Log Directory (overrides default /var/log/flywall)
+        type: string
+    mark_rule:
+        description: |-
+            MarkRule represents a rule for setting routing marks on packets.
+            Marks are set in nftables and matched by ip rule for routing decisions.
+        type: array
+        items:
+            title: MarkRules
+            description: |-
+                MarkRule represents a rule for setting routing marks on packets.
+                Marks are set in nftables and matched by ip rule for routing decisions.
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                comment:
+                    type: string
+                conn_state:
+                    description: NEW, ESTABLISHED, etc.
+                    type: array
+                    items:
+                        type: string
+                dst_ip:
+                    type: string
+                dst_port:
+                    type: number
+                dst_ports:
+                    description: Multiple ports
+                    type: array
+                    items:
+                        type: number
+                dst_zone:
+                    type: string
+                enabled:
+                    type: boolean
+                in_interface:
+                    type: string
+                ipset:
+                    description: Match against IPSet
+                    type: string
+                mark:
+                    description: 'Mark value to set (hex: 0x10)'
+                    type: string
+                mask:
+                    description: Mask for mark operations
+                    type: string
+                out_interface:
+                    type: string
+                proto:
+                    description: Match criteria tcp, udp, icmp, all
+                    type: string
+                restore_mark:
+                    description: Restore from conntrack
+                    type: boolean
+                save_mark:
+                    description: Mark behavior Save to conntrack
+                    type: boolean
+                src_ip:
+                    type: string
+                src_port:
+                    type: number
+                src_zone:
+                    type: string
+            required:
+                - _label_name
+                - mark
+    mdns:
+        title: MDNS
+        description: mDNS Reflector configuration
+        type: object
+        properties:
+            enabled:
+                type: boolean
+            interfaces:
+                description: Interfaces to reflect between
+                type: array
+                items:
+                    type: string
+    mss_clamping:
+        description: Enable TCP MSS clamping to PMTU (recommended for VPNs).
+        type: boolean
+        default: false
+    multi_wan:
+        title: MultiWAN
+        description: MultiWAN represents multi-WAN configuration for failover and load balancing.
+        type: object
+        properties:
+            enabled:
+                type: boolean
+            health_check:
+                title: HealthCheck
+                description: WANHealth configures health checking for multi-WAN.
+                type: object
+                properties:
+                    http_check:
+                        description: URL for HTTP health check
+                        type: string
+                    interval:
+                        description: Check interval in seconds
+                        type: number
+                    targets:
+                        description: IPs to ping
+                        type: array
+                        items:
+                            type: string
+                    threshold:
+                        description: Failures before marking down
+                        type: number
+                    timeout:
+                        description: Timeout per check
+                        type: number
+            mode:
+                description: '"failover", "loadbalance", "both"'
+                type: string
+                enum:
+                    - failover
+                    - both
+            wan:
+                description: WANLink represents a WAN connection for multi-WAN.
+                type: array
+                items:
+                    title: Connections
+                    description: WANLink represents a WAN connection for multi-WAN.
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        enabled:
+                            type: boolean
+                        gateway:
+                            type: string
+                        interface:
+                            type: string
+                        priority:
+                            description: For failover (lower = preferred)
+                            type: number
+                        weight:
+                            description: For load balancing (1-100)
+                            type: number
+                    required:
+                        - _label_name
+                        - interface
+                        - gateway
+    nat:
+        description: NATRule defines Network Address Translation rules.
+        type: array
+        items:
+            title: NAT
+            description: NATRule defines Network Address Translation rules.
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                description:
+                    type: string
+                dest_ip:
+                    description: Dest IP match
+                    type: string
+                dest_port:
+                    description: Dest Port match (supports ranges "80-90")
+                    type: string
+                hairpin:
+                    description: Enable Hairpin NAT (NAT Reflection)
+                    type: boolean
+                in_interface:
+                    description: for dnat
+                    type: string
+                mark:
+                    description: FWMark match
+                    type: number
+                out_interface:
+                    description: for masquerade/snat
+                    type: string
+                proto:
+                    description: tcp, udp
+                    type: string
+                snat_ip:
+                    description: for snat (Target IP)
+                    type: string
+                src_ip:
+                    description: Source IP match
+                    type: string
+                to_ip:
+                    description: Target IP for DNAT
+                    type: string
+                to_port:
+                    description: Target Port for DNAT
+                    type: string
+                type:
+                    description: masquerade, dnat, snat, redirect
+                    type: string
+            required:
+                - _label_name
+                - type
+    notifications:
+        title: Notifications
+        description: NotificationsConfig configures the notification system.
+        type: object
+        properties:
+            channel:
+                description: NotificationChannel defines a notification destination.
+                type: array
+                items:
+                    title: Channels
+                    description: NotificationChannel defines a notification destination.
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        api_token:
+                            description: Pushover settings
+                            type: string
+                        channel:
+                            type: string
+                        enabled:
+                            type: boolean
+                        from:
+                            type: string
+                        headers:
+                            type: object
+                        level:
+                            description: critical, warning, info
+                            type: string
+                        password:
+                            description: Generic auth (for ntfy, webhook)
+                            type: string
+                        priority:
+                            type: number
+                        server:
+                            description: ntfy settings
+                            type: string
+                        smtp_host:
+                            description: Email settings
+                            type: string
+                        smtp_password:
+                            type: string
+                        smtp_port:
+                            type: number
+                        smtp_user:
+                            type: string
+                        sound:
+                            type: string
+                        to:
+                            type: array
+                            items:
+                                type: string
+                        topic:
+                            type: string
+                        type:
+                            description: email, pushover, slack, discord, ntfy, webhook
+                            type: string
+                        user_key:
+                            type: string
+                        username:
+                            type: string
+                        webhook_url:
+                            description: Webhook/Slack/Discord settings
+                            type: string
+                    required:
+                        - _label_name
+                        - type
+            enabled:
+                type: boolean
+            rule:
+                description: AlertRule defines when an alert should be triggered.
+                type: array
+                items:
+                    title: Rules
+                    description: AlertRule defines when an alert should be triggered.
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        channels:
+                            type: array
+                            items:
+                                type: string
+                        condition:
+                            type: string
+                        cooldown:
+                            description: e.g. "1h"
+                            type: string
+                        enabled:
+                            type: boolean
+                        severity:
+                            description: info, warning, critical
+                            type: string
+                    required:
+                        - _label_name
+                        - condition
+    ntp:
+        title: NTP
+        description: NTP configuration
+        type: object
+        properties:
+            enabled:
+                type: boolean
+            interval:
+                description: Sync interval (e.g. "4h")
+                type: string
+            servers:
+                description: Upstream servers
+                type: array
+                items:
+                    type: string
+    policy:
+        description: |-
+            Policy defines traffic rules between zones.
+            Rules are evaluated in order - first match wins.
+        type: array
+        items:
+            title: Policies
+            description: |-
+                Policy defines traffic rules between zones.
+                Rules are evaluated in order - first match wins.
+            type: object
+            properties:
+                _label_from:
+                    description: 'Block label: Source zone name'
+                    type: string
+                _label_to:
+                    description: 'Block label: Destination zone name'
+                    type: string
+                action:
+                    description: |-
+                        Action for traffic matching this policy (when no specific rule matches)
+                        Values: "accept", "drop", "reject" (default: drop)
+                    type: string
+                    enum:
+                        - accept
+                        - reject
+                description:
+                    type: string
+                disabled:
+                    description: Temporarily disable this policy
+                    type: boolean
+                inherits:
+                    description: |-
+                        Inheritance - allows policies to inherit rules from a parent policy
+                        Child policies get all parent rules first, then their own additional rules Name of parent policy to inherit from
+                    type: string
+                log:
+                    description: Log packets matching default action
+                    type: boolean
+                log_prefix:
+                    description: Prefix for log messages
+                    type: string
+                masquerade:
+                    description: |-
+                        Masquerade controls NAT for outbound traffic through this policy
+                        nil = auto (enable when RFC1918 source → non-RFC1918 dest)
+                        true = always masquerade
+                        false = never masquerade
+                    type: boolean
+                name:
+                    description: Optional descriptive name
+                    type: string
+                priority:
+                    description: Policy priority (lower = evaluated first)
+                    type: number
+                rule:
+                    description: |-
+                        PolicyRule defines a specific rule within a policy.
+                        Rules are matched in the order they appear - first match wins.
+                    type: array
+                    items:
+                        title: Rules
+                        description: |-
+                            PolicyRule defines a specific rule within a policy.
+                            Rules are matched in the order they appear - first match wins.
+                        type: object
+                        properties:
+                            _label_name:
+                                description: 'Block label: '
+                                type: string
+                            action:
+                                description: Action accept, drop, reject, jump, return, log
+                                type: string
+                            comment:
+                                description: Metadata
+                                type: string
+                            conn_state:
+                                description: '"new", "established", "related", "invalid"'
+                                type: string
+                                enum:
+                                    - new
+                                    - invalid
+                            counter:
+                                description: Named counter for accounting
+                                type: string
+                            days:
+                                description: 'Days of week: "Monday", "Tuesday", etc.'
+                                type: array
+                                items:
+                                    type: string
+                            description:
+                                type: string
+                            dest_country:
+                                description: ISO 3166-1 alpha-2 country code
+                                type: string
+                            dest_ip:
+                                description: Destination IP/CIDR
+                                type: string
+                            dest_ipset:
+                                description: Destination IPSet name
+                                type: string
+                            dest_port:
+                                type: number
+                            dest_ports:
+                                description: Multiple ports
+                                type: array
+                                items:
+                                    type: number
+                            dest_zone:
+                                description: Override policy's To zone
+                                type: string
+                            disabled:
+                                description: Temporarily disable this rule
+                                type: boolean
+                            group:
+                                description: 'UI Organization Section grouping: "User Access", "IoT Isolation"'
+                                type: string
+                                enum:
+                                    - User Access
+                                    - IoT Isolation
+                            id:
+                                description: Identity Unique ID for referencing in reorder operations
+                                type: string
+                            in_interface:
+                                description: Match specific input interface
+                                type: string
+                            insert_after:
+                                description: Insert after rule with this ID/name
+                                type: string
+                            invert_dest:
+                                description: Negate destination IP/IPSet match
+                                type: boolean
+                            invert_src:
+                                description: Invert matching (match everything EXCEPT the specified value) Negate source IP/IPSet match
+                                type: boolean
+                            jump_target:
+                                description: Target chain for jump action
+                                type: string
+                            limit:
+                                description: Rate limit e.g. "10/second"
+                                type: string
+                            log:
+                                description: Logging & accounting
+                                type: boolean
+                            log_level:
+                                description: '"debug", "info", "notice", "warning", "error"'
+                                type: string
+                                enum:
+                                    - debug
+                                    - error
+                            log_prefix:
+                                type: string
+                            max_connections:
+                                description: Connection limiting (prevent abuse/DoS) Max concurrent connections per source
+                                type: number
+                            order:
+                                description: Ordering - rules are processed in order, these help with insertion Explicit order (0 = use array position)
+                                type: number
+                            out_interface:
+                                description: Match specific output interface
+                                type: string
+                            proto:
+                                description: Match conditions
+                                type: string
+                            service:
+                                description: Service Macro (e.g. "ssh") - expands to Proto/Port
+                                type: string
+                            services:
+                                description: Service names like "http", "ssh"
+                                type: array
+                                items:
+                                    type: string
+                            source_country:
+                                description: GeoIP matching (requires MaxMind database) ISO 3166-1 alpha-2 country code (e.g., "US", "CN")
+                                type: string
+                                enum:
+                                    - US
+                                    - CN
+                            src_ip:
+                                description: Source IP/CIDR
+                                type: string
+                            src_ipset:
+                                description: Source IPSet name
+                                type: string
+                            src_port:
+                                type: number
+                            src_ports:
+                                type: array
+                                items:
+                                    type: number
+                            src_zone:
+                                description: Additional match conditions Override policy's From zone
+                                type: string
+                            tags:
+                                description: For grouping/filtering in UI
+                                type: array
+                                items:
+                                    type: string
+                            tcp_flags:
+                                description: |-
+                                    TCP Flags matching (for SYN flood protection, connection state filtering)
+                                    Values: "syn", "syn,!ack", "ack", "fin", "rst", "psh", "urg" or combinations
+                                    Common presets: "syn" (new only), "ack" (established), "fin,psh,urg" (xmas scan)
+                                type: string
+                                enum:
+                                    - syn
+                                    - urg
+                            time_end:
+                                description: End time "HH:MM" (24h format)
+                                type: string
+                            time_start:
+                                description: Time-of-day matching (uses nftables meta hour/day, requires kernel 5.4+) Start time "HH:MM" (24h format)
+                                type: string
+                        required:
+                            - _label_name
+                            - action
+            required:
+                - _label_from
+                - _label_to
+    policy_route:
+        description: |-
+            PolicyRoute represents a policy-based routing rule.
+            Policy routes use firewall marks to direct traffic to specific routing tables.
+        type: array
+        items:
+            title: PolicyRoutes
+            description: |-
+                PolicyRoute represents a policy-based routing rule.
+                Policy routes use firewall marks to direct traffic to specific routing tables.
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                blackhole:
+                    description: Drop matching packets
+                    type: boolean
+                comment:
+                    type: string
+                enabled:
+                    description: Default true
+                    type: boolean
+                from:
+                    description: Source IP/CIDR
+                    type: string
+                fwmark:
+                    description: Alternative mark syntax
+                    type: string
+                goto:
+                    description: Jump to another table? Or just set table field.
+                    type: number
+                iif:
+                    description: Input interface
+                    type: string
+                mark:
+                    description: 'Match criteria (combined with AND) Firewall mark to match (hex: 0x10)'
+                    type: string
+                mark_mask:
+                    description: Mask for mark matching
+                    type: string
+                oif:
+                    description: Output interface
+                    type: string
+                priority:
+                    description: Rule priority (lower = higher priority)
+                    type: number
+                prohibit:
+                    description: Return ICMP prohibited
+                    type: boolean
+                table:
+                    description: Action Routing table to use
+                    type: number
+                to:
+                    description: Destination IP/CIDR
+                    type: string
+            required:
+                - _label_name
+    protection:
+        description: InterfaceProtection defines security protection settings for an interface.
+        type: array
+        items:
+            title: Protections
+            description: InterfaceProtection defines security protection settings for an interface.
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                allowed_countries:
+                    description: If set, only these allowed
+                    type: array
+                    items:
+                        type: string
+                anti_spoofing:
+                    description: AntiSpoofing drops packets with spoofed source IPs (recommended for WAN)
+                    type: boolean
+                blocked_countries:
+                    description: ISO country codes
+                    type: array
+                    items:
+                        type: string
+                bogon_filtering:
+                    description: BogonFiltering drops packets from reserved/invalid IP ranges
+                    type: boolean
+                enabled:
+                    type: boolean
+                geo_blocking:
+                    description: GeoBlocking blocks traffic from specific countries (requires GeoIP database)
+                    type: boolean
+                icmp_burst:
+                    description: 'burst (default: 20)'
+                    type: number
+                icmp_rate:
+                    description: 'packets/sec (default: 10)'
+                    type: number
+                icmp_rate_limit:
+                    description: ICMPRateLimit limits ICMP packets to prevent ping floods
+                    type: boolean
+                interface:
+                    description: Interface name or "*" for all
+                    type: string
+                invalid_packets:
+                    description: InvalidPackets drops malformed/invalid packets
+                    type: boolean
+                new_conn_burst:
+                    description: 'burst (default: 200)'
+                    type: number
+                new_conn_rate:
+                    description: 'per second (default: 100)'
+                    type: number
+                new_conn_rate_limit:
+                    description: NewConnRateLimit limits new connections per second
+                    type: boolean
+                port_scan_protection:
+                    description: PortScanProtection detects and blocks port scanning
+                    type: boolean
+                port_scan_threshold:
+                    description: 'ports/sec (default: 10)'
+                    type: number
+                private_filtering:
+                    description: PrivateFiltering drops packets from private IP ranges on WAN (RFC1918)
+                    type: boolean
+                syn_flood_burst:
+                    description: 'burst allowance (default: 50)'
+                    type: number
+                syn_flood_protection:
+                    description: SynFloodProtection limits SYN packets to prevent SYN floods
+                    type: boolean
+                syn_flood_rate:
+                    description: 'packets/sec (default: 25)'
+                    type: number
+            required:
+                - _label_name
+                - interface
+    qos_policy:
+        description: Per-interface settings (first-class)
+        type: array
+        items:
+            title: QoSPolicies
+            description: Per-interface settings (first-class)
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                class:
+                    description: QoSClass defines a traffic class for QoS.
+                    type: array
+                    items:
+                        title: Classes
+                        description: QoSClass defines a traffic class for QoS.
+                        type: object
+                        properties:
+                            _label_name:
+                                description: 'Block label: '
+                                type: string
+                            burst:
+                                description: Burst size
+                                type: string
+                            ceil:
+                                description: Maximum rate
+                                type: string
+                            priority:
+                                description: 1-7, lower is higher priority
+                                type: number
+                            queue_type:
+                                description: '"fq_codel", "sfq", "pfifo" (default: fq_codel)'
+                                type: string
+                                enum:
+                                    - fq_codel
+                                    - pfifo
+                            rate:
+                                description: Guaranteed rate e.g., "10mbit" or "10%"
+                                type: string
+                        required:
+                            - _label_name
+                direction:
+                    description: '"ingress", "egress", "both" (default: both)'
+                    type: string
+                    enum:
+                        - ingress
+                        - both
+                download_mbps:
+                    type: number
+                enabled:
+                    type: boolean
+                interface:
+                    description: Interface to apply QoS
+                    type: string
+                rule:
+                    description: Traffic classification rules
+                    type: array
+                    items:
+                        title: Rules
+                        description: Traffic classification rules
+                        type: object
+                        properties:
+                            _label_name:
+                                description: 'Block label: '
+                                type: string
+                            class:
+                                description: Target QoS class
+                                type: string
+                            dest_ip:
+                                type: string
+                            dest_port:
+                                type: number
+                            dscp:
+                                description: Match DSCP value
+                                type: string
+                            proto:
+                                type: string
+                            services:
+                                description: Service names
+                                type: array
+                                items:
+                                    type: string
+                            set_dscp:
+                                description: Set DSCP on matching traffic
+                                type: string
+                            src_ip:
+                                type: string
+                            src_port:
+                                type: number
+                            threat_intel:
+                                title: ThreatIntel
+                                description: ThreatIntel configures threat intelligence feeds.
+                                type: object
+                                properties:
+                                    enabled:
+                                        type: boolean
+                                    interval:
+                                        description: e.g. "1h"
+                                        type: string
+                                    source:
+                                        type: array
+                                        items:
+                                            title: Sources
+                                            type: object
+                                            properties:
+                                                _label_name:
+                                                    description: 'Block label: '
+                                                    type: string
+                                                collection_id:
+                                                    type: string
+                                                format:
+                                                    description: '"taxii", "text", "json"'
+                                                    type: string
+                                                    enum:
+                                                        - taxii
+                                                        - json
+                                                password:
+                                                    type: string
+                                                url:
+                                                    type: string
+                                                username:
+                                                    type: string
+                                            required:
+                                                - _label_name
+                                                - url
+                        required:
+                            - _label_name
+                            - class
+                upload_mbps:
+                    type: number
+            required:
+                - _label_name
+                - interface
+    replication:
+        title: Replication
+        description: State Replication configuration
+        type: object
+        properties:
+            ha:
+                title: HA
+                description: HA configuration for high-availability failover
+                type: object
+                properties:
+                    conntrack_sync:
+                        title: ConntrackSync
+                        description: ConntrackSync enables connection state replication via conntrackd
+                        type: object
+                        properties:
+                            enabled:
+                                description: Enabled activates conntrack synchronization
+                                type: boolean
+                            expect_sync:
+                                description: ExpectSync enables expectation table sync for ALG protocols (FTP, SIP, etc.)
+                                type: boolean
+                            interface:
+                                description: 'Interface is the network interface for sync traffic (default: HA peer link)'
+                                type: string
+                            multicast_group:
+                                description: |-
+                                    MulticastGroup for sync traffic (default: 225.0.0.50)
+                                    Set to empty string to use unicast mode with peer address
+                                type: string
+                            port:
+                                description: 'Port for sync traffic (default: 3780)'
+                                type: number
+                    enabled:
+                        description: Enabled activates HA monitoring and failover
+                        type: boolean
+                    failback_delay:
+                        description: 'FailbackDelay is seconds to wait before automatic failback (default: 60)'
+                        type: number
+                    failback_mode:
+                        description: |-
+                            FailbackMode controls behavior when original primary recovers:
+                              "auto"   - automatically failback after FailbackDelay
+                              "manual" - require manual intervention to failback
+                              "never"  - never failback, new primary stays primary
+                        type: string
+                    failure_threshold:
+                        description: 'FailureThreshold is missed heartbeats before declaring peer dead (default: 3)'
+                        type: number
+                    heartbeat_interval:
+                        description: 'HeartbeatInterval is seconds between heartbeat messages (default: 1)'
+                        type: number
+                    heartbeat_port:
+                        description: 'HeartbeatPort is the UDP port for HA heartbeat messages (default: 9002)'
+                        type: number
+                    priority:
+                        description: |-
+                            Priority determines which node becomes primary (lower = higher priority)
+                            Default: 100. Set one node to 50 and another to 150 for deterministic election.
+                        type: number
+                    virtual_ip:
+                        description: Virtual IPs to migrate on failover (for LAN-side gateway addresses)
+                        type: array
+                        items:
+                            title: VirtualIPs
+                            description: Virtual IPs to migrate on failover (for LAN-side gateway addresses)
+                            type: object
+                            properties:
+                                address:
+                                    description: Address is the virtual IP in CIDR notation (e.g., "192.168.1.1/24")
+                                    type: string
+                                interface:
+                                    description: Interface is the network interface to add the VIP to (e.g., "eth1")
+                                    type: string
+                                label:
+                                    description: Label is an optional interface label for the address (e.g., "eth1:vip")
+                                    type: string
+                            required:
+                                - address
+                                - interface
+                    virtual_mac:
+                        description: Virtual MACs to migrate on failover (for DHCP-assigned WAN interfaces)
+                        type: array
+                        items:
+                            title: VirtualMACs
+                            description: Virtual MACs to migrate on failover (for DHCP-assigned WAN interfaces)
+                            type: object
+                            properties:
+                                address:
+                                    description: |-
+                                        Address is the virtual MAC address (e.g., "02:gc:ic:00:00:01").
+                                        If empty, a locally-administered MAC is auto-generated from the interface name.
+                                    type: string
+                                dhcp:
+                                    description: |-
+                                        DHCP indicates this interface uses DHCP. On failover, the backup will
+                                        attempt to reclaim the same DHCP lease by sending a REQUEST with the
+                                        previous lease's offered IP.
+                                    type: boolean
+                                interface:
+                                    description: Interface is the network interface to apply the VMAC to (e.g., "eth0")
+                                    type: string
+                            required:
+                                - interface
+            listen_addr:
+                description: Listen address for replication traffic (e.g. ":9000")
+                type: string
+            mode:
+                description: 'Mode: "primary", "replica", or "standalone" (default, no HA)'
+                type: string
+                enum:
+                    - primary
+                    - replica
+            peer_addr:
+                description: Address of the peer node (used for HA heartbeat - both nodes need this)
+                type: string
+            primary_addr:
+                description: Address of the primary node (only for replica mode)
+                type: string
+            secret_key:
+                description: Secret key for PSK authentication (required for secure replication)
+                type: string
+            tls_ca:
+                type: string
+            tls_cert:
+                description: TLS configuration for encrypted replication
+                type: string
+            tls_key:
+                type: string
+            tls_mutual:
+                description: Require client certs
+                type: boolean
+        required:
+            - mode
+    route:
+        description: Route represents a static route configuration.
+        type: array
+        items:
+            title: Routes
+            description: Route represents a static route configuration.
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                destination:
+                    type: string
+                gateway:
+                    type: string
+                interface:
+                    type: string
+                metric:
+                    description: Route metric/priority
+                    type: number
+                monitor_ip:
+                    type: string
+                table:
+                    description: 'Routing table ID (default: main)'
+                    type: number
+            required:
+                - _label_name
+                - destination
+    routing_table:
+        description: RoutingTable represents a custom routing table configuration.
+        type: array
+        items:
+            title: RoutingTables
+            description: RoutingTable represents a custom routing table configuration.
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                id:
+                    description: Table ID (1-252 for custom tables)
+                    type: number
+                route:
+                    description: Routes in this table
+                    type: array
+                    items:
+                        title: Routes
+                        description: Routes in this table
+                        type: object
+                        properties:
+                            _label_name:
+                                description: 'Block label: '
+                                type: string
+                            destination:
+                                type: string
+                            gateway:
+                                type: string
+                            interface:
+                                type: string
+                            metric:
+                                description: Route metric/priority
+                                type: number
+                            monitor_ip:
+                                type: string
+                            table:
+                                description: 'Routing table ID (default: main)'
+                                type: number
+                        required:
+                            - _label_name
+                            - destination
+            required:
+                - _label_name
+                - id
+    rule_learning:
+        title: RuleLearning
+        description: Rule learning and notifications
+        type: object
+        properties:
+            auto_approve:
+                description: Auto-approve learned rules (legacy)
+                type: boolean
+            cache_size:
+                description: 'Flow cache size (default: 10000)'
+                type: number
+            enabled:
+                type: boolean
+            ignore_networks:
+                description: Networks to ignore from learning
+                type: array
+                items:
+                    type: string
+            inline_mode:
+                description: |-
+                    InlineMode uses nfqueue instead of nflog for packet inspection.
+                    This holds packets until a verdict is returned, fixing the "first packet" problem
+                    where the first packet of a new flow would be dropped before an allow rule is added.
+                    Trade-off: Adds latency (~microseconds) and requires the engine to be running.
+                    Recommended: Enable only during initial learning phase, disable after flows are learned.
+                type: boolean
+            learning_mode:
+                description: TOFU (Trust On First Use) mode
+                type: boolean
+            log_group:
+                description: 'nflog group (default: 100)'
+                type: number
+            offload_mark:
+                description: |-
+                    OffloadMark is the conntrack mark value used to identify trusted flows
+                    that should bypass userspace inspection. Flows with this mark are
+                    accepted by kernel before reaching nfqueue.
+                    Only used when InlineMode is true.
+                    NOTE: HCL2 doesn't support hex literals, so use decimal format (e.g., 2097152 for 0x200000) default: "0x200000"
+                type: string
+            packet_window:
+                description: |-
+                    PacketWindow defines how many packets of a flow are inspected in userspace
+                    before offloading to kernel. After this window, trusted flows are marked
+                    and bypass userspace entirely for wire-speed performance.
+                    Only used when InlineMode is true. default: 10
+                type: number
+            rate_limit:
+                description: e.g., "10/minute"
+                type: string
+            retention_days:
+                description: How long to keep pending rules
+                type: number
+    scanner:
+        title: Scanner
+        description: Scanner configuration
+        type: object
+        properties:
+            disable_rdns:
+                description: |-
+                    DisableReverseDNS skips reverse DNS lookups during scanning.
+                    HCL: disable_rdns
+                type: boolean
+    scheduled_rule:
+        description: ScheduledRule defines a firewall rule that activates on a schedule.
+        type: array
+        items:
+            title: ScheduledRules
+            description: ScheduledRule defines a firewall rule that activates on a schedule.
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                description:
+                    type: string
+                enabled:
+                    type: boolean
+                end_schedule:
+                    description: Cron expression for when to disable
+                    type: string
+                policy:
+                    description: Which policy to modify
+                    type: string
+                rule:
+                    title: Rule
+                    description: The rule to add/remove
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        action:
+                            description: Action accept, drop, reject, jump, return, log
+                            type: string
+                        comment:
+                            description: Metadata
+                            type: string
+                        conn_state:
+                            description: '"new", "established", "related", "invalid"'
+                            type: string
+                            enum:
+                                - new
+                                - invalid
+                        counter:
+                            description: Named counter for accounting
+                            type: string
+                        days:
+                            description: 'Days of week: "Monday", "Tuesday", etc.'
+                            type: array
+                            items:
+                                type: string
+                        description:
+                            type: string
+                        dest_country:
+                            description: ISO 3166-1 alpha-2 country code
+                            type: string
+                        dest_ip:
+                            description: Destination IP/CIDR
+                            type: string
+                        dest_ipset:
+                            description: Destination IPSet name
+                            type: string
+                        dest_port:
+                            type: number
+                        dest_ports:
+                            description: Multiple ports
+                            type: array
+                            items:
+                                type: number
+                        dest_zone:
+                            description: Override policy's To zone
+                            type: string
+                        disabled:
+                            description: Temporarily disable this rule
+                            type: boolean
+                        group:
+                            description: 'UI Organization Section grouping: "User Access", "IoT Isolation"'
+                            type: string
+                            enum:
+                                - User Access
+                                - IoT Isolation
+                        id:
+                            description: Identity Unique ID for referencing in reorder operations
+                            type: string
+                        in_interface:
+                            description: Match specific input interface
+                            type: string
+                        insert_after:
+                            description: Insert after rule with this ID/name
+                            type: string
+                        invert_dest:
+                            description: Negate destination IP/IPSet match
+                            type: boolean
+                        invert_src:
+                            description: Invert matching (match everything EXCEPT the specified value) Negate source IP/IPSet match
+                            type: boolean
+                        jump_target:
+                            description: Target chain for jump action
+                            type: string
+                        limit:
+                            description: Rate limit e.g. "10/second"
+                            type: string
+                        log:
+                            description: Logging & accounting
+                            type: boolean
+                        log_level:
+                            description: '"debug", "info", "notice", "warning", "error"'
+                            type: string
+                            enum:
+                                - debug
+                                - error
+                        log_prefix:
+                            type: string
+                        max_connections:
+                            description: Connection limiting (prevent abuse/DoS) Max concurrent connections per source
+                            type: number
+                        order:
+                            description: Ordering - rules are processed in order, these help with insertion Explicit order (0 = use array position)
+                            type: number
+                        out_interface:
+                            description: Match specific output interface
+                            type: string
+                        proto:
+                            description: Match conditions
+                            type: string
+                        service:
+                            description: Service Macro (e.g. "ssh") - expands to Proto/Port
+                            type: string
+                        services:
+                            description: Service names like "http", "ssh"
+                            type: array
+                            items:
+                                type: string
+                        source_country:
+                            description: GeoIP matching (requires MaxMind database) ISO 3166-1 alpha-2 country code (e.g., "US", "CN")
+                            type: string
+                            enum:
+                                - US
+                                - CN
+                        src_ip:
+                            description: Source IP/CIDR
+                            type: string
+                        src_ipset:
+                            description: Source IPSet name
+                            type: string
+                        src_port:
+                            type: number
+                        src_ports:
+                            type: array
+                            items:
+                                type: number
+                        src_zone:
+                            description: Additional match conditions Override policy's From zone
+                            type: string
+                        tags:
+                            description: For grouping/filtering in UI
+                            type: array
+                            items:
+                                type: string
+                        tcp_flags:
+                            description: |-
+                                TCP Flags matching (for SYN flood protection, connection state filtering)
+                                Values: "syn", "syn,!ack", "ack", "fin", "rst", "psh", "urg" or combinations
+                                Common presets: "syn" (new only), "ack" (established), "fin,psh,urg" (xmas scan)
+                            type: string
+                            enum:
+                                - syn
+                                - urg
+                        time_end:
+                            description: End time "HH:MM" (24h format)
+                            type: string
+                        time_start:
+                            description: Time-of-day matching (uses nftables meta hour/day, requires kernel 5.4+) Start time "HH:MM" (24h format)
+                            type: string
+                    required:
+                        - _label_name
+                        - action
+                schedule:
+                    description: Cron expression for when to enable
+                    type: string
+            required:
+                - _label_name
+                - policy
+                - schedule
+    scheduler:
+        title: Scheduler
+        description: SchedulerConfig defines scheduler settings.
+        type: object
+        properties:
+            backup_dir:
+                description: 'Default: /var/lib/firewall/backups'
+                type: string
+            backup_enabled:
+                description: Enable auto backups
+                type: boolean
+            backup_retention_days:
+                description: 'Default: 7'
+                type: number
+            backup_schedule:
+                description: 'Cron expression, default: "0 2 * * *"'
+                type: string
+            dns_refresh_hours:
+                description: 'Default: 24'
+                type: number
+            enabled:
+                type: boolean
+            ipset_refresh_hours:
+                description: 'Default: 24'
+                type: number
+    schema_version:
+        description: Schema version for backward compatibility.
+        type: string
+        enum:
+            - 1.0
+        default: 1.0
+    ssh:
+        title: SSH
+        description: SSH Server configuration
+        type: object
+        properties:
+            authorized_keys_path:
+                description: |-
+                    AuthorizedKeysPath is the path to authorized_keys file (optional)
+                    If empty, simple password auth or no auth might be used (default: no auth/allow all for now? Or specific user?)
+                type: string
+            enabled:
+                type: boolean
+            host_key_path:
+                description: |-
+                    HostKeyPath is the path to the SSH host key (PEM or OpenSSH format)
+                    If empty, the server will generate one or use defaults.
+                type: string
+            listen_address:
+                description: 'Default: ":2222"'
+                type: string
+            port:
+                description: 'Default: 2222'
+                type: number
+    state_dir:
+        description: State Directory (overrides default)
+        type: string
+    syslog:
+        title: Syslog
+        description: Syslog remote logging
+        type: object
+        properties:
+            enabled:
+                type: boolean
+            facility:
+                description: 'Syslog facility (default: 1)'
+                type: number
+            host:
+                description: Remote syslog server hostname/IP
+                type: string
+            port:
+                description: 'Default: 514'
+                type: number
+            protocol:
+                description: 'udp or tcp (default: udp)'
+                type: string
+            tag:
+                description: 'Syslog tag (default: flywall)'
+                type: string
+        required:
+            - host
+    system:
+        title: System
+        description: System tuning and settings
+        type: object
+        properties:
+            oui_db_path:
+                description: OUIDBPath is the location to store the OUI database
+                type: string
+            sysctl:
+                description: |-
+                    Sysctl allows manual override of sysctl parameters
+                    Applied after profile tuning
+                type: object
+            sysctl_profile:
+                description: |-
+                    SysctlProfile selects a preset sysctl tuning profile
+                    Options: "default", "performance", "low-memory", "security"
+                type: string
+                enum:
+                    - default
+                    - security
+            timezone:
+                description: Timezone for scheduled rules (e.g. "America/Los_Angeles"). Defaults to "UTC".
+                type: string
+            update_check_interval:
+                description: 'UpdateCheckInterval is the duration between checking for updates (default: "24h")'
+                type: string
+    threat_intel:
+        title: ThreatIntel
+        description: ThreatIntel configures threat intelligence feeds.
+        type: object
+        properties:
+            enabled:
+                type: boolean
+            interval:
+                description: e.g. "1h"
+                type: string
+            source:
+                type: array
+                items:
+                    title: Sources
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        collection_id:
+                            type: string
+                        format:
+                            description: '"taxii", "text", "json"'
+                            type: string
+                            enum:
+                                - taxii
+                                - json
+                        password:
+                            type: string
+                        url:
+                            type: string
+                        username:
+                            type: string
+                    required:
+                        - _label_name
+                        - url
+    uid_routing:
+        description: UIDRouting configures per-user routing (for SOCKS proxies, etc.).
+        type: array
+        items:
+            title: UIDRouting
+            description: UIDRouting configures per-user routing (for SOCKS proxies, etc.).
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                comment:
+                    type: string
+                enabled:
+                    type: boolean
+                interface:
+                    description: Output interface
+                    type: string
+                snat_ip:
+                    description: IP to SNAT to
+                    type: string
+                uid:
+                    description: User ID to match
+                    type: number
+                uplink:
+                    description: Uplink to route through
+                    type: string
+                username:
+                    description: Username (resolved to UID)
+                    type: string
+                vpn_link:
+                    description: VPN link to route through
+                    type: string
+            required:
+                - _label_name
+    uplink_group:
+        description: |-
+            UplinkGroup configures a group of uplinks (WAN, VPN, etc.) with failover/load balancing.
+            This enables dynamic switching between uplinks while preserving existing connections.
+        type: array
+        items:
+            title: UplinkGroups
+            description: |-
+                UplinkGroup configures a group of uplinks (WAN, VPN, etc.) with failover/load balancing.
+                This enables dynamic switching between uplinks while preserving existing connections.
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                enabled:
+                    type: boolean
+                failback_delay:
+                    description: Seconds before failback
+                    type: number
+                failback_mode:
+                    description: '"immediate", "graceful", "manual", "never"'
+                    type: string
+                    enum:
+                        - immediate
+                        - never
+                failover_delay:
+                    description: Seconds before failover
+                    type: number
+                failover_mode:
+                    description: Failover configuration "immediate", "graceful", "manual", "programmatic"
+                    type: string
+                    enum:
+                        - immediate
+                        - programmatic
+                health_check:
+                    title: HealthCheck
+                    description: WANHealth configures health checking for multi-WAN.
+                    type: object
+                    properties:
+                        http_check:
+                            description: URL for HTTP health check
+                            type: string
+                        interval:
+                            description: Check interval in seconds
+                            type: number
+                        targets:
+                            description: IPs to ping
+                            type: array
+                            items:
+                                type: string
+                        threshold:
+                            description: Failures before marking down
+                            type: number
+                        timeout:
+                            description: Timeout per check
+                            type: number
+                load_balance_mode:
+                    description: Load balancing configuration "none", "roundrobin", "weighted", "latency"
+                    type: string
+                    enum:
+                        - none
+                        - latency
+                source_interfaces:
+                    description: Interfaces for connmark restore
+                    type: array
+                    items:
+                        type: string
+                source_networks:
+                    description: CIDRs that use this group
+                    type: array
+                    items:
+                        type: string
+                source_zones:
+                    description: Zones that use this group
+                    type: array
+                    items:
+                        type: string
+                sticky_connections:
+                    type: boolean
+                uplink:
+                    description: UplinkDef defines an uplink within a group.
+                    type: array
+                    items:
+                        title: Uplinks
+                        description: UplinkDef defines an uplink within a group.
+                        type: object
+                        properties:
+                            _label_name:
+                                description: 'Block label: e.g., "wg0", "wan1", "primary-vpn"'
+                                type: string
+                            comment:
+                                type: string
+                            enabled:
+                                type: boolean
+                            gateway:
+                                description: Gateway IP (for WANs)
+                                type: string
+                            health_check_cmd:
+                                description: Custom health check (optional) Custom command for health check
+                                type: string
+                            interface:
+                                description: Network interface name
+                                type: string
+                            local_ip:
+                                description: Local IP for SNAT
+                                type: string
+                            tier:
+                                description: Failover tier (0 = primary, 1 = secondary, etc.)
+                                type: number
+                            type:
+                                description: '"wan", "wireguard", "tailscale", "openvpn", "ipsec", "custom"'
+                                type: string
+                                enum:
+                                    - wan
+                                    - custom
+                            weight:
+                                description: Weight within tier for load balancing (1-100)
+                                type: number
+                        required:
+                            - _label_name
+                            - interface
+            required:
+                - _label_name
+                - source_networks
+    upnp:
+        title: UPnP
+        description: UPnP IGD configuration
+        type: object
+        properties:
+            enabled:
+                type: boolean
+            external_interface:
+                description: WAN interface
+                type: string
+            internal_interfaces:
+                description: LAN interfaces
+                type: array
+                items:
+                    type: string
+            secure_mode:
+                description: Only allow mapping to requesting IP
+                type: boolean
+    vpn:
+        title: VPN
+        description: VPN integrations (Tailscale, WireGuard, etc.) for secure remote access
+        type: object
+        properties:
+            interface_prefix_zones:
+                description: |-
+                    Interface prefix matching for zones (like firehol's "wg+" syntax)
+                    Maps interface prefix to zone name
+                    Example: {"wg": "vpn", "tailscale": "tailscale"} means wg0, wg1 -> vpn zone
+                type: object
+            six_to_four:
+                description: 6to4 Tunnels (multiple allowed, usually one)
+                type: array
+                items:
+                    title: SixToFour
+                    description: 6to4 Tunnels (multiple allowed, usually one)
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: '
+                            type: string
+                        enabled:
+                            type: boolean
+                        interface:
+                            description: Physical interface name (usually WAN)
+                            type: string
+                        mtu:
+                            description: Default 1480
+                            type: number
+                        zone:
+                            description: Zone for the tunnel interface (tun6to4)
+                            type: string
+                    required:
+                        - _label_name
+                        - interface
+            tailscale:
+                description: Tailscale/Headscale connections (multiple allowed)
+                type: array
+                items:
+                    title: Tailscale
+                    description: Tailscale/Headscale connections (multiple allowed)
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: Connection name (label for multiple connections)'
+                            type: string
+                        accept_routes:
+                            description: Accept routes from other Tailscale nodes
+                            type: boolean
+                        advertise_exit_node:
+                            description: Advertise this node as an exit node
+                            type: boolean
+                        advertise_routes:
+                            description: Routes to advertise to Tailscale network
+                            type: array
+                            items:
+                                type: string
+                        auth_key:
+                            description: Auth key for unattended setup (or use AuthKeyEnv)
+                            type: string
+                        auth_key_env:
+                            description: Environment variable containing auth key
+                            type: string
+                        control_url:
+                            description: Control server URL (for Headscale)
+                            type: string
+                        enabled:
+                            description: Enable this Tailscale connection
+                            type: boolean
+                        exit_node:
+                            description: Use a specific exit node (Tailscale IP or hostname)
+                            type: string
+                        interface:
+                            description: 'Interface name (default: tailscale0, or tailscale1, etc. for multiple)'
+                            type: string
+                        management_access:
+                            description: |-
+                                Always allow management access via Tailscale (lockout protection)
+                                This inserts accept rules BEFORE all other firewall rules
+                            type: boolean
+                        zone:
+                            description: |-
+                                Zone name for this interface (default: tailscale)
+                                Use same zone name across multiple connections to combine them
+                            type: string
+                    required:
+                        - _label_name
+            wireguard:
+                description: WireGuard connections (multiple allowed)
+                type: array
+                items:
+                    title: WireGuard
+                    description: WireGuard connections (multiple allowed)
+                    type: object
+                    properties:
+                        _label_name:
+                            description: 'Block label: Connection name (label for multiple connections)'
+                            type: string
+                        address:
+                            description: Interface addresses
+                            type: array
+                            items:
+                                type: string
+                        dns:
+                            description: DNS servers to use when connected
+                            type: array
+                            items:
+                                type: string
+                        enabled:
+                            description: Enable this WireGuard connection
+                            type: boolean
+                        fwmark:
+                            description: Firewall Mark (fwmark) for routing
+                            type: number
+                        interface:
+                            description: 'Interface name (default: wg0, or wg1, etc. for multiple)'
+                            type: string
+                        listen_port:
+                            description: 'Listen port (default: 51820)'
+                            type: number
+                        management_access:
+                            description: Always allow management access via WireGuard (lockout protection)
+                            type: boolean
+                        mtu:
+                            description: 'MTU (default: 1420)'
+                            type: number
+                        peer:
+                            description: Peer configurations
+                            type: array
+                            items:
+                                title: Peers
+                                description: Peer configurations
+                                type: object
+                                properties:
+                                    _label_name:
+                                        description: 'Block label: Peer name (label)'
+                                        type: string
+                                    allowed_ips:
+                                        description: Allowed IP ranges for this peer
+                                        type: array
+                                        items:
+                                            type: string
+                                    endpoint:
+                                        description: Peer's endpoint (host:port)
+                                        type: string
+                                    persistent_keepalive:
+                                        description: Keepalive interval in seconds (useful for NAT traversal)
+                                        type: number
+                                    preshared_key:
+                                        description: Optional preshared key for additional security
+                                        type: string
+                                    public_key:
+                                        description: Peer's public key
+                                        type: string
+                                required:
+                                    - _label_name
+                                    - public_key
+                                    - allowed_ips
+                        post_down:
+                            type: array
+                            items:
+                                type: string
+                        post_up:
+                            description: Hooks
+                            type: array
+                            items:
+                                type: string
+                        private_key:
+                            description: Private key (or use PrivateKeyFile)
+                            type: string
+                        private_key_file:
+                            description: Path to private key file
+                            type: string
+                        table:
+                            description: |-
+                                Routing Table (default: auto)
+                                If set to "off" or "auto", behaves effectively like standard WG.
+                                If set to a table ID/name, routes are added to that table.
+                            type: string
+                        zone:
+                            description: |-
+                                Zone name for this interface (default: vpn)
+                                Use same zone name across multiple connections to combine them
+                            type: string
+                    required:
+                        - _label_name
+    vrf:
+        description: VRF represents a Virtual Routing and Forwarding instance.
+        type: array
+        items:
+            title: VRFs
+            description: VRF represents a Virtual Routing and Forwarding instance.
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                comment:
+                    type: string
+                table_id:
+                    description: Routing table ID
+                    type: number
+            required:
+                - _label_name
+                - table_id
+    web:
+        title: Web
+        description: Web Server configuration (previously part of API)
+        type: object
+        properties:
+            allow:
+                description: Access Control
+                type: array
+                items:
+                    title: Allow
+                    description: Access Control
+                    type: object
+                    properties:
+                        interface:
+                            description: Single value fields
+                            type: string
+                        interfaces:
+                            description: List value fields (for brevity)
+                            type: array
+                            items:
+                                type: string
+                        source:
+                            type: string
+                        sources:
+                            type: array
+                            items:
+                                type: string
+            deny:
+                description: AccessRule defines criteria for allowing or denying access.
+                type: array
+                items:
+                    title: Deny
+                    description: AccessRule defines criteria for allowing or denying access.
+                    type: object
+                    properties:
+                        interface:
+                            description: Single value fields
+                            type: string
+                        interfaces:
+                            description: List value fields (for brevity)
+                            type: array
+                            items:
+                                type: string
+                        source:
+                            type: string
+                        sources:
+                            type: array
+                            items:
+                                type: string
+            disable_redirect:
+                description: Behavior Disable HTTP->HTTPS redirect
+                type: boolean
+            listen:
+                description: Listen addresses HTTP listen address (default :80)
+                type: string
+            serve_api:
+                description: Serve API paths (default true)
+                type: boolean
+            serve_ui:
+                description: Serve the dashboard (default true)
+                type: boolean
+            tls_cert:
+                description: TLS Configuration Path to TLS certificate
+                type: string
+            tls_key:
+                description: Path to TLS key
+                type: string
+            tls_listen:
+                description: HTTPS listen address (default :443)
+                type: string
+    zone:
+        description: |-
+            Zone defines a network security zone.
+            Zones can match traffic by interface, source/destination IP, VLAN, or combinations.
+            Simple zones use top-level fields, complex zones use match blocks.
+        type: array
+        items:
+            title: Zones
+            description: |-
+                Zone defines a network security zone.
+                Zones can match traffic by interface, source/destination IP, VLAN, or combinations.
+                Simple zones use top-level fields, complex zones use match blocks.
+            type: object
+            properties:
+                _label_name:
+                    description: 'Block label: '
+                    type: string
+                action:
+                    description: |-
+                        Zone behavior
+                        Action for intra-zone traffic: "accept", "drop", "reject" (default: accept)
+                    type: string
+                    enum:
+                        - accept
+                        - reject
+                color:
+                    type: string
+                description:
+                    type: string
+                dhcp:
+                    description: Use DHCP client on this interface
+                    type: boolean
+                dst:
+                    description: Destination IP/network
+                    type: string
+                external:
+                    description: |-
+                        External marks this as an external/WAN zone (used for auto-masquerade detection)
+                        If not set, detected from: DHCP client enabled, non-RFC1918 address, or "wan"/"external" in name
+                    type: boolean
+                interface:
+                    description: |-
+                        Simple match criteria (use for single-interface zones)
+                        These are effectively a single implicit match rule
+                        Interface can be exact ("eth0") or prefix with + or * suffix ("wg+" or "wg*" matches wg0, wg1...)
+                    type: string
+                ipsets:
+                    description: Legacy fields (kept for backwards compat) IPSet names for IP-based membership
+                    type: array
+                    items:
+                        type: string
+                ipv4:
+                    description: IP assignment for simple zones (shorthand - assigns to the interface)
+                    type: array
+                    items:
+                        type: string
+                ipv6:
+                    type: array
+                    items:
+                        type: string
+                management:
+                    title: Management
+                    description: Management access FROM this zone to the firewall
+                    type: object
+                    properties:
+                        api:
+                            description: Allow API access (used for L7 filtering, implies HTTPS access)
+                            type: boolean
+                        icmp:
+                            description: Allow ping to firewall
+                            type: boolean
+                        snmp:
+                            description: Allow SNMP queries (udp/161)
+                            type: boolean
+                        ssh:
+                            description: Allow SSH access (tcp/22)
+                            type: boolean
+                        syslog:
+                            description: Allow syslog sending (udp/514)
+                            type: boolean
+                        web:
+                            description: Allow Web UI access (tcp/80, tcp/443)
+                            type: boolean
+                        web_ui:
+                            description: 'Legacy: Allow Web UI access (tcp/80, tcp/443) -> Use Web'
+                            type: boolean
+                match:
+                    description: |-
+                        Complex match criteria (OR logic between matches, AND logic within each match)
+                        Global fields above apply to ALL matches as defaults
+                    type: array
+                    items:
+                        title: Matches
+                        description: |-
+                            Complex match criteria (OR logic between matches, AND logic within each match)
+                            Global fields above apply to ALL matches as defaults
+                        type: object
+                        properties:
+                            dscp:
+                                description: value, class, or classid
+                                type: string
+                            dst:
+                                type: string
+                            interface:
+                                description: Interface can be exact ("eth0") or prefix with + or * suffix ("wg+" matches wg0, wg1...)
+                                type: string
+                            mac:
+                                type: string
+                            mark:
+                                type: string
+                            out_interface:
+                                type: string
+                            phys_in:
+                                type: string
+                            phys_out:
+                                type: string
+                            protocol:
+                                description: Advanced matching
+                                type: string
+                            src:
+                                type: string
+                            tos:
+                                type: number
+                            vlan:
+                                type: number
+                networks:
+                    description: Direct CIDR ranges
+                    type: array
+                    items:
+                        type: string
+                services:
+                    title: Services
+                    description: |-
+                        Services provided TO this zone (firewall auto-generates rules)
+                        These define what the firewall offers to clients in this zone
+                    type: object
+                    properties:
+                        captive_portal:
+                            description: Captive portal / guest access Redirect HTTP to portal
+                            type: boolean
+                        dhcp:
+                            description: Network services Allow DHCP requests (udp/67-68)
+                            type: boolean
+                        dns:
+                            description: Allow DNS queries (udp/53, tcp/53)
+                            type: boolean
+                        ntp:
+                            description: Allow NTP sync (udp/123)
+                            type: boolean
+                        port:
+                            description: Custom service ports (auto-allow)
+                            type: array
+                            items:
+                                title: CustomPorts
+                                description: Custom service ports (auto-allow)
+                                type: object
+                                properties:
+                                    _label_name:
+                                        description: 'Block label: '
+                                        type: string
+                                    port:
+                                        description: Port number
+                                        type: number
+                                    port_end:
+                                        description: For port ranges
+                                        type: number
+                                    protocol:
+                                        description: tcp, udp
+                                        type: string
+                                required:
+                                    - _label_name
+                                    - protocol
+                                    - port
+                src:
+                    description: Source IP/network (e.g., "192.168.1.0/24")
+                    type: string
+                vlan:
+                    description: VLAN tag
+                    type: number
+            required:
+                - _label_name

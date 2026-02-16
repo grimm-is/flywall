@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // cmd/api-dev/main.go - Development API server for UI iteration
 //
 // This runs the API server in "mock mode" without needing:
@@ -13,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -33,11 +36,11 @@ var upgrader = websocket.Upgrader{
 // MockConfig represents the application configuration
 var mockConfig = map[string]interface{}{
 	"ip_forwarding": true,
-	"zones": []map[string]string{
-		{"name": "WAN", "color": "red", "description": "External/Internet"},
-		{"name": "LAN", "color": "green", "description": "Local Network"},
-		{"name": "DMZ", "color": "orange", "description": "Demilitarized Zone"},
-		{"name": "Guest", "color": "purple", "description": "Guest Network"},
+	"zones": []map[string]interface{}{
+		{"name": "WAN", "color": "red", "description": "External/Internet", "selectors": []map[string]string{{"type": "interface", "value": "eth0"}}},
+		{"name": "LAN", "color": "green", "description": "Local Network", "selectors": []map[string]string{{"type": "interface", "value": "eth1"}}},
+		{"name": "DMZ", "color": "orange", "description": "Demilitarized Zone", "selectors": []map[string]string{{"type": "interface", "value": "eth2"}}},
+		{"name": "Guest", "color": "purple", "description": "Guest Network", "selectors": []map[string]string{}},
 	},
 	"interfaces": []map[string]interface{}{
 		{"Name": "eth0", "Zone": "WAN", "IPv4": []string{}, "DHCP": true, "Description": "Internet Connection"},
@@ -167,6 +170,22 @@ func main() {
 	mux.HandleFunc("/api/vlans", handleVLAN)
 	mux.HandleFunc("/api/bonds", handleBonds)
 
+	// Missing Endpoints
+	mux.HandleFunc("/api/identities", handleIdentities)
+	mux.HandleFunc("/api/groups", handleGroups)
+	mux.HandleFunc("/api/system/stats", handleSystemStats)
+	mux.HandleFunc("/api/uplinks/groups", handleUplinkGroups)
+	mux.HandleFunc("/api/flows", handleFlows)
+	mux.HandleFunc("/api/audit", handleAudit)
+	mux.HandleFunc("/api/debug/capture/status", handleCaptureStatus)
+
+	// Active Defense
+	mux.HandleFunc("/api/conntrack/", handleConntrack)
+	mux.HandleFunc("/api/policy/block-temporary", handleBlockTemporary)
+
+	// Observatory History
+	mux.HandleFunc("/api/observatory/history", handleObservatoryHistory)
+
 	// WebSocket for real-time updates
 	mux.HandleFunc("/api/ws", handleWebSocket)
 	mux.HandleFunc("/api/ws/status", handleWebSocket) // UI connects to this path
@@ -178,7 +197,7 @@ func main() {
 	Printer.Println("\n🚀 Mock API Server")
 	Printer.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	Printer.Println("API:  http://localhost:8080")
-	Printer.Println("Auth: admin / admin123")
+	Printer.Println("Auth: admin / FlywallAdmin123!")
 	Printer.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	Printer.Println("\nStart UI: cd ui && npm run dev")
 	Printer.Println("")
@@ -192,9 +211,14 @@ func main() {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			origin = "*"
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(204)
 			return
@@ -225,14 +249,20 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		log.Printf("Login decode error: %v", err)
+		http.Error(w, "Bad request", 400)
+		return
+	}
+	log.Printf("Login attempt: user='%s'", body.Username)
 
-	if body.Username == "admin" && body.Password == "admin123" {
+	if body.Username == "admin" && body.Password == "FlywallAdmin123!" {
 		token := fmt.Sprintf("%d", time.Now().UnixNano())
 		sessions.Store(token, body.Username)
 		http.SetCookie(w, &http.Cookie{Name: "session", Value: token, Path: "/"})
 		sendJSON(w, map[string]interface{}{"authenticated": true, "username": body.Username})
 	} else {
+		log.Printf("Login failed for user='%s'. Expected admin/FlywallAdmin123!", body.Username)
 		w.WriteHeader(401)
 		sendJSON(w, map[string]string{"error": "Invalid credentials"})
 	}
@@ -367,6 +397,56 @@ func handleAvailableInterfaces(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUpdateInterface(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name        string   `json:"name"`
+		Description *string  `json:"description,omitempty"`
+		IPv4        []string `json:"ipv4,omitempty"`
+		DHCP        *bool    `json:"dhcp,omitempty"`
+		MTU         *int     `json:"mtu,omitempty"`
+		Gateway     *string  `json:"gateway,omitempty"`
+		Disabled    *bool    `json:"disabled,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+
+	found := false
+	for i, iface := range mockConfig["interfaces"].([]map[string]interface{}) {
+		if iface["Name"] == req.Name {
+			if req.Description != nil {
+				mockConfig["interfaces"].([]map[string]interface{})[i]["Description"] = *req.Description
+			}
+			if req.IPv4 != nil {
+				mockConfig["interfaces"].([]map[string]interface{})[i]["IPv4"] = req.IPv4
+			}
+			if req.DHCP != nil {
+				mockConfig["interfaces"].([]map[string]interface{})[i]["DHCP"] = *req.DHCP
+			}
+			if req.MTU != nil {
+				mockConfig["interfaces"].([]map[string]interface{})[i]["MTU"] = *req.MTU
+			}
+			if req.Gateway != nil {
+				mockConfig["interfaces"].([]map[string]interface{})[i]["Gateway"] = *req.Gateway
+			}
+			if req.Disabled != nil {
+				mockConfig["interfaces"].([]map[string]interface{})[i]["Disabled"] = *req.Disabled
+			}
+			// Update pending changes flag
+			mockConfig["_has_pending_changes"] = true
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		// If implementation requires creating new interfaces for some reason, handled here.
+		// For now, assume we only update existing.
+		http.Error(w, "Interface not found", 404)
+		return
+	}
+
+	log.Printf("Updated interface %s", req.Name)
 	sendJSON(w, map[string]bool{"success": true})
 }
 
@@ -984,10 +1064,104 @@ func handleMonitoringOverview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+var mockUsers = []map[string]interface{}{
+	{"username": "admin", "role": "admin", "created_at": time.Now().Add(-24 * time.Hour).Format(time.RFC3339)},
+}
+var usersMutex sync.RWMutex
+
 func handleUsers(w http.ResponseWriter, r *http.Request) {
-	sendJSON(w, []map[string]interface{}{
-		{"username": "admin", "created_at": time.Now().Add(-24 * time.Hour).Format(time.RFC3339)},
-	})
+	w.Header().Set("Content-Type", "application/json")
+
+	switch r.Method {
+	case "GET":
+		usersMutex.RLock()
+		defer usersMutex.RUnlock()
+		sendJSON(w, mockUsers)
+
+	case "POST":
+		var user map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		user["created_at"] = time.Now().Format(time.RFC3339)
+		if user["role"] == nil {
+			user["role"] = "operator"
+		}
+
+		usersMutex.Lock()
+		// Check for duplicate
+		for _, u := range mockUsers {
+			if u["username"] == user["username"] {
+				usersMutex.Unlock()
+				http.Error(w, "User already exists", 409)
+				return
+			}
+		}
+		mockUsers = append(mockUsers, user)
+		usersMutex.Unlock()
+
+		sendJSON(w, user)
+
+	case "PUT":
+		// Update password or role
+		var update struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Role     string `json:"role"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+
+		usersMutex.Lock()
+		defer usersMutex.Unlock()
+
+		found := false
+		for i, u := range mockUsers {
+			if u["username"] == update.Username {
+				if update.Role != "" {
+					mockUsers[i]["role"] = update.Role
+				}
+				// In a real app we'd hash the password here
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			http.Error(w, "User not found", 404)
+			return
+		}
+		sendJSON(w, map[string]bool{"success": true})
+
+	case "DELETE":
+		username := r.URL.Query().Get("username")
+		if username == "" {
+			http.Error(w, "Username required", 400)
+			return
+		}
+		if username == "admin" {
+			http.Error(w, "Cannot delete default admin", 403)
+			return
+		}
+
+		usersMutex.Lock()
+		defer usersMutex.Unlock()
+
+		newUsers := []map[string]interface{}{}
+		for _, u := range mockUsers {
+			if u["username"] != username {
+				newUsers = append(newUsers, u)
+			}
+		}
+		mockUsers = newUsers
+		sendJSON(w, map[string]bool{"success": true})
+
+	default:
+		http.Error(w, "Method not allowed", 405)
+	}
 }
 
 func handleReboot(w http.ResponseWriter, r *http.Request) {
@@ -1080,4 +1254,150 @@ func handleVLAN(w http.ResponseWriter, r *http.Request) {
 
 func handleBonds(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, map[string]bool{"success": true})
+}
+
+// ========== Missing Handlers ==========
+
+func handleIdentities(w http.ResponseWriter, r *http.Request) {
+	sendJSON(w, []map[string]interface{}{
+		{"id": "user1", "name": "Alice", "mac": "00:11:22:33:44:01", "group": "Family"},
+		{"id": "user2", "name": "Bob", "mac": "00:11:22:33:44:02", "group": "Family"},
+		{"id": "dev1", "name": "IoT Light", "mac": "00:11:22:33:44:03", "group": "IoT"},
+	})
+}
+
+func handleGroups(w http.ResponseWriter, r *http.Request) {
+	sendJSON(w, []map[string]interface{}{
+		{"id": "Family", "policy": "allow_basic"},
+		{"id": "IoT", "policy": "restrict_internet"},
+	})
+}
+
+func handleSystemStats(w http.ResponseWriter, r *http.Request) {
+	sendJSON(w, map[string]interface{}{
+		"cpu_percent":        15.5,
+		"memory_used_bytes":  4294967296,
+		"memory_total_bytes": 17179869184,
+		"disk_percent":       45,
+	})
+}
+
+func handleUplinkGroups(w http.ResponseWriter, r *http.Request) {
+	sendJSON(w, []map[string]interface{}{
+		{"name": "WAN_LoadBalance", "members": []string{"eth0", "eth3"}, "strategy": "balance"},
+	})
+}
+
+func handleFlows(w http.ResponseWriter, r *http.Request) {
+	sendJSON(w, []map[string]interface{}{
+		{"src": "192.168.1.100", "dst": "8.8.8.8", "proto": "udp", "port": 53, "bytes": 1024, "packets": 5},
+	})
+}
+
+func handleAudit(w http.ResponseWriter, r *http.Request) {
+	sendJSON(w, []map[string]interface{}{
+		{"timestamp": time.Now().Format(time.RFC3339), "user": "admin", "action": "login", "result": "success"},
+		{"timestamp": time.Now().Add(-1 * time.Hour).Format(time.RFC3339), "user": "admin", "action": "update_policy", "result": "success"},
+	})
+}
+
+func handleCaptureStatus(w http.ResponseWriter, r *http.Request) {
+	sendJSON(w, map[string]interface{}{
+		"running": false,
+		"files":   []string{},
+	})
+}
+
+func handleConntrack(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "DELETE" {
+		id := strings.TrimPrefix(r.URL.Path, "/api/conntrack/")
+		log.Printf("Killing flow %s", id)
+		sendJSON(w, map[string]bool{"success": true})
+	} else {
+		http.Error(w, "Method not allowed", 405)
+	}
+}
+
+func handleBlockTemporary(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "POST" {
+		var req struct {
+			IP       string `json:"ip"`
+			Duration string `json:"duration"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		log.Printf("Blocking IP %s for %s", req.IP, req.Duration)
+		sendJSON(w, map[string]bool{"success": true})
+	} else {
+		http.Error(w, "Method not allowed", 405)
+	}
+}
+
+// ========== Observatory Handlers ==========
+
+func handleObservatoryHistory(w http.ResponseWriter, r *http.Request) {
+	// Parse range (optional, default to last 5 mins)
+	end := time.Now().UnixMilli()
+	start := end - (5 * 60 * 1000)
+
+	// Mock data generation
+	// We want 1-second snapshots
+	var history []map[string]interface{}
+
+	// Define some stable "flows" to vary over time
+	flows := []struct {
+		ID       string
+		SrcIP    string
+		DstIP    string
+		Protocol string
+		BaseBPS  float64
+	}{
+		{"flow-1", "192.168.1.105", "104.21.55.2", "tcp", 500000}, // Streaming
+		{"flow-2", "192.168.1.105", "142.250.1.1", "tcp", 50000},  // Web
+		{"flow-3", "192.168.1.110", "8.8.8.8", "udp", 1000},       // DNS
+		{"flow-4", "10.0.0.5", "192.168.1.20", "tcp", 2000000},    // Internal Copy
+	}
+
+	for t := start; t <= end; t += 1000 {
+		var snapshotFlows []map[string]interface{}
+		var totalBPS, totalPPS int64
+
+		// Add noise to each flow
+		for _, f := range flows {
+			// Sine wave + random noise
+			noise := (rand.Float64() * 0.4) + 0.8             // 0.8 - 1.2
+			variation := math.Sin(float64(t)/10000.0)*0.5 + 1 // 0.5 - 1.5
+
+			bps := int64(f.BaseBPS * noise * variation)
+			pps := bps / 800 // approx packet size
+
+			snapshotFlows = append(snapshotFlows, map[string]interface{}{
+				"id":        f.ID,
+				"src_ip":    f.SrcIP,
+				"src_port":  49152 + rand.Intn(1000),
+				"dest_ip":   f.DstIP,
+				"dest_port": 443,
+				"protocol":  f.Protocol,
+				"bytes":     0, // Irrelevant for history sparklines mostly
+				"packets":   0,
+				"bps":       bps,
+				"pps":       pps,
+				"timestamp": t,
+			})
+
+			totalBPS += bps
+			totalPPS += pps
+		}
+
+		history = append(history, map[string]interface{}{
+			"timestamp": t,
+			"flows":     snapshotFlows,
+			"total_bps": totalBPS,
+			"total_pps": totalPPS,
+		})
+	}
+
+	sendJSON(w, history)
 }

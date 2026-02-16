@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package metrics
 
 import (
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"grimm.is/flywall/internal/clock"
+	"grimm.is/flywall/internal/host"
 
 	"grimm.is/flywall/internal/logging"
 )
@@ -31,6 +34,7 @@ type Collector struct {
 	serviceStats   *ServiceStats
 	systemStats    *SystemStats
 	conntrackStats *ConntrackStats
+	vpnStats       map[string]map[string]*PeerStats // Interface -> PublicKey -> Stats
 
 	// Baseline persistence for restart continuity
 	baselineBucket BaselinePersister
@@ -38,6 +42,16 @@ type Collector struct {
 	// Reload counters for testing
 	reloadSuccess int64
 	reloadFailure int64
+}
+
+// PeerStats holds WireGuard peer statistics.
+type PeerStats struct {
+	PublicKey            string    `json:"public_key"`
+	Endpoint             string    `json:"endpoint"`
+	LatestHandshake      time.Time `json:"latest_handshake"`
+	TransferRx           uint64    `json:"transfer_rx"`
+	TransferTx           uint64    `json:"transfer_tx"`
+	LastHandshakeSeconds int64     `json:"last_handshake_seconds"` // Seconds since last handshake
 }
 
 // BaselinePersister interface for saving/loading counter baselines.
@@ -106,6 +120,7 @@ type PolicyStats struct {
 type ServiceStats struct {
 	DHCP *DHCPStats `json:"dhcp"`
 	DNS  *DNSStats  `json:"dns"`
+	SSH  *SSHStats  `json:"ssh"`
 }
 
 // DHCPStats holds DHCP server statistics.
@@ -130,6 +145,14 @@ type DNSStats struct {
 	Blocked     uint64 `json:"blocked"`
 	Forwarded   uint64 `json:"forwarded"`
 	CacheSize   int    `json:"cache_size"`
+}
+
+// SSHStats holds SSH server statistics.
+type SSHStats struct {
+	Enabled          bool   `json:"enabled"`
+	ActiveSessions   int    `json:"active_sessions"`
+	TotalConnections uint64 `json:"total_connections"`
+	AuthFailures     uint64 `json:"auth_failures"`
 }
 
 // SystemStats holds system-level statistics.
@@ -173,9 +196,10 @@ func NewCollector(logger *logging.Logger, interval time.Duration) *Collector {
 		stopCh:         make(chan struct{}),
 		interfaceStats: make(map[string]*InterfaceStats),
 		policyStats:    make(map[string]*PolicyStats),
-		serviceStats:   &ServiceStats{DHCP: &DHCPStats{}, DNS: &DNSStats{}},
+		serviceStats:   &ServiceStats{DHCP: &DHCPStats{}, DNS: &DNSStats{}, SSH: &SSHStats{}},
 		systemStats:    &SystemStats{},
 		conntrackStats: &ConntrackStats{},
+		vpnStats:       make(map[string]map[string]*PeerStats),
 	}
 }
 
@@ -310,6 +334,11 @@ func (c *Collector) collectMetrics() {
 	// Collect system statistics
 	if err := c.collectSystemStats(ctx); err != nil {
 		c.logger.Warn("Failed to collect system stats", "error", err)
+	}
+
+	// Collect VPN statistics
+	if err := c.collectVPNStats(ctx); err != nil {
+		c.logger.Warn("Failed to collect VPN stats", "error", err)
 	}
 
 	c.lastUpdate = clock.Now()
@@ -629,26 +658,10 @@ func (c *Collector) collectSystemStats(_ context.Context) error {
 	}
 
 	// Read memory info
-	memFile, err := os.Open("/proc/meminfo")
-	if err == nil {
-		defer memFile.Close()
-		scanner := bufio.NewScanner(memFile)
-		for scanner.Scan() {
-			line := scanner.Text()
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				value, _ := strconv.ParseUint(fields[1], 10, 64)
-				value *= 1024 // Convert from KB to bytes
-				switch {
-				case strings.HasPrefix(line, "MemTotal:"):
-					c.systemStats.MemTotal = value
-				case strings.HasPrefix(line, "MemFree:"):
-					c.systemStats.MemFree = value
-				case strings.HasPrefix(line, "MemAvailable:"):
-					c.systemStats.MemAvailable = value
-				}
-			}
-		}
+	if info, err := host.GetMemoryInfo(); err == nil {
+		c.systemStats.MemTotal = info.TotalBytes
+		c.systemStats.MemFree = info.FreeBytes
+		c.systemStats.MemAvailable = info.AvailableBytes
 	}
 
 	// Read kernel errors from dmesg (last count)
@@ -738,6 +751,12 @@ func (c *Collector) GetServiceStats() *ServiceStats {
 			Forwarded:   c.serviceStats.DNS.Forwarded,
 			CacheSize:   c.serviceStats.DNS.CacheSize,
 		},
+		SSH: &SSHStats{
+			Enabled:          c.serviceStats.SSH.Enabled,
+			ActiveSessions:   c.serviceStats.SSH.ActiveSessions,
+			TotalConnections: c.serviceStats.SSH.TotalConnections,
+			AuthFailures:     c.serviceStats.SSH.AuthFailures,
+		},
 	}
 }
 
@@ -798,4 +817,102 @@ func (c *Collector) UpdateDNSStats(enabled bool, queries, cacheHits, cacheMisses
 	c.serviceStats.DNS.CacheHits = cacheHits
 	c.serviceStats.DNS.CacheMisses = cacheMisses
 	c.serviceStats.DNS.Blocked = blocked
+}
+
+// UpdateSSHStats updates SSH service statistics.
+func (c *Collector) UpdateSSHStats(enabled bool, activeSessions int, totalConnections, authFailures uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.serviceStats.SSH.Enabled = enabled
+	c.serviceStats.SSH.ActiveSessions = activeSessions
+	c.serviceStats.SSH.TotalConnections = totalConnections
+	c.serviceStats.SSH.AuthFailures = authFailures
+}
+
+// GetVPNStats returns a copy of the current VPN statistics.
+func (c *Collector) GetVPNStats() map[string]map[string]*PeerStats {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	result := make(map[string]map[string]*PeerStats)
+	for iface, peers := range c.vpnStats {
+		peerMap := make(map[string]*PeerStats)
+		for pk, stats := range peers {
+			copy := *stats
+			peerMap[pk] = &copy
+		}
+		result[iface] = peerMap
+	}
+	return result
+}
+
+// collectVPNStats gathers WireGuard statistics using wg show.
+func (c *Collector) collectVPNStats(_ context.Context) error {
+	// Command: wg show all dump
+	// Output: iface public-key psk endpoint allowed-ips latest-handshake transfer-rx transfer-tx persistent-keepalive
+	cmd := exec.Command("wg", "show", "all", "dump")
+	output, err := cmd.Output()
+	if err != nil {
+		// Prepare empty stats if command fails (e.g. no wg installed or no permissions)
+		c.vpnStats = make(map[string]map[string]*PeerStats)
+		return nil // Non-fatal
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	newStats := make(map[string]map[string]*PeerStats)
+
+	now := clock.Now()
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.Fields(line)
+		// Expect at least 8 fields (psk is optional/variable? dump usually has fixed fields)
+		// dump format: <interface> <public-key> <preshared-key> <endpoint> <allowed-ips> <latest-handshake> <transfer-rx> <transfer-tx> <persistent-keepalive>
+		if len(fields) < 8 {
+			continue
+		}
+
+		iface := fields[0]
+		pubKey := fields[1]
+		// psk := fields[2]
+		endpoint := fields[3]
+		// allowedIps := fields[4]
+		handshakeTsStr := fields[5]
+		rxStr := fields[6]
+		txStr := fields[7]
+
+		handshakeTs, _ := strconv.ParseInt(handshakeTsStr, 10, 64)
+		rx, _ := strconv.ParseUint(rxStr, 10, 64)
+		tx, _ := strconv.ParseUint(txStr, 10, 64)
+
+		if _, ok := newStats[iface]; !ok {
+			newStats[iface] = make(map[string]*PeerStats)
+		}
+
+		var lastHandshakeTime time.Time
+		var secondsSince int64
+		if handshakeTs > 0 {
+			lastHandshakeTime = time.Unix(handshakeTs, 0)
+			secondsSince = int64(now.Sub(lastHandshakeTime).Seconds())
+		} else {
+			secondsSince = -1 // Never
+		}
+
+		if endpoint == "(none)" {
+			endpoint = ""
+		}
+
+		newStats[iface][pubKey] = &PeerStats{
+			PublicKey:            pubKey,
+			Endpoint:             endpoint,
+			LatestHandshake:      lastHandshakeTime,
+			TransferRx:           rx,
+			TransferTx:           tx,
+			LastHandshakeSeconds: secondsSince,
+		}
+	}
+
+	c.vpnStats = newStats
+	return nil
 }

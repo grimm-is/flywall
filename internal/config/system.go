@@ -1,17 +1,19 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package config
 
 // Features defines feature flags for the application
 type Features struct {
-	ThreatIntel         bool `hcl:"threat_intel,optional" json:"threat_intel"`                 // Phase 5: Threat Intelligence
-	NetworkLearning     bool `hcl:"network_learning,optional" json:"network_learning"`         // Automated rule learning
-	QoS                 bool `hcl:"qos,optional" json:"qos"`                                   // Traffic Shaping
-	IntegrityMonitoring bool `hcl:"integrity_monitoring,optional" json:"integrity_monitoring"` // Detect and revert external changes
+	ThreatIntel         bool `hcl:"threat_intel,optional" json:"threat_intel" tui:"title=Threat Intelligence,desc=Enable IP reputation and threat feeds"`
+	NetworkLearning     bool `hcl:"network_learning,optional" json:"network_learning" tui:"title=Network Learning,desc=Auto-learn traffic patterns"`
+	QoS                 bool `hcl:"qos,optional" json:"qos" tui:"title=QoS,desc=Quality of Service traffic shaping"`
+	IntegrityMonitoring bool `hcl:"integrity_monitoring,optional" json:"integrity_monitoring" tui:"title=Integrity Monitor,desc=Detect external system changes"`
 }
 
 // APIConfig configures the REST API server.
 type APIConfig struct {
-	Enabled             bool   `hcl:"enabled,optional" json:"enabled,omitempty"`
-	DisableSandbox      bool   `hcl:"disable_sandbox,optional" json:"disable_sandbox,omitempty"`             // Default: false (Sandbox Enabled)
+	Enabled             bool   `hcl:"enabled,optional" json:"enabled,omitempty" tui:"title=Enable API,desc=Enable REST API Server"`
+	DisableSandbox      bool   `hcl:"disable_sandbox,optional" json:"disable_sandbox,omitempty" tui:"title=Disable Sandbox,desc=DANGEROUS: Disable security sandbox"`
 	Listen              string `hcl:"listen,optional" json:"listen,omitempty"`                               // Deprecated: use web.listen
 	TLSListen           string `hcl:"tls_listen,optional" json:"tls_listen,omitempty"`                       // Deprecated: use web.tls_listen
 	TLSCert             string `hcl:"tls_cert,optional" json:"tls_cert,omitempty"`                           // Deprecated: use web.tls_cert
@@ -26,13 +28,25 @@ type APIConfig struct {
 	KeyStorePath string `hcl:"key_store_path,optional" json:"key_store_path,omitempty"` // Path to key store file
 
 	// Predefined API keys (for config-based key management)
-	Keys []APIKeyConfig `hcl:"key,block" json:"keys,omitempty"`
+	Keys []APIKeyConfig `hcl:"key,block" json:"key,omitempty"`
 
 	// CORS settings
 	CORSOrigins []string `hcl:"cors_origins,optional" json:"cors_origins,omitempty"`
 
 	// Let's Encrypt automatic TLS
 	LetsEncrypt *LetsEncryptConfig `hcl:"letsencrypt,block" json:"letsencrypt,omitempty"`
+
+	// Tailscale/tsnet configuration
+	TsNet *TsNetConfig `hcl:"tsnet,block" json:"tsnet,omitempty"`
+}
+
+// TsNetConfig configures the embedded Tailscale client.
+type TsNetConfig struct {
+	Enabled   bool   `hcl:"enabled,optional" json:"enabled"`
+	Hostname  string `hcl:"hostname,optional" json:"hostname,omitempty"`   // Node name
+	AuthKey   string `hcl:"auth_key,optional" json:"auth_key,omitempty"`   // Auth key (tskey-auth-...)
+	Ephemeral bool   `hcl:"ephemeral,optional" json:"ephemeral,omitempty"` // Delete node on exit
+	LogWebUI  bool   `hcl:"log_web_ui,optional" json:"log_web_ui,omitempty"`
 }
 
 // APIKeyConfig defines an API key in the config file.
@@ -109,10 +123,10 @@ type HAConfig struct {
 	Priority int `hcl:"priority,optional" json:"priority,omitempty"`
 
 	// Virtual IPs to migrate on failover (for LAN-side gateway addresses)
-	VirtualIPs []VirtualIP `hcl:"virtual_ip,block" json:"virtual_ips,omitempty"`
+	VirtualIPs []VirtualIP `hcl:"virtual_ip,block" json:"virtual_ip,omitempty"`
 
 	// Virtual MACs to migrate on failover (for DHCP-assigned WAN interfaces)
-	VirtualMACs []VirtualMAC `hcl:"virtual_mac,block" json:"virtual_macs,omitempty"`
+	VirtualMACs []VirtualMAC `hcl:"virtual_mac,block" json:"virtual_mac,omitempty"`
 
 	// HeartbeatInterval is seconds between heartbeat messages (default: 1)
 	HeartbeatInterval int `hcl:"heartbeat_interval,optional" json:"heartbeat_interval,omitempty"`
@@ -221,4 +235,10 @@ type SystemConfig struct {
 
 	// Timezone for scheduled rules (e.g. "America/Los_Angeles"). Defaults to "UTC".
 	Timezone string `hcl:"timezone,optional" json:"timezone,omitempty"`
+
+	// UpdateCheckInterval is the duration between checking for updates (default: "24h")
+	UpdateCheckInterval string `hcl:"update_check_interval,optional" json:"update_check_interval,omitempty"`
+
+	// OUIDBPath is the location to store the OUI database
+	OUIDBPath string `hcl:"oui_db_path,optional" json:"oui_db_path,omitempty"`
 }

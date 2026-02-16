@@ -1,7 +1,10 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package ctlplane
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -38,8 +41,14 @@ func TestServer_BasicRPC(t *testing.T) {
 	if err := s.GetConfig(&Empty{}, configReply); err != nil {
 		t.Fatalf("GetConfig failed: %v", err)
 	}
-	if len(configReply.Config.Interfaces) != 1 {
-		t.Errorf("Expected 1 interface, got %d", len(configReply.Config.Interfaces))
+
+	var rxCfg config.Config
+	if err := json.Unmarshal(configReply.ConfigJSON, &rxCfg); err != nil {
+		t.Fatalf("Failed to unmarshal config: %v", err)
+	}
+
+	if len(rxCfg.Interfaces) != 1 {
+		t.Errorf("Expected 1 interface, got %d", len(rxCfg.Interfaces))
 	}
 
 	// Test GetServices (initially empty because we didn't inject services)
@@ -139,7 +148,7 @@ func TestServer_CreateBond_DHCP(t *testing.T) {
 	args := &CreateBondArgs{
 		Name:       "bond0",
 		Mode:       "active-backup",
-		Interfaces: []string{"eth0", "eth1"},
+		Interfaces: []string{"nonexistent77", "nonexistent88"},
 		DHCP:       true,
 	}
 	reply := &CreateBondReply{}
@@ -298,3 +307,4 @@ func (m *MockNetLib) WaitForLinkIP(ifaceName string, timeoutSeconds int) error {
 }
 func (m *MockNetLib) GetDHCPLeases() map[string]network.LeaseInfo     { return nil }
 func (m *MockNetLib) ApplyUIDRoutes(routes []config.UIDRouting) error { return nil }
+func (m *MockNetLib) ApplyVRFs(vrfs []config.VRF) error               { return nil }

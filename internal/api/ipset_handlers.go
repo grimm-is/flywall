@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -141,8 +143,43 @@ func (s *Server) handleIPSetRefresh(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(path, "/api/ipsets/")
 	name = strings.TrimSuffix(name, "/refresh")
 
+	// If name is empty, refresh ALL IPSets
 	if name == "" {
-		http.Error(w, "IPSet name is required", http.StatusBadRequest)
+		metadatas, err := s.client.ListIPSets()
+		if err != nil {
+			s.logger.Error("Failed to list IPSets for refresh", "error", err)
+			http.Error(w, "Failed to list IPSets", http.StatusInternalServerError)
+			return
+		}
+
+		successCount := 0
+		errs := []string{}
+
+		for _, set := range metadatas {
+			if err := s.client.RefreshIPSet(set.Name); err != nil {
+				s.logger.Error("Failed to refresh IPSet", "name", set.Name, "error", err)
+				errs = append(errs, fmt.Sprintf("%s: %v", set.Name, err))
+			} else {
+				successCount++
+			}
+		}
+
+		if len(errs) > 0 {
+			// Partial success or full failure
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"message": fmt.Sprintf("Refreshed %d sets. Errors: %s", successCount, strings.Join(errs, "; ")),
+				"errors":  errs,
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message":   fmt.Sprintf("Refreshed all %d IPSets successfully", successCount),
+			"refreshed": true,
+		})
 		return
 	}
 

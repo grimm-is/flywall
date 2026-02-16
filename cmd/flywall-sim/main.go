@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 // Command flywall-sim replays PCAPs through Flywall's learning and discovery engines.
 // It evaluates anomaly detection by comparing baseline traffic against attack captures.
 package main
@@ -73,13 +75,13 @@ func runServer(configPath string) {
 	// Use a temp file for flow DB so we can inspect it? Or memory?
 	// FlowDB supports sqlite. Use a temp file.
 	dbPath := "sim_flow.db"
-	
+
 	// Ensure cleanup of old DB
 	os.Remove(dbPath)
 
 	engineConfig := learning.EngineConfig{
 		DBPath:       dbPath,
-		Logger:       nil, // Will use default logger
+		Logger:       nil,  // Will use default logger
 		LearningMode: true, // Start in Learning Mode
 		Config:       cfg.RuleLearning,
 	}
@@ -90,7 +92,7 @@ func runServer(configPath string) {
 		log.Fatalf("Failed to create learning engine: %v", err)
 	}
 	engine.SetLearningMode(true)
-	
+
 	if err := engine.Start(); err != nil {
 		log.Fatalf("Failed to start engine: %v", err)
 	}

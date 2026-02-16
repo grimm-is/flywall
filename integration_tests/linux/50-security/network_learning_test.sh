@@ -45,11 +45,15 @@ schema_version = "1.0"
 ip_forwarding = true
 
 zone "lan" {
-  interfaces = ["veth-lan"]
+  match {
+    interface = "veth-lan"
+  }
 }
 
 zone "wan" {
-  interfaces = ["veth-wan"]
+  match {
+    interface = "veth-wan"
+  }
 }
 
 interface "veth-lan" {
@@ -90,7 +94,7 @@ ok $? "Test topology created"
 
 # Test 2: Start firewall
 diag "Starting firewall..."
-$APP_BIN ctl "$TEST_CONFIG" > /tmp/network_learning_ctl.log 2>&1 &
+$APP_BIN ctl "$TEST_CONFIG" > /tmp/network_learning_ctl_$$.log 2>&1 &
 CTL_PID=$!
 track_pid $CTL_PID
 

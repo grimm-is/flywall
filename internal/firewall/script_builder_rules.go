@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package firewall
 
 import (
@@ -113,6 +115,33 @@ func generateWebAccessRules(cfg *Config, sb *ScriptBuilder) bool {
 // Exported for use by the API layer to show generated syntax.
 func BuildRuleExpression(rule config.PolicyRule, timezone string) (string, error) {
 	var parts []string
+
+	// Service Macro Expansion
+	if rule.Service != "" {
+		// Look up service in BuiltinServices
+		svc, ok := BuiltinServices[rule.Service]
+		if ok {
+			// Apply expanded values if they are not explicitly set (allow overrides)
+			if rule.Protocol == "" {
+				if svc.Protocol&ProtoTCP != 0 {
+					rule.Protocol = "tcp"
+				} else if svc.Protocol&ProtoUDP != 0 {
+					rule.Protocol = "udp"
+				} else if svc.Protocol&ProtoICMP != 0 {
+					rule.Protocol = "icmp"
+				}
+			}
+
+			// Handle Ports
+			if rule.DestPort == 0 && len(rule.DestPorts) == 0 {
+				if svc.Port > 0 {
+					rule.DestPort = svc.Port
+				} else if len(svc.Ports) > 0 {
+					rule.DestPorts = svc.Ports
+				}
+			}
+		}
+	}
 
 	// Protocol
 	if rule.Protocol != "" && rule.Protocol != "any" {
@@ -352,8 +381,10 @@ func BuildRuleExpression(rule config.PolicyRule, timezone string) (string, error
 // addProtectionRules adds protection rules to the script
 func addProtectionRules(cfg *Config, sb *ScriptBuilder) {
 	if len(cfg.Protections) == 0 {
+		fmt.Printf("DEBUG: addProtectionRules - Protections count: 0\n")
 		return
 	}
+	fmt.Printf("DEBUG: addProtectionRules - Protections count: %d\n", len(cfg.Protections))
 
 	// Create protection chain (hooks into prerouting, priority raw -300)
 	sb.AddChain("protection", "filter", "prerouting", -300, "accept")
@@ -376,18 +407,25 @@ func addProtectionRules(cfg *Config, sb *ScriptBuilder) {
 		}
 
 		// Anti-Spoofing (RFC1918)
+		// Use anonymous set for efficient matching of multiple CIDR ranges
 		if p.AntiSpoofing {
+			var cidrs []string
 			for _, cidr := range protectionPrivateNetworks {
-				// Use CIDR notation directly with nft
-				sb.AddRule("protection", fmt.Sprintf("%sip saddr %s limit rate 10/minute log group 0 prefix \"SPOOFED-SRC: \" counter drop", ifaceMatch, cidr.String()))
+				cidrs = append(cidrs, cidr.String())
 			}
+			cidrSet := strings.Join(cidrs, ", ")
+			// Correct syntax: ip saddr { ... } limit rate ... log ... counter drop
+			sb.AddRule("protection", fmt.Sprintf("%sip saddr { %s } limit rate 10/minute log group 0 prefix \"SPOOFED-SRC: \" counter drop", ifaceMatch, cidrSet))
 		}
 
 		// Bogon Filtering
 		if p.BogonFiltering {
+			var cidrs []string
 			for _, cidr := range protectionBogonNetworks {
-				sb.AddRule("protection", fmt.Sprintf("%sip saddr %s counter drop", ifaceMatch, cidr.String()))
+				cidrs = append(cidrs, cidr.String())
 			}
+			cidrSet := strings.Join(cidrs, ", ")
+			sb.AddRule("protection", fmt.Sprintf("%sip saddr { %s } counter drop", ifaceMatch, cidrSet))
 		}
 
 		// SYN Flood Protection

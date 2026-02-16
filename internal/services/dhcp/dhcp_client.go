@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 //go:build linux
 // +build linux
 
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"grimm.is/flywall/internal/clock"
+	"grimm.is/flywall/internal/errors"
 	"grimm.is/flywall/internal/logging"
 
 	"grimm.is/flywall/internal/config"
@@ -25,7 +28,6 @@ import (
 // Package-level logger with component tag
 var dhcpLog = logging.WithComponent("dhcp")
 
-// LeaseInfo holds information about a DHCP lease
 type LeaseInfo struct {
 	IPAddress     net.IP
 	SubnetMask    net.IPMask
@@ -38,7 +40,7 @@ type LeaseInfo struct {
 	Interface     string
 }
 
-// Client represents a DHCP client for a specific interface
+// Client for a specific interface.
 type Client struct {
 	ifaceName string
 	iface     *net.Interface
@@ -49,14 +51,12 @@ type Client struct {
 	running   bool
 }
 
-// ClientManager manages multiple DHCP clients
 type ClientManager struct {
 	clients map[string]*Client
 	mu      sync.RWMutex
 	config  *config.DHCPServer
 }
 
-// NewClientManager creates a new DHCP client manager
 func NewClientManager(cfg *config.DHCPServer) *ClientManager {
 	return &ClientManager{
 		clients: make(map[string]*Client),
@@ -64,26 +64,25 @@ func NewClientManager(cfg *config.DHCPServer) *ClientManager {
 	}
 }
 
-// StartClient starts a DHCP client for the specified interface
 func (cm *ClientManager) StartClient(ifaceName string) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
 	// Check if client already exists
 	if _, exists := cm.clients[ifaceName]; exists {
-		return fmt.Errorf("DHCP client already running for interface %s", ifaceName)
+		return errors.New(errors.KindConflict, "DHCP client already running for interface")
 	}
 
 	// Get network interface
 	iface, err := net.InterfaceByName(ifaceName)
 	if err != nil {
-		return fmt.Errorf("failed to get interface %s: %w", ifaceName, err)
+		return errors.Wrap(err, errors.KindInternal, "failed to get interface")
 	}
 
 	// Create DHCP client
 	client, err := nclient4.New(ifaceName)
 	if err != nil {
-		return fmt.Errorf("failed to create DHCP client for %s: %w", ifaceName, err)
+		return errors.Wrap(err, errors.KindInternal, "failed to create DHCP client")
 	}
 
 	// Create client instance
@@ -105,14 +104,13 @@ func (cm *ClientManager) StartClient(ifaceName string) error {
 	return nil
 }
 
-// StopClient stops a DHCP client for the specified interface
 func (cm *ClientManager) StopClient(ifaceName string) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
 	client, exists := cm.clients[ifaceName]
 	if !exists {
-		return fmt.Errorf("no DHCP client running for interface %s", ifaceName)
+		return errors.New(errors.KindNotFound, "no DHCP client running for interface")
 	}
 
 	client.cancel()
@@ -122,27 +120,25 @@ func (cm *ClientManager) StopClient(ifaceName string) error {
 	return nil
 }
 
-// GetLease returns the current lease for an interface
 func (cm *ClientManager) GetLease(ifaceName string) (*LeaseInfo, error) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
 	client, exists := cm.clients[ifaceName]
 	if !exists {
-		return nil, fmt.Errorf("no DHCP client running for interface %s", ifaceName)
+		return nil, errors.New(errors.KindNotFound, "no DHCP client running for interface")
 	}
 
 	client.mu.RLock()
 	defer client.mu.RUnlock()
 
 	if client.lease == nil {
-		return nil, fmt.Errorf("no lease obtained for interface %s", ifaceName)
+		return nil, errors.New(errors.KindNotFound, "no lease obtained for interface")
 	}
 
 	return client.lease, nil
 }
 
-// GetAllLeases returns all active DHCP leases
 func (cm *ClientManager) GetAllLeases() map[string]*LeaseInfo {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -158,7 +154,6 @@ func (cm *ClientManager) GetAllLeases() map[string]*LeaseInfo {
 	return leases
 }
 
-// Stop stops all DHCP clients
 func (cm *ClientManager) Stop() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -200,7 +195,7 @@ func (cm *ClientManager) ReclaimLease(ifaceName string) (*LeaseInfo, error) {
 	// Get the network interface (now with virtual MAC applied)
 	iface, err := net.InterfaceByName(ifaceName)
 	if err != nil {
-		return nil, fmt.Errorf("interface %s not found: %w", ifaceName, err)
+		return nil, errors.Wrap(err, errors.KindNotFound, "interface not found")
 	}
 
 	dhcpLog.Info("Reclaiming with MAC", "interface", ifaceName, "mac", iface.HardwareAddr.String())
@@ -208,7 +203,7 @@ func (cm *ClientManager) ReclaimLease(ifaceName string) (*LeaseInfo, error) {
 	// Create new DHCP client
 	nclient, err := nclient4.New(ifaceName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create DHCP client for %s: %w", ifaceName, err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to create DHCP client")
 	}
 
 	// Create client instance without tracking (this is a one-shot operation)
@@ -222,7 +217,7 @@ func (cm *ClientManager) ReclaimLease(ifaceName string) (*LeaseInfo, error) {
 	// The server should give us the same IP if the MAC matches the lease
 	if err := dhcpClient.acquireLease(); err != nil {
 		nclient.Close()
-		return nil, fmt.Errorf("failed to acquire lease during reclaim: %w", err)
+		return nil, errors.Wrap(err, errors.KindInternal, "failed to acquire lease during reclaim")
 	}
 
 	// Now register this client for ongoing renewals
@@ -244,7 +239,6 @@ func (cm *ClientManager) ReclaimLease(ifaceName string) (*LeaseInfo, error) {
 	return dhcpClient.lease, nil
 }
 
-// run is the main loop for the DHCP client
 func (c *Client) run(ctx context.Context) {
 	c.running = true
 	defer func() {
@@ -261,14 +255,13 @@ func (c *Client) run(ctx context.Context) {
 	c.renewalLoop(ctx)
 }
 
-// acquireLease acquires a DHCP lease
 func (c *Client) acquireLease() error {
 	dhcpLog.Info("Acquiring lease", "interface", c.ifaceName)
 
 	// Send DHCP discover
 	lease, err := c.client.Request(context.Background())
 	if err != nil {
-		return fmt.Errorf("DHCP request failed: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "DHCP request failed")
 	}
 
 	// Parse lease information from the ACK packet
@@ -276,7 +269,7 @@ func (c *Client) acquireLease() error {
 
 	// Apply the IP address to the interface
 	if err := c.applyLeaseToInterface(leaseInfo); err != nil {
-		return fmt.Errorf("failed to apply lease to interface: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to apply lease to interface")
 	}
 
 	c.mu.Lock()
@@ -292,7 +285,7 @@ func (c *Client) applyLeaseToInterface(leaseInfo *LeaseInfo) error {
 	// Get the network link using netlink
 	link, err := netlink.LinkByName(c.ifaceName)
 	if err != nil {
-		return fmt.Errorf("failed to get link %s: %w", c.ifaceName, err)
+		return errors.Wrap(err, errors.KindNotFound, "failed to get link")
 	}
 
 	// Create a new IP address for the interface
@@ -328,13 +321,13 @@ func (c *Client) applyLeaseToInterface(leaseInfo *LeaseInfo) error {
 	if err := netlink.AddrAdd(link, ipAddr); err != nil {
 		// If the error is "file exists" (EEXIST), it's fine
 		if err != unix.EEXIST {
-			return fmt.Errorf("failed to add IP address to interface: %w", err)
+			return errors.Wrap(err, errors.KindInternal, "failed to add IP address to interface")
 		}
 	}
 
 	// Set the interface up
 	if err := netlink.LinkSetUp(link); err != nil {
-		return fmt.Errorf("failed to set interface up: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to set interface up")
 	}
 
 	dhcpLog.Info("Applied IP", "ip", leaseInfo.IPAddress, "interface", c.ifaceName)
@@ -372,7 +365,6 @@ func (c *Client) applyLeaseToInterface(leaseInfo *LeaseInfo) error {
 	return nil
 }
 
-// parseLease converts DHCPv4 packet to LeaseInfo
 func (c *Client) parseLease(lease *dhcpv4.DHCPv4) *LeaseInfo {
 	leaseInfo := &LeaseInfo{
 		IPAddress:  lease.YourIPAddr,
@@ -430,7 +422,6 @@ func (c *Client) parseLease(lease *dhcpv4.DHCPv4) *LeaseInfo {
 	return leaseInfo
 }
 
-// renewalLoop handles lease renewals
 func (c *Client) renewalLoop(ctx context.Context) {
 	for {
 		c.mu.RLock()
@@ -482,14 +473,13 @@ func (c *Client) renewalLoop(ctx context.Context) {
 	}
 }
 
-// renewLease renews the current DHCP lease
 func (c *Client) renewLease() error {
 	dhcpLog.Info("Renewing lease", "interface", c.ifaceName)
 
 	// Send DHCP request for renewal
 	lease, err := c.client.Request(context.Background())
 	if err != nil {
-		return fmt.Errorf("DHCP renewal failed: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "DHCP renewal failed")
 	}
 
 	// Update lease information from the ACK packet
@@ -497,7 +487,7 @@ func (c *Client) renewLease() error {
 
 	// Apply the renewed IP address to the interface
 	if err := c.applyLeaseToInterface(leaseInfo); err != nil {
-		return fmt.Errorf("failed to apply renewed lease to interface: %w", err)
+		return errors.Wrap(err, errors.KindInternal, "failed to apply renewed lease to interface")
 	}
 
 	c.mu.Lock()
@@ -509,7 +499,6 @@ func (c *Client) renewLease() error {
 	return nil
 }
 
-// IsRunning returns true if the client is currently running
 func (c *Client) IsRunning() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

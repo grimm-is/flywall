@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package dns
 
 import (
@@ -14,7 +16,7 @@ import (
 func newTestService(cfg *config.DNSServer) (*Service, error) {
 	// Create dummy logger
 	logger := logging.New(logging.DefaultConfig())
-	
+
 	// Default full config
 	fullCfg := &config.Config{
 		DNSServer: cfg,
@@ -118,10 +120,15 @@ func TestService_GetCache(t *testing.T) {
 	}
 
 	validTime := time.Now().Add(1 * time.Hour)
-	s.cache["cached.test.:1"] = cachedResponse{
+
+	key := "cached.test.:1"
+	shard := s.getShard(key)
+	shard.mu.Lock()
+	shard.items[key] = cachedResponse{
 		msg:       msg,
 		expiresAt: validTime,
 	}
+	shard.mu.Unlock()
 
 	entries := s.GetCache()
 	if len(entries) != 1 {

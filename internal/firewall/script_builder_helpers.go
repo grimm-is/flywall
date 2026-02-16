@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package firewall
 
 import (
@@ -144,11 +146,12 @@ func buildZoneMapForScript(cfg *Config) map[string][]string {
 
 	// 1. Process zones using ZoneResolver
 	for _, zone := range cfg.Zones {
+		cName := canonicalZoneName(zone.Name)
 		ifaces := resolver.GetZoneInterfaces(zone.Name)
 		if len(ifaces) > 0 {
-			zoneMap[zone.Name] = ifaces
+			zoneMap[cName] = ifaces
 		} else {
-			zoneMap[zone.Name] = []string{}
+			zoneMap[cName] = []string{}
 		}
 	}
 
@@ -156,12 +159,9 @@ func buildZoneMapForScript(cfg *Config) map[string][]string {
 	// This is the legacy way: interface "eth0" { zone = "WAN" }
 	for _, iface := range cfg.Interfaces {
 		if iface.Zone != "" {
-			// Check if already added by resolver (unlikely if resolver only looks at Zone defs)
-			// Wait, if interface defines zone, ZoneResolver might not know it if it only looks at Zone structs?
-			// Typically ZoneResolver resolves matches.
-			// Legacy `interface.zone` is handled by mapping back?
+			cZone := canonicalZoneName(iface.Zone)
 			exists := false
-			currentList := zoneMap[iface.Zone]
+			currentList := zoneMap[cZone]
 			for _, existing := range currentList {
 				if existing == iface.Name {
 					exists = true
@@ -169,12 +169,12 @@ func buildZoneMapForScript(cfg *Config) map[string][]string {
 				}
 			}
 			if !exists {
-				zoneMap[iface.Zone] = append(zoneMap[iface.Zone], iface.Name)
+				zoneMap[cZone] = append(zoneMap[cZone], iface.Name)
 			}
 		} else {
 			// Implicit Zone: Interface describes its own zone
-			// This allows policy "eth0" "WAN" works even if eth0 is not in a named zone
-			zoneMap[iface.Name] = []string{iface.Name}
+			cName := canonicalZoneName(iface.Name)
+			zoneMap[cName] = []string{iface.Name}
 		}
 	}
 

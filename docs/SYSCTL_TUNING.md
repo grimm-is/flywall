@@ -22,7 +22,7 @@ system {
 ## Custom Tuning (Profile + Manual Overrides)
 system {
   sysctl_profile = "default"
-  
+
   # Manual overrides applied after profile
   sysctl = {
     "net.core.rmem_max" = "134217728"           # 128MB receive buffer

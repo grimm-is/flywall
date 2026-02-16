@@ -282,15 +282,15 @@ for script in $TEST_SCRIPTS; do
 
         # Generate log filename using directory structure to avoid collisions
         # e.g. t/10-api/tls_api_test.sh -> 10-api-tls_api.log
-        
+
         # Get relative path from t/
         # MOUNT_PATH/t/ = /mnt/flywall/t/
         rel_path="${script#$MOUNT_PATH/t/}"
-        
+
         # Replace / with - and remove _test.sh
         # 10-api/tls_api_test.sh -> 10-api-tls_api
         safe_name=$(echo "$rel_path" | sed 's/\//-/g' | sed 's/_test\.sh//')
-        
+
         LOG_FILE="$RESULTS_DIR/${safe_name}.log"
 
         # Check for verbose mode

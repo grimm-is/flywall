@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Ben Grimm. Licensed under AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.txt)
+
 package api
 
 import (
@@ -41,7 +43,7 @@ func BindJSON[T any](w http.ResponseWriter, r *http.Request, dest *T) bool {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dest); err != nil {
-		WriteErrorCtx(w, r, http.StatusBadRequest, ErrInvalidBody)
+		WriteError(w, http.StatusBadRequest, ErrInvalidBody)
 		return false
 	}
 	return true
@@ -50,7 +52,7 @@ func BindJSON[T any](w http.ResponseWriter, r *http.Request, dest *T) bool {
 // BindJSONCustomErr decodes JSON with a custom error message.
 func BindJSONCustomErr[T any](w http.ResponseWriter, r *http.Request, dest *T, errMsg string) bool {
 	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
-		WriteErrorCtx(w, r, http.StatusBadRequest, errMsg)
+		WriteError(w, http.StatusBadRequest, errMsg)
 		return false
 	}
 	return true
@@ -60,7 +62,7 @@ func BindJSONCustomErr[T any](w http.ResponseWriter, r *http.Request, dest *T, e
 // Use this for endpoints where UI may send extra metadata fields.
 func BindJSONLenient[T any](w http.ResponseWriter, r *http.Request, dest *T) bool {
 	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
-		WriteErrorCtx(w, r, http.StatusBadRequest, ErrInvalidBody)
+		WriteError(w, http.StatusBadRequest, ErrInvalidBody)
 		return false
 	}
 	return true
@@ -108,7 +110,7 @@ func (s *Server) RequireControlPlane(w http.ResponseWriter, r *http.Request) boo
 func (s *Server) GetConfigSnapshot(w http.ResponseWriter, r *http.Request) *config.Config {
 	source := r.URL.Query().Get("source")
 	if source == "running" && s.client != nil {
-		cfg, err := s.client.GetConfig()
+		cfg, err := s.client.GetRunningConfig()
 		if err != nil {
 			WriteErrorCtx(w, r, http.StatusInternalServerError, err.Error())
 			return nil

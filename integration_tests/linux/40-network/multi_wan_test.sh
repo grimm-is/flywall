@@ -170,6 +170,7 @@ multi_wan {
   }
 
   wan "primary" {
+
     interface = "veth-wan1"
     gateway = "10.0.1.100"
     weight = 100
@@ -194,7 +195,8 @@ EOF
 start_ctl "$MULTI_WAN_CONFIG"
 
 # Wait for startup
-dilated_sleep 5
+# Wait for startup
+wait_for_file "$CTL_SOCKET" 15
 
 # Add default route if UplinkManager didn't (workaround for routing issue)
 if ! ip route show | grep -q "^default"; then
@@ -283,7 +285,8 @@ ip netns exec wan1 ip link set veth-remote1 down
 # Interval is 1s. Failover might be immediate (missing delay logic) or 5s.
 # Let's wait 10s to be safe.
 diag "Waiting for failover (approx 10s)..."
-dilated_sleep 10
+diag "Waiting for failover (Poll up to 15s)..."
+wait_for_condition "nft list chain inet flywall mark_prerouting | grep -q 'mark set 0x0*101'" 15
 
 # 3. Verify Mark Change
 # Should now be 0x101 (Secondary)
@@ -327,9 +330,10 @@ ip netns exec wan1 ip addr add 8.8.8.8/32 dev lo 2>/dev/null || true
 ip netns exec wan1 ip addr add $TARGET_IP/32 dev lo 2>/dev/null || true
 
 
-# Failback delay is 30s!
-diag "Waiting for failback (approx 35s)..."
-dilated_sleep 35
+# Failback delay is 5s
+diag "Waiting for failback (Poll up to 15s)..."
+wait_for_condition "nft list chain inet flywall mark_prerouting | grep -q 'mark set 0x0*100'" 15
+
 
 # 6. Verify Mark Change back to 0x100
 if nft list chain inet flywall mark_prerouting | grep -E "mark set 0x0*100"; then
